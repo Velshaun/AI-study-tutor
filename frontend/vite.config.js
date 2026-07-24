@@ -5,6 +5,10 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
 export default defineConfig({
+  // Serve on 3000 to match the Supabase Auth "Site URL" the OAuth flow redirects
+  // back to. strictPort so a busy 3000 fails loudly instead of silently moving
+  // to 3001 and breaking the redirect again.
+  server: { port: 3000, strictPort: true },
   plugins: [
     react(),
     tailwindcss(),
