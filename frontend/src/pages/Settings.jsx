@@ -2,6 +2,8 @@ import { LogOut } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import OptionCards from '../components/OptionCards'
+import PageTitle from '../components/PageTitle'
+import SectionHeader from '../components/SectionHeader'
 import VoiceCard from '../components/VoiceCard'
 import { useAuth } from '../hooks/useAuth'
 import { usePreferences } from '../hooks/usePreferences'
@@ -51,10 +53,7 @@ export default function Settings() {
 
   return (
     <div className="space-y-8">
-      <header>
-        <h1 className="text-2xl font-semibold text-pri">Settings</h1>
-        <p className="mt-0.5 text-sm text-sec">Changes save automatically.</p>
-      </header>
+      <PageTitle subtitle="Changes save automatically.">Settings</PageTitle>
 
       <Section title="Appearance">
         <OptionCards
@@ -125,9 +124,7 @@ export default function Settings() {
 function Section({ title, children }) {
   return (
     <section className="space-y-3">
-      <h2 className="text-xs font-semibold uppercase tracking-widest text-sec">
-        {title}
-      </h2>
+      <SectionHeader>{title}</SectionHeader>
       {children}
     </section>
   )

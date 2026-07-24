@@ -1,7 +1,6 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   AlertCircle,
-  ArrowLeft,
   Download,
   FileJson,
   MoreVertical,
@@ -16,6 +15,7 @@ import CourseContextCard from '../components/module/CourseContextCard'
 import DomainList from '../components/module/DomainList'
 import ImportedExamsCard from '../components/module/ImportedExamsCard'
 import SourcesCard from '../components/module/SourcesCard'
+import PageTitle from '../components/PageTitle'
 import { useConfirm } from '../hooks/useConfirm'
 import { useToast } from '../hooks/useToast'
 import { ApiError, api } from '../lib/api'
@@ -96,26 +96,22 @@ export default function ModuleDetail() {
 
   return (
     <div className="space-y-6">
-      <header className="space-y-3">
-        <div className="flex items-center justify-between">
-          <button onClick={() => navigate(-1)} className="btn-ghost -ml-2">
-            <ArrowLeft size={16} aria-hidden="true" />
-            Back
-          </button>
+      <PageTitle
+        onBack={() => navigate(-1)}
+        subtitle={
+          module.detected_subject ||
+          (module.status === 'failed'
+            ? module.error_message || 'Processing failed'
+            : PROCESSING.includes(module.status)
+              ? 'Working on your study plan…'
+              : 'Add sources to get started')
+        }
+        actions={
           <ModuleMenu module={module} onDeleted={() => navigate(ROUTES.dashboard)} />
-        </div>
-        <div>
-          <h1 className="text-2xl font-semibold text-pri">{module.title}</h1>
-          <p className="mt-0.5 text-sm text-sec">
-            {module.detected_subject ||
-              (module.status === 'failed'
-                ? module.error_message || 'Processing failed'
-                : PROCESSING.includes(module.status)
-                  ? 'Working on your study plan…'
-                  : 'Add sources to get started')}
-          </p>
-        </div>
-      </header>
+        }
+      >
+        {module.title}
+      </PageTitle>
 
       {ready && domains.length > 0 && <DomainList domains={domains} />}
 

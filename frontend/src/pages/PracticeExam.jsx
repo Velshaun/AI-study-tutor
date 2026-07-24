@@ -1,8 +1,9 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { AlertCircle, ArrowLeft, GraduationCap, Loader2 } from 'lucide-react'
+import { AlertCircle, Loader2 } from 'lucide-react'
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
+import PageTitle from '../components/PageTitle'
 import QuizRunner from '../components/study/QuizRunner'
 import Toggle from '../components/Toggle'
 import { useToast } from '../hooks/useToast'
@@ -77,19 +78,15 @@ export default function PracticeExam() {
   if (exam) {
     return (
       <div className="space-y-6">
-        <header className="space-y-3">
-          <button onClick={() => setExam(null)} className="btn-ghost -ml-2">
-            <ArrowLeft size={16} aria-hidden="true" />
-            Exit exam
-          </button>
-          <div>
-            <h1 className="text-xl font-semibold text-pri">{exam.title}</h1>
-            <p className="mt-0.5 text-sm text-sec">
-              {exam.question_count} questions
-              {exam.duration_minutes ? ` · ${exam.duration_minutes} min` : ''}
-            </p>
-          </div>
-        </header>
+        <PageTitle
+          onBack={() => setExam(null)}
+          backLabel="Exit exam"
+          subtitle={`${exam.question_count} questions${
+            exam.duration_minutes ? ` · ${exam.duration_minutes} min` : ''
+          }`}
+        >
+          {exam.title}
+        </PageTitle>
         <QuizRunner
           quiz={exam}
           onSubmit={submitExam}
@@ -105,25 +102,16 @@ export default function PracticeExam() {
   // --- Setup form -----------------------------------------------------------
   return (
     <div className="space-y-6">
-      <header className="space-y-3">
-        <button onClick={() => navigate(-1)} className="btn-ghost -ml-2">
-          <ArrowLeft size={16} aria-hidden="true" />
-          Back
-        </button>
-        <div className="flex items-center gap-3">
-          <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-accent/15 text-accent2">
-            <GraduationCap size={22} aria-hidden="true" />
-          </span>
-          <div>
-            <h1 className="text-2xl font-semibold text-pri">Practice exam</h1>
-            <p className="mt-0.5 text-sm text-sec">
-              {module?.title
-                ? `Weighted across ${module.title}`
-                : 'Weighted to your blueprint'}
-            </p>
-          </div>
-        </div>
-      </header>
+      <PageTitle
+        onBack={() => navigate(-1)}
+        subtitle={
+          module?.title
+            ? `Weighted across ${module.title}`
+            : 'Weighted to your blueprint'
+        }
+      >
+        Practice exam
+      </PageTitle>
 
       {isAuth ? (
         <p className="card text-center text-sm text-sec">Sign in to take an exam.</p>

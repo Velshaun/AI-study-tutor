@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Plus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import FlashcardDeck from '../components/study/FlashcardDeck'
 import GenerateForm from '../components/study/GenerateForm'
+import PageTitle from '../components/PageTitle'
 import { useConfirm } from '../hooks/useConfirm'
 import { useToast } from '../hooks/useToast'
 import { api, ApiError } from '../lib/api'
@@ -69,28 +70,25 @@ export default function Flashcards() {
 
   return (
     <div className="space-y-6">
-      <header className="space-y-3">
-        <button onClick={() => navigate(-1)} className="btn-ghost -ml-2">
-          <ArrowLeft size={16} aria-hidden="true" />
-          Back
-        </button>
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-semibold text-pri">Flashcards</h1>
-            <p className="mt-0.5 text-sm text-sec">
-              {cards.length > 0
-                ? `${cards.length} card${cards.length === 1 ? '' : 's'} in this deck`
-                : 'Spaced review for this domain.'}
-            </p>
-          </div>
-          {cards.length > 0 && !showForm && (
+      <PageTitle
+        onBack={() => navigate(-1)}
+        subtitle={
+          cards.length > 0
+            ? `${cards.length} card${cards.length === 1 ? '' : 's'} in this deck`
+            : 'Spaced review for this domain.'
+        }
+        actions={
+          cards.length > 0 &&
+          !showForm && (
             <button onClick={() => setShowForm(true)} className="btn-secondary">
               <Plus size={16} aria-hidden="true" />
               More
             </button>
-          )}
-        </div>
-      </header>
+          )
+        }
+      >
+        Flashcards
+      </PageTitle>
 
       {isPending ? (
         <div className="skeleton h-72 rounded-2xl" role="status" aria-label="Loading" />

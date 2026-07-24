@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, GraduationCap, Loader2, RotateCcw } from 'lucide-react'
+import { GraduationCap, Loader2, RotateCcw } from 'lucide-react'
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
+import PageTitle from '../components/PageTitle'
 import PracticeRunner from '../components/study/PracticeRunner'
 import { useToast } from '../hooks/useToast'
 import { ApiError, api } from '../lib/api'
@@ -58,15 +59,9 @@ export default function PracticeMode() {
 
   return (
     <div className="space-y-6">
-      <header className="flex items-center gap-3">
-        <button onClick={() => navigate(-1)} className="btn-ghost -ml-2 size-11 rounded-full p-0">
-          <ArrowLeft size={18} aria-hidden="true" />
-        </button>
-        <div className="flex items-center gap-2">
-          <GraduationCap size={20} className="text-accent2" aria-hidden="true" />
-          <h1 className="text-xl font-semibold text-pri">Practice</h1>
-        </div>
-      </header>
+      <PageTitle onBack={() => navigate(-1)} subtitle="Immediate feedback, one question at a time.">
+        Practice
+      </PageTitle>
 
       {isPending ? (
         <GeneratingState />

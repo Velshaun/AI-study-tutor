@@ -1,7 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
-import { AlertCircle, ArrowLeft, MessagesSquare, RefreshCw } from 'lucide-react'
+import { AlertCircle, MessagesSquare, RefreshCw } from 'lucide-react'
 import { useNavigate, useParams } from 'react-router-dom'
 
+import EmptyState from '../components/EmptyState'
+import PageTitle from '../components/PageTitle'
 import QASessionCard from '../components/qa/QASessionCard'
 import { api, ApiError } from '../lib/api'
 
@@ -26,21 +28,13 @@ export default function QAReview() {
   const domainTitle = sessions[0]?.domain_title
 
   return (
-    <div className="space-y-6">
-      <header className="space-y-3">
-        <button onClick={() => navigate(-1)} className="btn-ghost -ml-2">
-          <ArrowLeft size={16} aria-hidden="true" />
-          Back
-        </button>
-        <div>
-          <h1 className="text-2xl font-semibold text-pri">
-            Q&amp;A History{domainTitle ? ` — ${domainTitle}` : ''}
-          </h1>
-          <p className="mt-0.5 text-sm text-sec">
-            Every question you asked mid-lecture, grouped into sessions.
-          </p>
-        </div>
-      </header>
+    <div className="space-y-8">
+      <PageTitle
+        onBack={() => navigate(-1)}
+        subtitle="Every question you asked mid-lecture, grouped into sessions."
+      >
+        Q&amp;A History{domainTitle ? ` — ${domainTitle}` : ''}
+      </PageTitle>
 
       {isPending ? (
         <div className="space-y-3" role="status" aria-label="Loading">
@@ -49,33 +43,27 @@ export default function QAReview() {
           ))}
         </div>
       ) : error ? (
-        <div className="card flex flex-col items-center gap-4 py-12 text-center">
-          <AlertCircle size={26} className="text-warning" aria-hidden="true" />
-          <p className="max-w-xs text-sm text-sec">
-            {isAuth
-              ? 'Sign in to see your Q&A history.'
-              : error?.message || 'Couldn’t load your sessions.'}
-          </p>
-          {!isAuth && (
-            <button onClick={() => refetch()} className="btn-secondary">
-              <RefreshCw size={15} aria-hidden="true" />
-              Try again
-            </button>
-          )}
-        </div>
+        <EmptyState
+          centered
+          icon={AlertCircle}
+          title={isAuth ? 'Sign in to see your Q&A history' : 'Couldn’t load your sessions'}
+          message={isAuth ? undefined : error?.message}
+          action={
+            !isAuth && (
+              <button onClick={() => refetch()} className="btn-secondary">
+                <RefreshCw size={15} aria-hidden="true" />
+                Try again
+              </button>
+            )
+          }
+        />
       ) : sessions.length === 0 ? (
-        <div className="card flex flex-col items-center gap-4 py-12 text-center">
-          <MessagesSquare size={26} className="text-sec" aria-hidden="true" />
-          <div className="space-y-1.5">
-            <h2 className="text-lg font-semibold text-pri">
-              No questions asked yet for this domain
-            </h2>
-            <p className="mx-auto max-w-xs text-sm text-sec">
-              Ask the tutor anything while a lecture plays — your sessions show
-              up here for review.
-            </p>
-          </div>
-        </div>
+        <EmptyState
+          centered
+          icon={MessagesSquare}
+          title="No questions asked yet for this domain"
+          message="Ask the tutor anything while a lecture plays — your sessions show up here for review."
+        />
       ) : (
         <div className="space-y-3">
           {sessions.map((session) => (

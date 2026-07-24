@@ -2,6 +2,9 @@ import { useQuery } from '@tanstack/react-query'
 import { BookOpen, ClipboardList, Layers, Play, Star } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
+import EmptyState from '../components/EmptyState'
+import PageTitle from '../components/PageTitle'
+import SectionHeader from '../components/SectionHeader'
 import { api, ApiError } from '../lib/api'
 import { formatClock } from '../lib/format'
 import { path } from '../routes'
@@ -50,16 +53,12 @@ export default function Favourites() {
   if (total === 0) {
     return (
       <Shell>
-        <div className="card flex flex-col items-center gap-4 py-12 text-center">
-          <Star size={28} className="text-sec" aria-hidden="true" />
-          <div className="space-y-1.5">
-            <h2 className="text-lg font-semibold text-pri">Nothing starred yet</h2>
-            <p className="mx-auto max-w-xs text-sm text-sec">
-              Tap the star on a lecture, flashcard or quiz to keep it here for
-              quick access.
-            </p>
-          </div>
-        </div>
+        <EmptyState
+          centered
+          icon={Star}
+          title="Nothing starred yet"
+          message="Tap the star on a lecture, flashcard or quiz to keep it here for quick access."
+        />
       </Shell>
     )
   }
@@ -127,13 +126,10 @@ export default function Favourites() {
 
 function Shell({ children }) {
   return (
-    <div className="space-y-6">
-      <header>
-        <h1 className="text-2xl font-semibold text-pri">Favourites</h1>
-        <p className="mt-0.5 text-sm text-sec">
-          Everything you&rsquo;ve starred, in one place.
-        </p>
-      </header>
+    <div className="space-y-8">
+      <PageTitle subtitle="Everything you’ve starred, in one place.">
+        Favourites
+      </PageTitle>
       {children}
     </div>
   )
@@ -143,13 +139,12 @@ function Section({ title, Icon, count, children }) {
   if (count === 0) return null
   return (
     <section className="space-y-3">
-      <div className="flex items-center gap-2">
-        <Icon size={16} className="text-sec" aria-hidden="true" />
-        <h2 className="text-xs font-semibold uppercase tracking-widest text-sec">
-          {title}
-        </h2>
-        <span className="text-xs text-sec">({count})</span>
-      </div>
+      <SectionHeader
+        actions={<span className="text-xs tabular-nums text-sec">{count}</span>}
+      >
+        <Icon size={13} className="mr-1.5 -ml-0.5" aria-hidden="true" />
+        {title}
+      </SectionHeader>
       <div className="space-y-3">{children}</div>
     </section>
   )

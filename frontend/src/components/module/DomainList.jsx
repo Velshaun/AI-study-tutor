@@ -18,6 +18,7 @@ import { domainPillClass, formatClock } from '../../lib/format'
 import { usePreferences } from '../../hooks/usePreferences'
 import { useToast } from '../../hooks/useToast'
 import { path } from '../../routes'
+import SectionHeader from '../SectionHeader'
 
 /** How far into a lecture counts as "started" — below this it reads as fresh. */
 const RESUME_THRESHOLD_SECS = 5
@@ -45,9 +46,7 @@ export default function DomainList({ domains }) {
 
   return (
     <section className="space-y-3">
-      <h2 className="text-xs font-semibold uppercase tracking-widest text-sec">
-        Domains
-      </h2>
+      <SectionHeader>Domains</SectionHeader>
       <div className="space-y-3">
         {domains.map((d) => {
           const locked = d.status === 'locked'

@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, ChevronRight, Play, Plus, Trash2 } from 'lucide-react'
+import { ChevronRight, Play, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import GenerateForm from '../components/study/GenerateForm'
 import QuizRunner from '../components/study/QuizRunner'
+import PageTitle from '../components/PageTitle'
 import { useConfirm } from '../hooks/useConfirm'
 import { useToast } from '../hooks/useToast'
 import { api, ApiError } from '../lib/api'
@@ -74,13 +75,9 @@ export default function Quizzes() {
   if (active) {
     return (
       <div className="space-y-6">
-        <header className="space-y-3">
-          <button onClick={() => setActive(null)} className="btn-ghost -ml-2">
-            <ArrowLeft size={16} aria-hidden="true" />
-            All quizzes
-          </button>
-          <h1 className="text-xl font-semibold text-pri">{active.title}</h1>
-        </header>
+        <PageTitle onBack={() => setActive(null)} backLabel="All quizzes">
+          {active.title}
+        </PageTitle>
         <QuizRunner
           quiz={active}
           onSubmit={(answers) => submitQuiz(active, answers)}
@@ -92,24 +89,21 @@ export default function Quizzes() {
   // --- Listing / generating -------------------------------------------------
   return (
     <div className="space-y-6">
-      <header className="space-y-3">
-        <button onClick={() => navigate(-1)} className="btn-ghost -ml-2">
-          <ArrowLeft size={16} aria-hidden="true" />
-          Back
-        </button>
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-semibold text-pri">Quizzes</h1>
-            <p className="mt-0.5 text-sm text-sec">Test yourself on this domain.</p>
-          </div>
-          {quizzes.length > 0 && !showForm && (
+      <PageTitle
+        onBack={() => navigate(-1)}
+        subtitle="Test yourself on this domain."
+        actions={
+          quizzes.length > 0 &&
+          !showForm && (
             <button onClick={() => setShowForm(true)} className="btn-secondary">
               <Plus size={16} aria-hidden="true" />
               New quiz
             </button>
-          )}
-        </div>
-      </header>
+          )
+        }
+      >
+        Quizzes
+      </PageTitle>
 
       {isPending ? (
         <div className="space-y-3" role="status" aria-label="Loading">

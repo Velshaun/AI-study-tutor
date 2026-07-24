@@ -1,8 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Copy, LogIn, MessageSquare, Plus, Users } from 'lucide-react'
+import { Copy, LogIn, MessageSquare, Plus, Users } from 'lucide-react'
 import { useState } from 'react'
 
+import EmptyState from '../components/EmptyState'
 import Modal from '../components/Modal'
+import PageTitle from '../components/PageTitle'
+import SectionHeader from '../components/SectionHeader'
 import Toggle from '../components/Toggle'
 import { useAuth } from '../hooks/useAuth'
 import { api, ApiError } from '../lib/api'
@@ -57,23 +60,24 @@ function GroupList({ onOpen }) {
   const isAuth = error instanceof ApiError && error.isAuth
 
   return (
-    <div className="space-y-6">
-      <header className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold text-pri">Groups</h1>
-          <p className="mt-0.5 text-sm text-sec">Study together and share domains.</p>
-        </div>
-        <div className="flex gap-2">
-          <button onClick={() => setShowJoin(true)} className="btn-secondary">
-            <LogIn size={16} aria-hidden="true" />
-            Join
-          </button>
-          <button onClick={() => setShowCreate(true)} className="btn-primary">
-            <Plus size={16} aria-hidden="true" />
-            New
-          </button>
-        </div>
-      </header>
+    <div className="space-y-8">
+      <PageTitle
+        subtitle="Study together and share domains."
+        actions={
+          <>
+            <button onClick={() => setShowJoin(true)} className="btn-secondary">
+              <LogIn size={16} aria-hidden="true" />
+              Join
+            </button>
+            <button onClick={() => setShowCreate(true)} className="btn-primary">
+              <Plus size={16} aria-hidden="true" />
+              New
+            </button>
+          </>
+        }
+      >
+        Groups
+      </PageTitle>
 
       {isPending ? (
         <div className="space-y-3" role="status" aria-label="Loading">
@@ -81,17 +85,31 @@ function GroupList({ onOpen }) {
           <div className="skeleton h-16 rounded-2xl" />
         </div>
       ) : isAuth ? (
-        <p className="card text-center text-sm text-sec">Sign in to see your groups.</p>
+        <EmptyState
+          centered
+          icon={Users}
+          title="Sign in to see your groups"
+          message="Your groups and shared domains are tied to your account."
+        />
       ) : groups.length === 0 ? (
-        <div className="card flex flex-col items-center gap-4 py-12 text-center">
-          <Users size={28} className="text-sec" aria-hidden="true" />
-          <div className="space-y-1.5">
-            <h2 className="text-lg font-semibold text-pri">No groups yet</h2>
-            <p className="mx-auto max-w-xs text-sm text-sec">
-              Create a group to share your domains, or join one with an invite code.
-            </p>
-          </div>
-        </div>
+        <EmptyState
+          centered
+          icon={Users}
+          title="No groups yet"
+          message="Create a group to share your domains, or join one with an invite code."
+          action={
+            <div className="flex gap-2">
+              <button onClick={() => setShowJoin(true)} className="btn-secondary">
+                <LogIn size={16} aria-hidden="true" />
+                Join
+              </button>
+              <button onClick={() => setShowCreate(true)} className="btn-primary">
+                <Plus size={16} aria-hidden="true" />
+                Create group
+              </button>
+            </div>
+          }
+        />
       ) : (
         <div className="space-y-3">
           {groups.map((g) => (
@@ -240,19 +258,17 @@ function GroupDetail({ groupId, onBack }) {
   const shared = group.shared_domains || []
 
   return (
-    <div className="space-y-6">
-      <header className="space-y-3">
-        <button onClick={onBack} className="btn-ghost -ml-2">
-          <ArrowLeft size={16} aria-hidden="true" />
-          All groups
-        </button>
-        <div className="min-w-0">
-          <h1 className="truncate text-2xl font-semibold text-pri">{group.name}</h1>
-          <p className="mt-0.5 text-sm text-sec">
-            {group.member_count} member{group.member_count === 1 ? '' : 's'}
-            {group.is_owner && ' · you own this'}
-          </p>
-        </div>
+    <div className="space-y-8">
+      <div className="space-y-4">
+        <PageTitle
+          onBack={onBack}
+          backLabel="All groups"
+          subtitle={`${group.member_count} member${
+            group.member_count === 1 ? '' : 's'
+          }${group.is_owner ? ' · you own this' : ''}`}
+        >
+          {group.name}
+        </PageTitle>
 
         {group.invite_code && (
           <button
@@ -270,13 +286,11 @@ function GroupDetail({ groupId, onBack }) {
             <span className="text-xs text-sec">{copied ? 'Copied' : 'Invite code'}</span>
           </button>
         )}
-      </header>
+      </div>
 
       {/* Members */}
       <section className="space-y-3">
-        <h2 className="text-xs font-semibold uppercase tracking-widest text-sec">
-          Members
-        </h2>
+        <SectionHeader>Members</SectionHeader>
         <div className="card space-y-2.5">
           {group.members.map((m) => (
             <div key={m.user_id} className="flex items-center gap-3">
@@ -292,9 +306,7 @@ function GroupDetail({ groupId, onBack }) {
 
       {/* Shared domains */}
       <section className="space-y-3">
-        <h2 className="text-xs font-semibold uppercase tracking-widest text-sec">
-          Shared domains
-        </h2>
+        <SectionHeader>Shared domains</SectionHeader>
         {shared.length === 0 ? (
           <p className="card text-center text-sm text-sec">
             {group.is_owner

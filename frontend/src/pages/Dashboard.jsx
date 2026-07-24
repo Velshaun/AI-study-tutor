@@ -3,11 +3,14 @@ import { AlertCircle, LogIn, Plus, RefreshCw } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
-import EmptyState from '../components/dashboard/EmptyState'
+import FirstRunEmpty from '../components/dashboard/EmptyState'
 import KpiRow from '../components/dashboard/KpiRow'
 import ModuleCard from '../components/dashboard/ModuleCard'
 import ResumeCard from '../components/dashboard/ResumeCard'
+import EmptyState from '../components/EmptyState'
 import Modal from '../components/Modal'
+import PageTitle from '../components/PageTitle'
+import SectionHeader from '../components/SectionHeader'
 import { api, ApiError } from '../lib/api'
 import { ROUTES } from '../routes'
 
@@ -74,18 +77,17 @@ export default function Dashboard() {
   if (state === 'auth') {
     return (
       <Shell>
-        <div className="card flex flex-col items-center gap-4 py-12 text-center">
-          <LogIn size={28} className="text-accent" aria-hidden="true" />
-          <div className="space-y-1.5">
-            <h2 className="text-lg font-semibold text-pri">Sign in to continue</h2>
-            <p className="mx-auto max-w-xs text-sm text-sec">
-              Your modules and progress are tied to your account.
-            </p>
-          </div>
-          <Link to={ROUTES.login} className="btn-primary">
-            Sign in
-          </Link>
-        </div>
+        <EmptyState
+          centered
+          icon={LogIn}
+          title="Sign in to continue"
+          message="Your modules and progress are tied to your account."
+          action={
+            <Link to={ROUTES.login} className="btn-primary">
+              Sign in
+            </Link>
+          }
+        />
       </Shell>
     )
   }
@@ -93,21 +95,18 @@ export default function Dashboard() {
   if (state === 'error') {
     return (
       <Shell>
-        <div className="card flex flex-col items-center gap-4 py-12 text-center">
-          <AlertCircle size={28} className="text-warning" aria-hidden="true" />
-          <div className="space-y-1.5">
-            <h2 className="text-lg font-semibold text-pri">
-              Couldn&rsquo;t load your dashboard
-            </h2>
-            <p className="mx-auto max-w-sm text-sm text-sec">
-              {failure?.message || 'Something went wrong.'}
-            </p>
-          </div>
-          <button onClick={retry} className="btn-secondary">
-            <RefreshCw size={15} aria-hidden="true" />
-            Try again
-          </button>
-        </div>
+        <EmptyState
+          centered
+          icon={AlertCircle}
+          title="Couldn't load your dashboard"
+          message={failure?.message || 'Something went wrong.'}
+          action={
+            <button onClick={retry} className="btn-secondary">
+              <RefreshCw size={15} aria-hidden="true" />
+              Try again
+            </button>
+          }
+        />
       </Shell>
     )
   }
@@ -119,17 +118,17 @@ export default function Dashboard() {
   return (
     <Shell onNew={openCreate}>
       {isEmpty ? (
-        <EmptyState onUpload={openCreate} />
+        <div className="flex min-h-[46vh] items-center justify-center">
+          <FirstRunEmpty onUpload={openCreate} />
+        </div>
       ) : (
         <>
           {resume && <ResumeCard resume={resume} />}
 
           <KpiRow stats={stats} />
 
-          <section className="space-y-3">
-            <h2 className="text-xs font-semibold uppercase tracking-widest text-sec">
-              Your modules
-            </h2>
+          <section className="space-y-4">
+            <SectionHeader>Your modules in progress</SectionHeader>
             {/* Flex-centered rather than a 2-col grid so any count stays
                 centered — a lone card would otherwise hug the left cell. */}
             <div className="flex flex-wrap justify-center gap-3">
@@ -202,17 +201,20 @@ function CreateModuleModal({ open, onClose, onSubmit, pending, error }) {
 
 function Shell({ children, onNew }) {
   return (
-    <div className="space-y-6">
-      <header className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold text-pri">Dashboard</h1>
-          <p className="mt-0.5 text-sm text-sec">Your modules and progress.</p>
-        </div>
-        <button onClick={onNew} className="btn-primary hidden md:inline-flex">
-          <Plus size={16} aria-hidden="true" />
-          New module
-        </button>
-      </header>
+    <div className="space-y-8">
+      <PageTitle
+        subtitle="Your modules and progress."
+        actions={
+          onNew && (
+            <button onClick={onNew} className="btn-primary hidden md:inline-flex">
+              <Plus size={16} aria-hidden="true" />
+              New module
+            </button>
+          )
+        }
+      >
+        Dashboard
+      </PageTitle>
       {children}
     </div>
   )

@@ -1,8 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Loader2, PartyPopper } from 'lucide-react'
+import { Loader2, PartyPopper } from 'lucide-react'
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
+import EmptyState from '../components/EmptyState'
+import PageTitle from '../components/PageTitle'
 import PracticeRunner from '../components/study/PracticeRunner'
 import { useToast } from '../hooks/useToast'
 import { ApiError, api } from '../lib/api'
@@ -48,12 +50,9 @@ export default function ReviewLater() {
 
   return (
     <div className="space-y-6">
-      <header className="flex items-center gap-3">
-        <button onClick={() => navigate(-1)} className="btn-ghost -ml-2 size-11 rounded-full p-0">
-          <ArrowLeft size={18} aria-hidden="true" />
-        </button>
-        <h1 className="text-xl font-semibold text-pri">Review later</h1>
-      </header>
+      <PageTitle onBack={() => navigate(-1)} subtitle="Questions you flagged to revisit.">
+        Review later
+      </PageTitle>
 
       {isPending ? (
         <div className="card flex justify-center py-14" role="status" aria-label="Loading">
@@ -82,17 +81,15 @@ export default function ReviewLater() {
 
 function SolidState() {
   return (
-    <div className="card flex flex-col items-center gap-5 py-16 text-center">
-      <div className="flex size-20 items-center justify-center rounded-full bg-success/15">
-        <PartyPopper size={34} className="text-success" aria-hidden="true" />
-      </div>
-      <div className="space-y-1.5">
-        <h2 className="text-lg font-semibold text-pri">You&rsquo;re solid on this domain!</h2>
-        <p className="mx-auto max-w-xs text-sm text-sec">
-          Nothing left in your review queue. Flag questions during practice to
-          revisit them here.
-        </p>
-      </div>
-    </div>
+    <EmptyState
+      centered
+      title="You’re solid on this domain!"
+      message="Nothing left in your review queue. Flag questions during practice to revisit them here."
+      illustration={
+        <div className="flex size-20 items-center justify-center rounded-full bg-success/15">
+          <PartyPopper size={34} className="text-success" aria-hidden="true" />
+        </div>
+      }
+    />
   )
 }

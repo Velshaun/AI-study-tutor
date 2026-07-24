@@ -38,6 +38,9 @@
   /* --- text ----------------------------------------------------------- */
   --color-pri: #f0f0f0;
   --color-sec: #a0a0a0;
+  /* Page titles: a cool silver, brighter and heavier than body text, so a
+     heading reads as a premium product label rather than plain white copy. */
+  --color-title: #d6d6de;
 
   /* --- status --------------------------------------------------------- */
   --color-success: #4caf50;
@@ -71,6 +74,9 @@
 
     --color-pri: #16161a;
     --color-sec: #61616b;
+    /* Dark graphite for titles on light surfaces — the premium-heading role,
+       inverted. */
+    --color-title: #1b1b22;
 
     --color-success: #2e7d32;
     --color-warning: #e07000;
