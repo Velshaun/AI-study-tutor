@@ -1,19 +1,24 @@
+import { useQuery } from '@tanstack/react-query'
 import { Home, Settings, Star, Users } from 'lucide-react'
 import { NavLink, Outlet } from 'react-router-dom'
 
+import AddSourceButton from '../components/AddSourceButton'
 import InstallPrompt from '../components/InstallPrompt'
 import MiniPlayer from '../components/player/MiniPlayer'
-
-import { ROUTES } from '../routes'
+import { api } from '../lib/api'
+import { path, ROUTES } from '../routes'
 
 /**
  * Shell for the main app screens.
  *
- * Mobile-first: a branded top bar plus a bottom tab bar, since this ships as an
- * installed PWA where thumb reach matters. From `md` up both fold into a
- * sidebar. The lecture player and onboarding wizard sit outside this shell —
- * both are immersive, single-purpose screens.
+ * Mobile-first: a branded top bar plus a bottom tab bar. From `md` up both fold
+ * into a sidebar that also lists the learner's modules with a persistent "Add
+ * source" upload — so they can jump between modules or add another at any time,
+ * never trapped after a first upload. The lecture player and onboarding wizard
+ * sit outside this shell.
  */
+
+const PROCESSING = ['processing', 'parsing', 'analysing', 'queued']
 
 const TABS = [
   { to: ROUTES.dashboard, label: 'Home', Icon: Home, end: true },
@@ -51,11 +56,66 @@ function tabClass({ isActive }) {
   ].join(' ')
 }
 
+/** The sidebar's module list + persistent upload (md+). */
+function SidebarModules() {
+  const { data } = useQuery({
+    queryKey: ['modules'],
+    queryFn: ({ signal }) => api.modules(signal),
+    refetchInterval: (query) =>
+      Array.isArray(query.state.data) &&
+      query.state.data.some((m) => PROCESSING.includes(m.status))
+        ? 4000
+        : false,
+  })
+  const modules = Array.isArray(data) ? data : []
+
+  return (
+    <div className="mt-6 flex min-h-0 flex-1 flex-col">
+      <p className="px-2 pb-2 text-[11px] font-bold uppercase tracking-wider text-sec">
+        Modules
+      </p>
+      <div className="pb-2">
+        <AddSourceButton />
+      </div>
+      <div className="-mr-1 min-h-0 flex-1 overflow-y-auto pr-1">
+        {modules.length === 0 ? (
+          <p className="px-2 py-1 text-xs text-sec">Upload a source to begin.</p>
+        ) : (
+          <nav className="flex flex-col gap-0.5">
+            {modules.map((m) => (
+              <NavLink
+                key={m.id}
+                to={path('module', { id: m.id })}
+                className={({ isActive }) =>
+                  [
+                    'flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors',
+                    isActive
+                      ? 'bg-accent/12 font-medium text-accent2'
+                      : 'text-sec hover:bg-surface2 hover:text-pri',
+                  ].join(' ')
+                }
+              >
+                {PROCESSING.includes(m.status) && (
+                  <span
+                    className="size-1.5 shrink-0 animate-pulse rounded-full bg-accent"
+                    aria-hidden="true"
+                  />
+                )}
+                <span className="truncate">{m.title || 'Processing…'}</span>
+              </NavLink>
+            ))}
+          </nav>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function AppLayout() {
   return (
     <div className="min-h-dvh bg-bg md:flex">
       {/* Sidebar (md+) */}
-      <aside className="hidden border-r border-border bg-surface md:flex md:w-60 md:shrink-0 md:flex-col md:gap-1 md:p-4">
+      <aside className="hidden border-r border-border bg-surface md:flex md:h-dvh md:w-60 md:shrink-0 md:flex-col md:p-4 md:sticky md:top-0">
         <Wordmark className="px-2 pb-5 pt-2" />
         <nav className="flex flex-col gap-1">
           {TABS.map(({ to, label, Icon, end }) => (
@@ -65,6 +125,7 @@ export default function AppLayout() {
             </NavLink>
           ))}
         </nav>
+        <SidebarModules />
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">

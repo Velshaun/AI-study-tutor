@@ -252,8 +252,7 @@ export default function VoiceInput() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 16 }}
             transition={{ duration: 0.18 }}
-            className="fixed inset-x-0 bottom-[calc(9rem+env(safe-area-inset-bottom))]
-                       z-40 px-4"
+            className="absolute inset-x-0 bottom-[calc(100%+4.75rem)] z-40 px-4"
           >
             <div className="mx-auto max-w-md space-y-3">
               {/* Question bubble */}
@@ -354,14 +353,15 @@ export default function VoiceInput() {
         )}
       </AnimatePresence>
 
-      {/* Mic FAB — above the minimised player bar */}
+      {/* Mic FAB — floats just above the playback controls bar (its positioned
+          parent), so it never overlaps the progress bar or transport. */}
       <button
         onClick={isListening ? speech.stop : open ? dismiss : startQuestion}
         aria-label={isListening ? 'Stop and send' : open ? 'Close' : 'Ask a question'}
         className={[
-          'fixed right-5 z-40 flex size-14 items-center justify-center rounded-full',
+          'absolute right-5 z-40 flex size-14 items-center justify-center rounded-full',
           'text-white shadow-lg transition-colors',
-          'bottom-[calc(6.5rem+env(safe-area-inset-bottom))]',
+          'bottom-[calc(100%+0.75rem)]',
           isListening
             ? 'bg-accent shadow-accent/40'
             : open

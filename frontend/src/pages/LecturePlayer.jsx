@@ -76,11 +76,12 @@ export default function LecturePlayer() {
         )}
       </main>
 
-      {/* Voice Q&A — mic FAB plus its answer panel (§5.6a) */}
-      <VoiceInput />
+      {/* Controls bar. `relative` so the voice-Q&A mic (and its answer panel)
+          anchor directly above it instead of overlapping the transport. */}
+      <div className="relative border-t border-border bg-surface px-5 py-5 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
+        {/* Voice Q&A — mic FAB plus its answer panel (§5.6a), floating above */}
+        <VoiceInput />
 
-      {/* Controls */}
-      <div className="border-t border-border bg-surface px-5 py-5 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
         <div className="mx-auto max-w-md">
           <PlayerControls
             view={view}

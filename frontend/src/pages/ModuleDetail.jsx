@@ -14,6 +14,7 @@ import Modal from '../components/Modal'
 import CourseContextCard from '../components/module/CourseContextCard'
 import DomainList from '../components/module/DomainList'
 import ImportedExamsCard from '../components/module/ImportedExamsCard'
+import ModuleKpis from '../components/module/ModuleKpis'
 import SourcesCard from '../components/module/SourcesCard'
 import PageTitle from '../components/PageTitle'
 import { useConfirm } from '../hooks/useConfirm'
@@ -112,6 +113,8 @@ export default function ModuleDetail() {
       >
         {module.title}
       </PageTitle>
+
+      {ready && <ModuleKpis moduleId={id} />}
 
       {ready && domains.length > 0 && <DomainList domains={domains} />}
 

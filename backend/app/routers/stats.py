@@ -59,6 +59,19 @@ class DashboardResponse(BaseModel):
     has_modules: bool = False
 
 
+class ModuleStats(BaseModel):
+    """KPIs scoped to a single module (spec: KPIs live in the module view)."""
+
+    domains_completed: int = 0
+    domains_total: int = 0
+    quiz_average_score: float | None = None
+    quizzes_taken: int = 0
+    lectures_generated: int = 0
+    # Sum of saved lecture positions in this module — a per-module proxy for
+    # time studied (study_time itself is only tracked per day, not per module).
+    listened_seconds: int = 0
+
+
 # --- Helpers ----------------------------------------------------------------
 def _client():
     try:
@@ -192,4 +205,54 @@ def _resume_card(user_id: str) -> ResumeCard | None:
         progress_pct=round(min(100.0, position / duration * 100), 1) if duration else 0.0,
         tutor_voice=lecture.get("tutor_voice"),
         last_played_at=lecture.get("last_played_at"),
+    )
+
+
+@router.get("/module/{module_id}", response_model=ModuleStats)
+async def module_stats(
+    module_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> ModuleStats:
+    """KPIs for one module — domains done, quiz average, listening time."""
+    client = _client()
+
+    # Ownership: the module must be the caller's.
+    owned = (
+        client.table("modules").select("id")
+        .eq("id", module_id).eq("user_id", user.id).limit(1).execute()
+    ).data or []
+    if not owned:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Module not found.")
+
+    # Domains in this module.
+    domain_rows = (
+        client.table("domains").select("id, status")
+        .eq("module_id", module_id).eq("user_id", user.id).execute()
+    ).data or []
+    domain_ids = [d["id"] for d in domain_rows]
+    domains_completed = sum(1 for d in domain_rows if d.get("status") == "completed")
+
+    # Quiz average across this module's domains.
+    scores: list[float] = []
+    if domain_ids:
+        scored = (
+            client.table("quizzes").select("score")
+            .in_("domain_id", domain_ids).not_.is_("score", "null").execute()
+        ).data or []
+        scores = [float(r["score"]) for r in scored if r.get("score") is not None]
+
+    # Lectures + listening time for this module.
+    lectures = (
+        client.table("lectures").select("last_position_secs")
+        .eq("module_id", module_id).eq("user_id", user.id).execute()
+    ).data or []
+    listened = sum(int(l.get("last_position_secs") or 0) for l in lectures)
+
+    return ModuleStats(
+        domains_completed=domains_completed,
+        domains_total=len(domain_rows),
+        quiz_average_score=round(sum(scores) / len(scores), 1) if scores else None,
+        quizzes_taken=len(scores),
+        lectures_generated=len(lectures),
+        listened_seconds=listened,
     )

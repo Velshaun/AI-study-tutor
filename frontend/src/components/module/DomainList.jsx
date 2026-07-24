@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query'
 import {
   BookOpen,
   CheckCircle2,
@@ -13,7 +14,7 @@ import {
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
-import { ApiError, api } from '../../lib/api'
+import { api } from '../../lib/api'
 import { domainPillClass, formatClock } from '../../lib/format'
 import { usePreferences } from '../../hooks/usePreferences'
 import { useToast } from '../../hooks/useToast'
@@ -34,12 +35,73 @@ function lectureProgress(d) {
 }
 
 /**
- * The module's ordered domains, each linking to its study surfaces. Locked
- * domains show their state but don't link onward.
+ * Generative study actions — flashcards, quizzes, practice. Each config knows
+ * how to check whether the content already exists and how to build it if not.
+ * `ensure` returns `{ existed }`: an existing set opens straight away, a freshly
+ * built one is announced by a toast the learner taps to open (they're never
+ * dropped onto a waiting screen).
+ */
+const STUDY = {
+  flashcards: {
+    Icon: Layers,
+    label: 'Flashcards',
+    busy: 'Building flashcards…',
+    ready: 'Flashcards ready',
+    error: 'Couldn’t build flashcards',
+    route: (d) => path('flashcards', { domainId: d.id }),
+    async ensure({ domain, prefs, queryClient }) {
+      const cards = await api.flashcards(domain.id)
+      if (Array.isArray(cards) && cards.length) return { existed: true }
+      await api.generateFlashcards({
+        domain_id: domain.id,
+        difficulty: prefs.flashcard_difficulty,
+        count: 10,
+      })
+      queryClient.invalidateQueries({ queryKey: ['flashcards', domain.id] })
+      return { existed: false }
+    },
+  },
+  quizzes: {
+    Icon: ClipboardList,
+    label: 'Quizzes',
+    busy: 'Building quiz…',
+    ready: 'Quiz ready',
+    error: 'Couldn’t build the quiz',
+    route: (d) => path('quizzes', { domainId: d.id }),
+    async ensure({ domain, prefs, queryClient }) {
+      const quizzes = await api.quizzes(domain.id)
+      if (Array.isArray(quizzes) && quizzes.length) return { existed: true }
+      await api.generateQuiz({
+        domain_id: domain.id,
+        difficulty: prefs.quiz_difficulty,
+        question_count: 10,
+      })
+      queryClient.invalidateQueries({ queryKey: ['quizzes', domain.id] })
+      return { existed: false }
+    },
+  },
+  practice: {
+    Icon: Target,
+    label: 'Practice',
+    busy: 'Building practice exam…',
+    ready: 'Practice exam ready',
+    error: 'Couldn’t build the practice exam',
+    route: (d) => path('practiceMode', { domainId: d.id }),
+    async ensure({ domain, queryClient }) {
+      // Get-or-generate on the server; prime the cache so opening is instant.
+      const questions = await api.practiceQuestions(domain.id)
+      queryClient.setQueryData(['practice-questions', domain.id], questions)
+      return { existed: false }
+    },
+  },
+}
+
+/**
+ * The module's ordered domains and their study surfaces.
  *
- * Flashcards/quizzes/Q&A are direct links — those pages are domain-scoped and
- * generate-on-demand. A lecture is keyed by its own id, and a domain may not
- * have one yet, so "Lecture" is a get-or-generate action instead of a link.
+ * Study actions build in the background: clicking one keeps the learner on this
+ * page, shows an inline "Building…" state on the tile, then a toast when the
+ * content is ready. Locked domains show their state but don't act.
  */
 export default function DomainList({ domains }) {
   if (!domains?.length) return null
@@ -98,10 +160,10 @@ export default function DomainList({ domains }) {
 
               {!locked && (
                 <div className="flex flex-wrap gap-2 border-t border-border pt-3">
-                  <LectureAction domain={d} progress={progress} />
-                  <StudyLink to={path('flashcards', { domainId: d.id })} Icon={Layers} label="Flashcards" />
-                  <StudyLink to={path('quizzes', { domainId: d.id })} Icon={ClipboardList} label="Quizzes" />
-                  <StudyLink to={path('practiceMode', { domainId: d.id })} Icon={Target} label="Practice" />
+                  <LectureTile domain={d} progress={progress} />
+                  <StudyTile domain={d} cfg={STUDY.flashcards} />
+                  <StudyTile domain={d} cfg={STUDY.quizzes} />
+                  <StudyTile domain={d} cfg={STUDY.practice} />
                   {d.review_later_count > 0 && (
                     <StudyLink
                       to={path('reviewLater', { domainId: d.id })}
@@ -121,13 +183,14 @@ export default function DomainList({ domains }) {
   )
 }
 
+/** Base pill styling for a study action. */
+const PILL =
+  'inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors'
+
+/** A plain navigation pill (Q&A, Review) — no generation. */
 function StudyLink({ to, Icon, label, badge }) {
   return (
-    <Link
-      to={to}
-      className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-surface2 px-3 py-1.5
-                 text-xs font-medium text-sec transition-colors hover:text-pri"
-    >
+    <Link to={to} className={`${PILL} bg-surface2 text-sec hover:text-pri`}>
       <Icon size={14} aria-hidden="true" />
       {label}
       {badge > 0 && (
@@ -140,68 +203,106 @@ function StudyLink({ to, Icon, label, badge }) {
   )
 }
 
-/**
- * Opens the domain's lecture. If one already exists it jumps straight there
- * (the player resumes from the saved position); otherwise it generates one
- * first. Labelled "Resume" when playback is part-way through, so a returning
- * learner sees where to pick back up.
- */
-function LectureAction({ domain, progress }) {
+/** A generative study action: build-in-background, inline status, ready toast. */
+function StudyTile({ domain, cfg }) {
   const navigate = useNavigate()
-  const { preferences } = usePreferences()
   const toast = useToast()
+  const queryClient = useQueryClient()
+  const { preferences } = usePreferences()
   const [busy, setBusy] = useState(false)
 
-  const resuming = Boolean(progress && !progress.done)
-
-  async function open() {
-    // Existing lecture — go straight to it; the player restores the position.
-    if (domain.lecture_id) {
-      navigate(path('lecture', { id: domain.lecture_id }))
-      return
-    }
+  async function run() {
+    if (busy) return
     setBusy(true)
     try {
-      let lecture
-      try {
-        lecture = await api.lectureForDomain(domain.id)
-      } catch (err) {
-        if (!(err instanceof ApiError && err.status === 404)) throw err
-        // No lecture yet — generate one with the saved voice/length.
-        lecture = await api.generateLecture({
-          domain_id: domain.id,
-          voice: preferences.tutor_voice,
-          length: preferences.lecture_length,
-        })
-        toast.success('Lecture saved')
-      }
-      if (lecture?.id) navigate(path('lecture', { id: lecture.id }))
-    } catch (err) {
-      toast.error(err?.message || 'Could not open the lecture')
+      const { existed } = await cfg.ensure({ domain, prefs: preferences, queryClient })
+      const open = () => navigate(cfg.route(domain))
+      if (existed) open()
+      else toast.success(cfg.ready, { action: { label: 'Open', onClick: open } })
+    } catch (e) {
+      toast.error(e?.message || cfg.error, { action: { label: 'Retry', onClick: run } })
+    } finally {
       setBusy(false)
     }
   }
 
   return (
     <button
-      onClick={open}
+      onClick={run}
       disabled={busy}
-      className={[
-        'inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 py-1.5',
-        'text-xs font-medium transition-colors',
-        resuming
-          ? 'bg-accent/15 text-accent2 hover:text-accent'
-          : 'bg-surface2 text-sec hover:text-pri',
-      ].join(' ')}
+      aria-live="polite"
+      className={`${PILL} bg-surface2 text-sec hover:text-pri disabled:opacity-100`}
     >
       {busy ? (
-        <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+        <Loader2 size={14} className="animate-spin text-accent" aria-hidden="true" />
+      ) : (
+        <cfg.Icon size={14} aria-hidden="true" />
+      )}
+      {busy ? cfg.busy : cfg.label}
+    </button>
+  )
+}
+
+/**
+ * The lecture action. An existing lecture opens straight away (the player
+ * resumes from the saved position); otherwise it builds in the background and a
+ * toast announces it. Labelled "Resume" when playback is part-way through.
+ */
+function LectureTile({ domain, progress }) {
+  const navigate = useNavigate()
+  const toast = useToast()
+  const { preferences } = usePreferences()
+  const [busy, setBusy] = useState(false)
+
+  const resuming = Boolean(progress && !progress.done)
+
+  async function run() {
+    if (busy) return
+    // Existing lecture → open/resume immediately.
+    if (domain.lecture_id) {
+      navigate(path('lecture', { id: domain.lecture_id }))
+      return
+    }
+    setBusy(true)
+    try {
+      const lecture = await api.generateLecture({
+        domain_id: domain.id,
+        voice: preferences.tutor_voice,
+        length: preferences.lecture_length,
+      })
+      if (lecture?.id) {
+        const open = () => navigate(path('lecture', { id: lecture.id }))
+        toast.success('Your lecture is ready', {
+          action: { label: 'Open', onClick: open },
+        })
+      }
+    } catch (e) {
+      toast.error(e?.message || 'Couldn’t build the lecture', {
+        action: { label: 'Retry', onClick: run },
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <button
+      onClick={run}
+      disabled={busy}
+      className={`${PILL} ${
+        resuming
+          ? 'bg-accent/15 text-accent2 hover:text-accent'
+          : 'bg-surface2 text-sec hover:text-pri'
+      }`}
+    >
+      {busy ? (
+        <Loader2 size={14} className="animate-spin text-accent" aria-hidden="true" />
       ) : resuming ? (
         <Play size={14} aria-hidden="true" />
       ) : (
         <BookOpen size={14} aria-hidden="true" />
       )}
-      {resuming ? 'Resume' : 'Lecture'}
+      {busy ? 'Generating lecture…' : resuming ? 'Resume' : 'Lecture'}
     </button>
   )
 }

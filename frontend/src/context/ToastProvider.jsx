@@ -27,6 +27,7 @@ const TONE = {
 
 const DEFAULT_MS = 3500
 const ERROR_MS = 5500
+const ACTION_MS = 8000
 
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([])
@@ -37,12 +38,14 @@ export function ToastProvider({ children }) {
   }, [])
 
   const push = useCallback(
-    ({ message, type = 'info', duration }) => {
+    ({ message, type = 'info', duration, action }) => {
       if (!message) return
       seq.current += 1
       const id = seq.current
-      setToasts((list) => [...list, { id, message, type }])
-      const ms = duration ?? (type === 'error' ? ERROR_MS : DEFAULT_MS)
+      setToasts((list) => [...list, { id, message, type, action }])
+      // A toast with a tap action (e.g. "Open") lingers longer so it isn't
+      // gone before the learner reaches for it.
+      const ms = duration ?? (action ? ACTION_MS : type === 'error' ? ERROR_MS : DEFAULT_MS)
       window.setTimeout(() => dismiss(id), ms)
       return id
     },
@@ -94,6 +97,18 @@ export function ToastProvider({ children }) {
                   aria-hidden="true"
                 />
                 <p className="min-w-0 flex-1 text-sm text-pri">{t.message}</p>
+                {t.action && (
+                  <button
+                    onClick={() => {
+                      t.action.onClick?.()
+                      dismiss(t.id)
+                    }}
+                    className="shrink-0 rounded-lg px-2 py-1 text-sm font-semibold text-accent2
+                               transition-colors hover:bg-accent/10 hover:text-accent"
+                  >
+                    {t.action.label}
+                  </button>
+                )}
                 <button
                   onClick={() => dismiss(t.id)}
                   aria-label="Dismiss"

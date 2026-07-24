@@ -118,6 +118,8 @@ export async function apiDownload(path, filename) {
 
 export const api = {
   dashboard: (signal) => apiFetch('/stats/dashboard', { signal }),
+  moduleStats: (moduleId, signal) =>
+    apiFetch(`/stats/module/${moduleId}`, { signal }),
   modules: (signal) => apiFetch('/modules', { signal }),
   module: (id, signal) => apiFetch(`/modules/${id}`, { signal }),
   createModule: (body = {}) => apiFetch('/modules', { method: 'POST', body }),
