@@ -1,0 +1,232 @@
+/* ===========================================================================
+   AI Study Tutor — design system (spec §5.1)
+
+   Dark-first, Notebook LM inspired, single purple accent.
+
+   The build guide gives this as a `tailwind.config.js` (`module.exports`,
+   `theme.extend.colors`, `darkMode: 'class'`). That is Tailwind v3 syntax and
+   this project runs Tailwind v4, where the config file is gone and the theme
+   lives in CSS via `@theme`. The tokens below are the exact v4 equivalent —
+   same hex values, same generated utilities (`bg-surface`, `text-pri`,
+   `border-border`, `text-accent`, `font-sans`, …), so any markup written
+   against the spec's class names works unchanged.
+   =========================================================================== */
+
+@import 'tailwindcss';
+
+/* Self-hosted variable Inter. A PWA should not depend on a font CDN at
+   runtime — this keeps type correct offline and avoids a render-blocking
+   third-party request. */
+@import '@fontsource-variable/inter';
+
+/* v4 equivalent of `darkMode: 'class'`. The palette is already dark, so this
+   exists for explicit `dark:` overrides and for a future light theme; the
+   `:where()` keeps specificity at zero so overrides stay predictable. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* --- surfaces ------------------------------------------------------- */
+  --color-bg: #0f0f0f;
+  --color-surface: #1a1a1a;
+  --color-surface2: #242424;
+  --color-border: #2e2e2e;
+
+  /* --- accent --------------------------------------------------------- */
+  --color-accent: #6c63ff;
+  --color-accent2: #8b85ff;
+
+  /* --- text ----------------------------------------------------------- */
+  --color-pri: #f0f0f0;
+  --color-sec: #a0a0a0;
+
+  /* --- status --------------------------------------------------------- */
+  --color-success: #4caf50;
+  --color-warning: #ff9800;
+
+  /* --- type ----------------------------------------------------------- */
+  --font-sans: 'Inter Variable', 'Inter', system-ui, -apple-system,
+    'Segoe UI', Roboto, sans-serif;
+}
+
+/* ---------------------------------------------------------------------------
+   Base
+   --------------------------------------------------------------------------- */
+@layer base {
+  /* Light theme (§5.3 step 6).
+     Dark stays the default in @theme above; this overrides the same custom
+     properties, so every utility built on them flips without needing `light:`
+     variants anywhere in the markup. Applied by toggling `.light` on <html>.
+     Surfaces are stepped the opposite way — bg is the lightest, surface2 the
+     most recessed — and the accent darkens slightly to hold contrast on white. */
+  :root.light {
+    color-scheme: light;
+
+    --color-bg: #ffffff;
+    --color-surface: #f7f7F8;
+    --color-surface2: #eeeef0;
+    --color-border: #e0e0e4;
+
+    --color-accent: #5a51e8;
+    --color-accent2: #4840d4;
+
+    --color-pri: #16161a;
+    --color-sec: #61616b;
+
+    --color-success: #2e7d32;
+    --color-warning: #e07000;
+  }
+
+  :root {
+    /* Dark-first: tells the UA to render form controls, scrollbars and
+       spell-check underlines against a dark background. */
+    color-scheme: dark;
+
+    /* Derived accent tints. Kept as plain custom properties rather than
+       @theme tokens because they are only ever used directly, and adding them
+       to the theme would generate a full utility family for each. */
+    --accent-soft: color-mix(in oklab, var(--color-accent) 14%, transparent);
+    --accent-ring: color-mix(in oklab, var(--color-accent) 45%, transparent);
+  }
+
+  html {
+    /* Anchor scrolling clears any sticky header the shell adds later. */
+    scroll-behavior: smooth;
+    scroll-padding-top: 5rem;
+  }
+
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-pri);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    /* iOS: stop Safari inflating text in landscape. */
+    -webkit-text-size-adjust: 100%;
+    /* Mobile-first PWA: no rubber-band bounce past the shell. */
+    overscroll-behavior-y: none;
+  }
+
+  /* Headings carry the primary colour; body copy inherits it too, so only the
+     weight and tracking need setting. */
+  h1, h2, h3, h4, h5, h6 {
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  /* One visible focus treatment everywhere, using the accent. Applied via
+     :focus-visible so pointer users never see it. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 0.25rem;
+  }
+
+  /* Placeholders sit at the secondary text colour by default. */
+  ::placeholder {
+    color: var(--color-sec);
+    opacity: 1;
+  }
+
+  /* Selection uses the accent tint rather than the UA blue. */
+  ::selection {
+    background-color: var(--accent-ring);
+    color: var(--color-pri);
+  }
+
+  /* Scrollbars, so they don't punch a light hole in a dark surface. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--color-border);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-surface2);
+  }
+
+  /* Respect a reduced-motion preference across the whole app. */
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Primitives
+
+   The handful of pieces every later screen repeats, defined once so button and
+   card styling cannot drift between pages. Anything screen-specific belongs
+   with that screen, not here.
+
+   Declared with `@utility` rather than `@layer components`: in Tailwind v4,
+   `@apply` only accepts real utilities, so a component class cannot compose
+   another one. `@utility` registers these as first-class utilities, which lets
+   `btn-primary` build on `btn` and keeps them usable from `@apply` in any
+   component that needs them later.
+   --------------------------------------------------------------------------- */
+@utility btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5
+         text-sm font-medium transition-colors duration-150
+         disabled:pointer-events-none disabled:opacity-50;
+}
+
+@utility btn-primary {
+  @apply btn bg-accent text-white hover:bg-accent2 active:bg-accent;
+}
+
+@utility btn-secondary {
+  @apply btn bg-surface2 text-pri hover:bg-border;
+}
+
+@utility btn-ghost {
+  @apply btn text-sec hover:bg-surface2 hover:text-pri;
+}
+
+@utility card {
+  @apply rounded-2xl border border-border bg-surface p-5;
+}
+
+@utility card-interactive {
+  @apply card transition-colors duration-150 hover:border-accent/40
+         hover:bg-surface2;
+}
+
+@utility input {
+  @apply w-full rounded-xl border border-border bg-surface2 px-3.5 py-2.5
+         text-sm text-pri transition-colors duration-150
+         focus:border-accent focus:outline-none;
+}
+
+@utility chip {
+  @apply inline-flex items-center gap-1.5 rounded-full border border-border
+         bg-surface2 px-2.5 py-1 text-xs font-medium text-sec;
+}
+
+@utility chip-accent {
+  @apply chip border-transparent text-accent2;
+  background-color: var(--accent-soft);
+}
+
+/* Skeleton placeholder for loading states — generation is slow enough that
+   every async screen needs one. */
+@utility skeleton {
+  @apply animate-pulse rounded-lg bg-surface2;
+}

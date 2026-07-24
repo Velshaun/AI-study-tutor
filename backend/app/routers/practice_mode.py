@@ -1,0 +1,365 @@
+"""Practice Exam Mode — spec 6.4.
+
+    GET    /practice/{domain_id}/questions      get-or-generate a domain's set
+    GET    /practice/{domain_id}/review-later   the domain's flagged questions
+    POST   /practice/questions/{id}/flag        add to Review Later
+    DELETE /practice/questions/{id}/flag        remove from Review Later ("Got It")
+
+A domain-scoped study experience with immediate per-question feedback: every
+option carries its own explanation, each question a Why Card, and questions can
+be flagged into the (shared, polymorphic) review_later queue.
+
+Questions are cached in ``practice_questions`` (exam_id null, domain_id set) so
+a domain generates once; per-term explanations are also written to
+``exam_concept_cache`` for reuse.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
+
+from app.database import get_supabase
+from app.routers.auth import AuthUser, get_current_user
+from app.services.ai_service import (
+    GenerationError,
+    gather_domain_content,
+    generate_practice_questions,
+    generate_term_explanations,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/practice", tags=["practice_mode"])
+
+LETTERS = "ABCD"
+REVIEW_ITEM_TYPE = "practice_question"
+DEFAULT_COUNT = 8
+MAX_COUNT = 20
+
+
+# --- Schemas ----------------------------------------------------------------
+class PracticeOption(BaseModel):
+    label: str
+    text: str
+    term_key: str = ""
+
+
+class PracticeQuestion(BaseModel):
+    """Pre-submission shape — deliberately carries no answer or explanations, so
+    the correct option can't be read off the wire before the learner commits."""
+
+    id: str
+    question_text: str
+    options: list[PracticeOption] = Field(default_factory=list)
+    is_flagged: bool = False
+
+
+class AnsweredOption(PracticeOption):
+    explanation: str = ""
+
+
+class SubmitAnswerRequest(BaseModel):
+    chosen_option: str = Field(..., description="Label of the chosen option, e.g. 'B'.")
+
+
+class AnswerResult(BaseModel):
+    """Post-submission reveal — every option's explanation plus the Why Card."""
+
+    question_id: str
+    chosen_option: str
+    correct_option: str
+    is_correct: bool
+    options: list[AnsweredOption] = Field(default_factory=list)
+    why_summary: str = ""
+
+
+# --- Helpers ----------------------------------------------------------------
+def _client():
+    try:
+        return get_supabase()
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+
+
+def _own_domain(domain_id: str, user_id: str) -> dict[str, Any]:
+    rows = (
+        _client().table("domains").select("*")
+        .eq("id", domain_id).eq("user_id", user_id).limit(1).execute()
+    ).data or []
+    if not rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Domain not found.")
+    return rows[0]
+
+
+def _own_question(question_id: str, user_id: str) -> dict[str, Any]:
+    """A practice question whose domain the caller owns."""
+    rows = (
+        _client().table("practice_questions").select("*")
+        .eq("id", question_id).limit(1).execute()
+    ).data or []
+    if not rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Question not found.")
+    q = rows[0]
+    if not q.get("domain_id"):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Question not found.")
+    _own_domain(q["domain_id"], user_id)  # 404s if not the caller's domain
+    return q
+
+
+def _flagged_ids(user_id: str, question_ids: list[str]) -> set[str]:
+    if not question_ids:
+        return set()
+    rows = (
+        _client().table("review_later").select("item_id")
+        .eq("user_id", user_id).eq("item_type", REVIEW_ITEM_TYPE)
+        .in_("item_id", question_ids).execute()
+    ).data or []
+    return {r["item_id"] for r in rows}
+
+
+def _row_to_question(row: dict[str, Any], *, flagged: bool) -> PracticeQuestion:
+    """The pre-submission shape — no correct answer, no explanations."""
+    options = [
+        PracticeOption(
+            label=(o.get("label") or "").strip(),
+            text=(o.get("text") or "").strip(),
+            term_key=(o.get("term_key") or "").strip(),
+        )
+        for o in (row.get("options") or [])
+    ]
+    return PracticeQuestion(
+        id=row["id"],
+        question_text=row.get("prompt") or "",
+        options=options,
+        is_flagged=flagged,
+    )
+
+
+def _correct_letter(row: dict[str, Any]) -> str:
+    idx = row.get("correct_index")
+    return LETTERS[idx] if isinstance(idx, int) and 0 <= idx < len(LETTERS) else "A"
+
+
+def _resolve_explanations(
+    domain_id: str, user_id: str, options: list[dict[str, Any]],
+    *, subject: str, question_text: str,
+) -> dict[str, str]:
+    """Explanation per term_key, cache-first (spec 6.4 caching).
+
+    Reads exam_concept_cache by term_key; any misses are generated by Gemini in
+    one call and written back, so each distinct term is explained exactly once,
+    ever. A generation failure degrades gracefully to whatever was cached.
+    """
+    client = _client()
+    term_keys = [
+        (o.get("term_key") or "").strip() for o in options if (o.get("term_key") or "").strip()
+    ]
+    if not term_keys:
+        return {}
+
+    cached_rows = (
+        client.table("exam_concept_cache").select("concept, payload")
+        .eq("domain_id", domain_id).in_("concept", term_keys).execute()
+    ).data or []
+    resolved: dict[str, str] = {
+        r["concept"]: (r.get("payload") or {}).get("explanation", "")
+        for r in cached_rows
+        if (r.get("payload") or {}).get("explanation")
+    }
+
+    missing = [
+        {"term_key": (o.get("term_key") or "").strip(), "text": (o.get("text") or "").strip()}
+        for o in options
+        if (o.get("term_key") or "").strip() and (o.get("term_key") or "").strip() not in resolved
+    ]
+    if missing:
+        try:
+            fresh = generate_term_explanations(
+                missing, subject=subject, question_text=question_text
+            )
+        except GenerationError as exc:
+            logger.warning("term explanation generation failed: %s", exc)
+            fresh = {}
+        if fresh:
+            resolved.update(fresh)
+            payload = [
+                {"domain_id": domain_id, "user_id": user_id, "concept": k,
+                 "payload": {"explanation": v}}
+                for k, v in fresh.items()
+            ]
+            try:
+                client.table("exam_concept_cache").upsert(
+                    payload, on_conflict="domain_id,concept"
+                ).execute()
+            except Exception as exc:  # noqa: BLE001 — cache write is best-effort
+                logger.warning("concept cache upsert failed: %s", exc)
+
+    return resolved
+
+
+# --- Routes -----------------------------------------------------------------
+@router.get("/{domain_id}/questions", response_model=list[PracticeQuestion])
+async def get_questions(
+    domain_id: str,
+    count: int = Query(DEFAULT_COUNT, ge=1, le=MAX_COUNT),
+    regenerate: bool = Query(False, description="Discard the cached set and rebuild."),
+    user: AuthUser = Depends(get_current_user),
+) -> list[PracticeQuestion]:
+    """Get-or-generate the domain's practice questions."""
+    domain = _own_domain(domain_id, user.id)
+    client = _client()
+
+    if regenerate:
+        client.table("practice_questions").delete().eq(
+            "domain_id", domain_id
+        ).is_("exam_id", "null").execute()
+
+    existing = (
+        client.table("practice_questions").select("*")
+        .eq("domain_id", domain_id).is_("exam_id", "null")
+        .order("position").execute()
+    ).data or []
+
+    if not existing:
+        material = gather_domain_content(domain_id, user.id)
+        try:
+            generated = generate_practice_questions(
+                material["content"], count,
+                subject=material["subject"],
+                topic=domain.get("title") or "",
+            )
+        except GenerationError as exc:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+
+        rows = []
+        for i, q in enumerate(generated):
+            correct_idx = next(
+                (n for n, o in enumerate(q["options"])
+                 if o["label"] == q["correct_option"]), 0
+            )
+            # No user_id column on practice_questions — ownership flows through
+            # domain_id -> domains.user_id (enforced by _own_domain / _own_question).
+            rows.append({
+                "domain_id": domain_id,
+                "exam_id": None,
+                "kind": "mcq",
+                "prompt": q["question_text"],
+                "options": q["options"],
+                "correct_index": correct_idx,
+                "why_summary": q["why_summary"],
+                "position": i,
+                "points": 1,
+            })
+        existing = (
+            client.table("practice_questions").insert(rows).execute()
+        ).data or []
+        existing.sort(key=lambda r: r.get("position") or 0)
+
+    flagged = _flagged_ids(user.id, [r["id"] for r in existing])
+    return [_row_to_question(r, flagged=r["id"] in flagged) for r in existing]
+
+
+@router.post("/questions/{question_id}/submit-answer", response_model=AnswerResult)
+async def submit_answer(
+    question_id: str,
+    payload: SubmitAnswerRequest,
+    user: AuthUser = Depends(get_current_user),
+) -> AnswerResult:
+    """Reveal the answer: every option's explanation (cache-first) + Why Card.
+
+    Explanations are resolved here rather than at generation time, so they only
+    reach the client once an answer is committed.
+    """
+    q = _own_question(question_id, user.id)
+    options = q.get("options") or []
+    material = gather_domain_content(q["domain_id"], user.id)
+    explanations = _resolve_explanations(
+        q["domain_id"], user.id, options,
+        subject=material["subject"], question_text=q.get("prompt") or "",
+    )
+
+    answered = [
+        AnsweredOption(
+            label=(o.get("label") or "").strip(),
+            text=(o.get("text") or "").strip(),
+            term_key=(o.get("term_key") or "").strip(),
+            explanation=explanations.get((o.get("term_key") or "").strip(), ""),
+        )
+        for o in options
+    ]
+    correct = _correct_letter(q)
+    chosen = (payload.chosen_option or "").strip().upper()[:1]
+    return AnswerResult(
+        question_id=question_id,
+        chosen_option=chosen,
+        correct_option=correct,
+        is_correct=chosen == correct,
+        options=answered,
+        why_summary=q.get("why_summary") or "",
+    )
+
+
+@router.get("/{domain_id}/review-later", response_model=list[PracticeQuestion])
+async def review_later(
+    domain_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> list[PracticeQuestion]:
+    """The domain's questions the caller has flagged for review."""
+    _own_domain(domain_id, user.id)
+    client = _client()
+
+    flags = (
+        client.table("review_later").select("item_id")
+        .eq("user_id", user.id).eq("item_type", REVIEW_ITEM_TYPE).execute()
+    ).data or []
+    flagged_ids = [f["item_id"] for f in flags]
+    if not flagged_ids:
+        return []
+
+    rows = (
+        client.table("practice_questions").select("*")
+        .eq("domain_id", domain_id).in_("id", flagged_ids)
+        .order("position").execute()
+    ).data or []
+    return [_row_to_question(r, flagged=True) for r in rows]
+
+
+@router.post("/questions/{question_id}/flag", status_code=status.HTTP_204_NO_CONTENT)
+async def flag_question(
+    question_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> None:
+    """Add a question to Review Later (idempotent)."""
+    _own_question(question_id, user.id)
+    _client().table("review_later").upsert(
+        {"user_id": user.id, "item_type": REVIEW_ITEM_TYPE, "item_id": question_id},
+        on_conflict="user_id,item_type,item_id",
+    ).execute()
+
+
+def _remove_from_review(question_id: str, user_id: str) -> None:
+    _own_question(question_id, user_id)
+    _client().table("review_later").delete().eq("user_id", user_id).eq(
+        "item_type", REVIEW_ITEM_TYPE
+    ).eq("item_id", question_id).execute()
+
+
+@router.post("/questions/{question_id}/got-it", status_code=status.HTTP_204_NO_CONTENT)
+async def got_it(
+    question_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> None:
+    """"Got It" — remove a question from Review Later."""
+    _remove_from_review(question_id, user.id)
+
+
+@router.delete("/questions/{question_id}/flag", status_code=status.HTTP_204_NO_CONTENT)
+async def unflag_question(
+    question_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> None:
+    """Remove a question from Review Later (same as got-it; kept for symmetry)."""
+    _remove_from_review(question_id, user.id)

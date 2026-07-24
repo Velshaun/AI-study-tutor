@@ -1,0 +1,331 @@
+import { useMutation, useQuery } from '@tanstack/react-query'
+import {
+  AlertCircle,
+  ArrowLeft,
+  Download,
+  FileJson,
+  MoreVertical,
+  Share2,
+  Trash2,
+} from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+
+import Modal from '../components/Modal'
+import CourseContextCard from '../components/module/CourseContextCard'
+import DomainList from '../components/module/DomainList'
+import ImportedExamsCard from '../components/module/ImportedExamsCard'
+import SourcesCard from '../components/module/SourcesCard'
+import { useConfirm } from '../hooks/useConfirm'
+import { useToast } from '../hooks/useToast'
+import { ApiError, api } from '../lib/api'
+import { ROUTES } from '../routes'
+
+/**
+ * Module detail — the hub that create/upload/process/study/share/export all
+ * hang off (the screen flagged as the keystone across Prompts 7-9).
+ *
+ * While the pipeline runs, the module + sources queries poll every 4 seconds —
+ * the established pattern that mirrors a real client and catches concurrency
+ * bugs. Polling stops once the module reaches a terminal state.
+ */
+
+const PROCESSING = ['processing', 'parsing', 'analysing', 'queued']
+
+export default function ModuleDetail() {
+  const { id } = useParams()
+  const navigate = useNavigate()
+  const toast = useToast()
+
+  const moduleQuery = useQuery({
+    queryKey: ['module', id],
+    queryFn: ({ signal }) => api.module(id, signal),
+    refetchInterval: (query) =>
+      PROCESSING.includes(query.state.data?.status) ? 4000 : false,
+  })
+
+  const sourcesQuery = useQuery({
+    queryKey: ['sources', id],
+    queryFn: ({ signal }) => api.sources(id, signal),
+    refetchInterval: () =>
+      PROCESSING.includes(moduleQuery.data?.status) ? 4000 : false,
+  })
+
+  // Announce the moment processing finishes — the learner may be on another
+  // screen when the pipeline completes, so it's a genuine "it's ready" beat.
+  const prevStatus = useRef(null)
+  const status = moduleQuery.data?.status
+  useEffect(() => {
+    if (PROCESSING.includes(prevStatus.current) && status === 'ready') {
+      toast.success('Module ready!')
+    }
+    if (PROCESSING.includes(prevStatus.current) && status === 'failed') {
+      toast.error('Processing failed. Check your sources and try again.')
+    }
+    prevStatus.current = status
+  }, [status, toast])
+
+  if (moduleQuery.isPending) {
+    return (
+      <div className="space-y-4">
+        <div className="skeleton h-8 w-48" />
+        <div className="skeleton h-40 rounded-2xl" />
+      </div>
+    )
+  }
+
+  if (moduleQuery.error) {
+    const isAuth = moduleQuery.error instanceof ApiError && moduleQuery.error.isAuth
+    return (
+      <div className="card flex flex-col items-center gap-4 py-12 text-center">
+        <AlertCircle size={26} className="text-warning" aria-hidden="true" />
+        <p className="text-sm text-sec">
+          {isAuth ? 'Sign in to view this module.' : 'Module not found.'}
+        </p>
+        <button onClick={() => navigate(ROUTES.dashboard)} className="btn-secondary">
+          Back to dashboard
+        </button>
+      </div>
+    )
+  }
+
+  const module = moduleQuery.data
+  const sources = Array.isArray(sourcesQuery.data) ? sourcesQuery.data : []
+  const domains = module.domains || []
+  const ready = module.status === 'ready'
+
+  return (
+    <div className="space-y-6">
+      <header className="space-y-3">
+        <div className="flex items-center justify-between">
+          <button onClick={() => navigate(-1)} className="btn-ghost -ml-2">
+            <ArrowLeft size={16} aria-hidden="true" />
+            Back
+          </button>
+          <ModuleMenu module={module} onDeleted={() => navigate(ROUTES.dashboard)} />
+        </div>
+        <div>
+          <h1 className="text-2xl font-semibold text-pri">{module.title}</h1>
+          <p className="mt-0.5 text-sm text-sec">
+            {module.detected_subject ||
+              (module.status === 'failed'
+                ? module.error_message || 'Processing failed'
+                : PROCESSING.includes(module.status)
+                  ? 'Working on your study plan…'
+                  : 'Add sources to get started')}
+          </p>
+        </div>
+      </header>
+
+      {ready && domains.length > 0 && <DomainList domains={domains} />}
+
+      {ready && domains.length > 0 && <ImportedExamsCard moduleId={id} />}
+
+      <SourcesCard moduleId={id} sources={sources} moduleStatus={module.status} />
+
+      <CourseContextCard moduleId={id} />
+    </div>
+  )
+}
+
+/* --- actions menu (export / share / delete) ------------------------------ */
+function ModuleMenu({ module, onDeleted }) {
+  const confirm = useConfirm()
+  const toast = useToast()
+  const [open, setOpen] = useState(false)
+  const [showShare, setShowShare] = useState(false)
+
+  const del = useMutation({
+    mutationFn: () => api.deleteModule(module.id),
+    onSuccess: () => {
+      toast.success('Module deleted')
+      onDeleted()
+    },
+    onError: (e) => toast.error(e?.message || 'Could not delete module'),
+  })
+
+  const filename = (module.title || 'module').toLowerCase().replace(/[^a-z0-9]+/g, '-')
+
+  async function exportAs(kind) {
+    setOpen(false)
+    try {
+      if (kind === 'json') {
+        await api.exportModuleJson(module.id, `${filename}.json`)
+      } else {
+        await api.exportModulePdf(module.id, `${filename}.pdf`)
+      }
+      toast.success('Export downloaded')
+    } catch (e) {
+      toast.error(e?.message || 'Export failed')
+    }
+  }
+
+  async function confirmDelete() {
+    setOpen(false)
+    const ok = await confirm({
+      title: 'Delete module?',
+      message: `"${module.title}" and all its lectures, quizzes and cards will be permanently removed.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (ok) del.mutate()
+  }
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-label="Module actions"
+        className="btn-ghost size-11 rounded-full p-0"
+      >
+        <MoreVertical size={18} aria-hidden="true" />
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 z-20 mt-1 w-52 rounded-xl border border-border bg-surface p-1 shadow-lg">
+            <MenuItem
+              Icon={FileJson}
+              label="Export as JSON"
+              onClick={() => exportAs('json')}
+            />
+            <MenuItem
+              Icon={Download}
+              label="Export as PDF"
+              onClick={() => exportAs('pdf')}
+            />
+            <MenuItem
+              Icon={Share2}
+              label="Share to a group"
+              onClick={() => {
+                setShowShare(true)
+                setOpen(false)
+              }}
+            />
+            <div className="my-1 h-px bg-border" />
+            <MenuItem
+              Icon={Trash2}
+              label="Delete module"
+              danger
+              onClick={confirmDelete}
+            />
+          </div>
+        </>
+      )}
+
+      <ShareModal open={showShare} module={module} onClose={() => setShowShare(false)} />
+    </div>
+  )
+}
+
+function MenuItem({ Icon, label, onClick, danger }) {
+  return (
+    <button
+      onClick={onClick}
+      className={[
+        'flex min-h-11 w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors',
+        danger ? 'text-warning hover:bg-warning/10' : 'text-pri hover:bg-surface2',
+      ].join(' ')}
+    >
+      <Icon size={15} aria-hidden="true" />
+      {label}
+    </button>
+  )
+}
+
+/* --- share a domain to a group ------------------------------------------- */
+function ShareModal({ open, module, onClose }) {
+  const domains = (module.domains || []).filter((d) => d.status !== 'locked')
+
+  const { data: groups } = useQuery({
+    queryKey: ['groups'],
+    queryFn: ({ signal }) => api.groups(signal),
+    enabled: open,
+  })
+
+  const [domainId, setDomainId] = useState('')
+  const [groupId, setGroupId] = useState('')
+  const [done, setDone] = useState(false)
+
+  const share = useMutation({
+    mutationFn: () =>
+      api.shareDomain(groupId, {
+        domain_id: domainId,
+        share_lecture: true,
+        share_qa: false,
+      }),
+    onSuccess: () => setDone(true),
+  })
+
+  const ownedGroups = (groups || []).filter((g) => g.is_owner)
+
+  return (
+    <Modal open={open} title="Share a domain" onClose={onClose}>
+      {done ? (
+        <div className="space-y-4 text-center">
+          <p className="text-sm text-pri">Shared. Members can now study it.</p>
+          <button onClick={onClose} className="btn-primary w-full">
+            Done
+          </button>
+        </div>
+      ) : ownedGroups.length === 0 ? (
+        <p className="text-sm text-sec">
+          You need to own a group first. Create one from the Groups tab.
+        </p>
+      ) : domains.length === 0 ? (
+        <p className="text-sm text-sec">
+          This module has no unlocked domains to share yet.
+        </p>
+      ) : (
+        <div className="space-y-4">
+          <Field label="Domain">
+            <select
+              value={domainId}
+              onChange={(e) => setDomainId(e.target.value)}
+              className="input"
+            >
+              <option value="">Choose a domain…</option>
+              {domains.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.title}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Group">
+            <select
+              value={groupId}
+              onChange={(e) => setGroupId(e.target.value)}
+              className="input"
+            >
+              <option value="">Choose a group…</option>
+              {ownedGroups.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {share.error && <p className="text-sm text-warning">{share.error.message}</p>}
+          <button
+            onClick={() => share.mutate()}
+            disabled={!domainId || !groupId || share.isPending}
+            className="btn-primary w-full"
+          >
+            {share.isPending ? 'Sharing…' : 'Share'}
+          </button>
+        </div>
+      )}
+    </Modal>
+  )
+}
+
+function Field({ label, children }) {
+  return (
+    <label className="block space-y-1.5">
+      <span className="text-xs font-medium text-sec">{label}</span>
+      {children}
+    </label>
+  )
+}

@@ -1,0 +1,203 @@
+import { AnimatePresence, motion } from 'framer-motion'
+import { Check, RotateCcw, Star, Trash2, X } from 'lucide-react'
+import { useMemo, useState } from 'react'
+
+/**
+ * Swipeable flashcard deck — spec Prompt 6.5.
+ *
+ * Tap to flip (front ↔ back), swipe right to mark known, swipe left to skip.
+ * Both the drag gesture and the buttons below drive the same actions, so it's
+ * usable on desktop too. A progress counter tracks position; a summary screen
+ * closes the run with a "study again" reset.
+ *
+ * The flip is a 3D rotateY; the whole card is the drag target. `direction`
+ * carries the swipe so the exit animation flies the card off the matching side.
+ */
+
+const SWIPE_THRESHOLD = 100
+
+export default function FlashcardDeck({ cards, onFavourite, onDelete, onRestart }) {
+  const [index, setIndex] = useState(0)
+  const [flipped, setFlipped] = useState(false)
+  const [direction, setDirection] = useState(0)
+  const [known, setKnown] = useState(0)
+
+  const current = cards[index]
+  const done = index >= cards.length
+
+  const progress = useMemo(
+    () => (cards.length ? Math.round((index / cards.length) * 100) : 0),
+    [index, cards.length],
+  )
+
+  function advance(dir, countKnown) {
+    setDirection(dir)
+    if (countKnown) setKnown((k) => k + 1)
+    // Let the exit animation play, then move on.
+    setTimeout(() => {
+      setFlipped(false)
+      setIndex((i) => i + 1)
+      setDirection(0)
+    }, 180)
+  }
+
+  function onDragEnd(_event, info) {
+    if (info.offset.x > SWIPE_THRESHOLD) advance(1, true) // right = known
+    else if (info.offset.x < -SWIPE_THRESHOLD) advance(-1, false) // left = skip
+  }
+
+  function restart() {
+    setIndex(0)
+    setFlipped(false)
+    setKnown(0)
+    onRestart?.()
+  }
+
+  if (done) {
+    return (
+      <div className="card flex flex-col items-center gap-5 py-12 text-center">
+        <div className="flex size-14 items-center justify-center rounded-full bg-accent">
+          <Check size={28} className="text-white" aria-hidden="true" />
+        </div>
+        <div className="space-y-1">
+          <h2 className="text-lg font-semibold text-pri">Deck complete</h2>
+          <p className="text-sm text-sec">
+            You marked <span className="text-pri">{known}</span> of {cards.length}{' '}
+            as known.
+          </p>
+        </div>
+        <button onClick={restart} className="btn-primary">
+          <RotateCcw size={16} aria-hidden="true" />
+          Study again
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* Progress */}
+      <div className="space-y-1.5">
+        <div className="flex justify-between text-xs text-sec">
+          <span>
+            Card {index + 1} of {cards.length}
+          </span>
+          <span>{known} known</span>
+        </div>
+        <div className="h-1.5 overflow-hidden rounded-full bg-surface2">
+          <div
+            className="h-full rounded-full bg-accent transition-[width] duration-300"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      </div>
+
+      {/* Card */}
+      <div className="relative h-72" style={{ perspective: '1200px' }}>
+        <AnimatePresence custom={direction}>
+          <motion.div
+            key={current.id}
+            custom={direction}
+            drag="x"
+            dragConstraints={{ left: 0, right: 0 }}
+            dragElastic={0.6}
+            onDragEnd={onDragEnd}
+            initial={{ scale: 0.96, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1, x: 0 }}
+            exit={(dir) => ({
+              x: dir > 0 ? 400 : -400,
+              opacity: 0,
+              transition: { duration: 0.18 },
+            })}
+            onClick={() => setFlipped((f) => !f)}
+            className="absolute inset-0 cursor-pointer"
+          >
+            <motion.div
+              className="relative h-full w-full"
+              style={{ transformStyle: 'preserve-3d' }}
+              animate={{ rotateY: flipped ? 180 : 0 }}
+              transition={{ duration: 0.4 }}
+            >
+              {/* Front */}
+              <Face>
+                <span className="mb-3 text-xs font-medium uppercase tracking-wider text-sec">
+                  Question
+                </span>
+                <p className="text-lg font-medium text-pri">{current.front}</p>
+                <span className="mt-6 text-xs text-sec">Tap to flip</span>
+              </Face>
+              {/* Back */}
+              <Face back>
+                <span className="mb-3 text-xs font-medium uppercase tracking-wider text-accent2">
+                  Answer
+                </span>
+                <p className="text-base leading-relaxed text-pri">{current.back}</p>
+              </Face>
+            </motion.div>
+          </motion.div>
+        </AnimatePresence>
+      </div>
+
+      {/* Per-card actions */}
+      <div className="flex items-center justify-center gap-2">
+        <button
+          onClick={() => onFavourite?.(current)}
+          aria-label={current.is_favourite ? 'Unfavourite' : 'Favourite'}
+          className="btn-ghost size-10 rounded-full p-0"
+        >
+          <Star
+            size={18}
+            className={current.is_favourite ? 'fill-warning text-warning' : ''}
+            aria-hidden="true"
+          />
+        </button>
+        <button
+          onClick={() => onDelete?.(current)}
+          aria-label="Delete card"
+          className="btn-ghost size-10 rounded-full p-0 hover:text-warning"
+        >
+          <Trash2 size={18} aria-hidden="true" />
+        </button>
+      </div>
+
+      {/* Swipe controls (also work by dragging the card) */}
+      <div className="flex items-center justify-center gap-4">
+        <button
+          onClick={() => advance(-1, false)}
+          className="flex size-14 items-center justify-center rounded-full border border-border
+                     text-sec transition-colors hover:border-warning hover:text-warning"
+          aria-label="Skip — swipe left"
+        >
+          <X size={24} aria-hidden="true" />
+        </button>
+        <button
+          onClick={() => advance(1, true)}
+          className="flex size-14 items-center justify-center rounded-full bg-success text-white
+                     transition-transform hover:scale-105"
+          aria-label="Known — swipe right"
+        >
+          <Check size={24} aria-hidden="true" />
+        </button>
+      </div>
+      <p className="text-center text-xs text-sec">
+        Swipe right if you knew it, left to skip
+      </p>
+    </div>
+  )
+}
+
+/** One face of the card. `back` pre-rotates it so the flip reveals it. */
+function Face({ back = false, children }) {
+  return (
+    <div
+      className="absolute inset-0 flex flex-col items-center justify-center rounded-2xl
+                 border border-border bg-surface p-6 text-center"
+      style={{
+        backfaceVisibility: 'hidden',
+        transform: back ? 'rotateY(180deg)' : undefined,
+      }}
+    >
+      {children}
+    </div>
+  )
+}
