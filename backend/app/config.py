@@ -50,6 +50,15 @@ class Settings:
                 "http://localhost:5173", "http://127.0.0.1:5173",
             ],
         )
+        # An origin is allowed if it's in CORS_ORIGINS above OR matches this
+        # regex. The default clears any Vercel deployment (production + preview
+        # URLs) and any localhost port, so the deployed frontend works without
+        # pinning its exact origin — a missing origin here is what turns a POST's
+        # CORS preflight into a 405.
+        self.cors_origin_regex: str = os.getenv(
+            "CORS_ORIGIN_REGEX",
+            r"https://.*\.vercel\.app|http://localhost:\d+|http://127\.0\.0\.1:\d+",
+        )
 
         # --- Supabase ------------------------------------------------------
         self.supabase_url: str = os.getenv("SUPABASE_URL", "")
