@@ -175,6 +175,21 @@
   }
 }
 
+/* Gradient page-title text (white → accent), used by <PageTitle>. Theme-safe:
+   the light theme starts from graphite so the leading half stays legible on a
+   light ground. */
+.title-gradient {
+  background-image: linear-gradient(to right, #ffffff, var(--color-accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  /* Stop background-clip:text from shaving descenders (the 'g' in Groups). */
+  padding-bottom: 0.06em;
+}
+:root.light .title-gradient {
+  background-image: linear-gradient(to right, #1b1b22, var(--color-accent));
+}
+
 /* ---------------------------------------------------------------------------
    Primitives
 
