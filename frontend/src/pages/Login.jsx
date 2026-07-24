@@ -48,7 +48,7 @@ export default function Login() {
             <GraduationCap size={32} className="text-white" aria-hidden="true" />
           </div>
           <div className="space-y-1.5">
-            <h1 className="text-2xl font-semibold text-pri">AI Study Tutor</h1>
+            <h1 className="text-2xl font-semibold text-pri">ConverseAI Tutor</h1>
             <p className="text-sm text-sec">
               Sign in to pick up your modules and progress.
             </p>

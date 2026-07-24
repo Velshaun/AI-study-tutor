@@ -275,7 +275,7 @@ function StepWelcome({ reduceMotion }) {
       </motion.div>
 
       <div className="space-y-2">
-        <h1 className="text-3xl font-semibold text-pri">AI Study Tutor</h1>
+        <h1 className="text-3xl font-semibold text-pri">ConverseAI Tutor</h1>
         <p className="text-sm text-sec">
           Turn your course material into interactive lectures, flashcards and
           timed practice exams — built around the official exam blueprint.

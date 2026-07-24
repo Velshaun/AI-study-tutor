@@ -1,16 +1,20 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="AI Study Tutor">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#6C63FF"/>
-      <stop offset="1" stop-color="#8B85FF"/>
-    </linearGradient>
-  </defs>
-  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
-  <!-- Graduation cap, centred within the maskable safe zone (~ inner 80%). -->
-  <g fill="#FFFFFF">
-    <path d="M256 150 L406 214 L256 278 L106 214 Z"/>
-    <path d="M166 250 L166 322 C166 350 210 368 256 368 C302 368 346 350 346 322 L346 250 L256 288 Z" opacity="0.92"/>
-    <path d="M406 214 L406 300" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round"/>
-    <circle cx="406" cy="312" r="16"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="ConverseAI Tutor">
+  <!-- Full-bleed dark ground so the icon masks cleanly on any launcher. -->
+  <rect width="512" height="512" fill="#0F0F0F"/>
+
+  <!-- Speech bubble = rounded body + a pulse-wave tail (same fill, merged).
+       Content sits inside the maskable safe zone (central ~80%). -->
+  <g fill="#6C63FF">
+    <path d="M190 300 L150 372 Q142 386 158 382 L236 322 Z"/>
+    <rect x="128" y="138" width="256" height="190" rx="58"/>
   </g>
+
+  <!-- Neural pulse wave carved out of the bubble as negative space. -->
+  <polyline
+    points="158,233 188,233 206,210 224,256 248,180 272,258 296,208 324,233 354,233"
+    fill="none" stroke="#0F0F0F" stroke-width="16"
+    stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Single focal node at the peak — the "idea" reads as neural, not just audio. -->
+  <circle cx="248" cy="180" r="7" fill="#6C63FF"/>
 </svg>

@@ -86,7 +86,7 @@ export default function InstallPrompt() {
                  bottom-[calc(5.5rem+env(safe-area-inset-bottom))]
                  md:bottom-[calc(1.5rem+env(safe-area-inset-bottom))]"
       role="dialog"
-      aria-label="Install AI Study Tutor"
+      aria-label="Install ConverseAI Tutor"
     >
       <div className="flex items-start gap-3 rounded-2xl border border-border bg-surface2 p-4 shadow-xl">
         <img src="/pwa-icon.svg" alt="" className="size-11 shrink-0 rounded-xl" />
@@ -94,7 +94,7 @@ export default function InstallPrompt() {
           <p className="text-sm font-semibold text-pri">Add to your home screen</p>
           {deferred ? (
             <p className="mt-0.5 text-xs text-sec">
-              Install AI Study Tutor for full-screen study and offline access.
+              Install ConverseAI Tutor for full-screen study and offline access.
             </p>
           ) : (
             <p className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-sec">

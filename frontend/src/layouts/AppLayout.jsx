@@ -37,7 +37,7 @@ export default function AppLayout() {
       {/* Sidebar (md+) */}
       <aside className="hidden border-r border-border bg-surface md:flex md:w-60 md:shrink-0 md:flex-col md:gap-1 md:p-4">
         <p className="px-3 pb-4 pt-2 text-sm font-semibold text-pri">
-          AI Study Tutor
+          ConverseAI Tutor
         </p>
         <nav className="flex flex-col gap-1">
           {TABS.map(({ to, label, Icon, end }) => (

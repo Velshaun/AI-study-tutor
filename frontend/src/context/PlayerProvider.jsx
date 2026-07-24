@@ -317,7 +317,7 @@ export function PlayerProvider({ children }) {
     navigator.mediaSession.metadata = new window.MediaMetadata({
       title: lecture.title || 'Lecture',
       artist: lecture.tutor_voice === 'sophia' ? 'Sophia' : 'Marcus',
-      album: 'AI Study Tutor',
+      album: 'ConverseAI Tutor',
       artwork: [
         { src: '/artwork-512.png', sizes: '512x512', type: 'image/png' },
         { src: '/artwork-192.png', sizes: '192x192', type: 'image/png' },

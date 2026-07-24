@@ -63,7 +63,7 @@ export default function DesignSystem() {
       <div className="mx-auto max-w-3xl space-y-10 px-5 py-12">
         <header className="space-y-2">
           <span className="chip-accent">Design system</span>
-          <h1 className="text-3xl font-semibold text-pri">AI Study Tutor</h1>
+          <h1 className="text-3xl font-semibold text-pri">ConverseAI Tutor</h1>
           <p className="text-sm text-sec">
             Dark-first theme, single purple accent. Tokens live in{' '}
             <code className="rounded bg-surface2 px-1.5 py-0.5 text-xs text-accent2">

@@ -35,7 +35,7 @@ class Settings:
 
     def __init__(self) -> None:
         # --- App -----------------------------------------------------------
-        self.app_name: str = os.getenv("APP_NAME", "AI Study Tutor")
+        self.app_name: str = os.getenv("APP_NAME", "ConverseAI Tutor")
         self.environment: str = os.getenv("ENVIRONMENT", "development")
         self.debug: bool = _get_bool("DEBUG", self.environment != "production")
         self.host: str = os.getenv("HOST", "0.0.0.0")

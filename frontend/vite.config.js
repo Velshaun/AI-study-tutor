@@ -16,8 +16,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'pwa-icon.svg'],
       manifest: {
-        name: 'AI Study Tutor',
-        short_name: 'Study Tutor',
+        name: 'ConverseAI Tutor',
+        short_name: 'ConverseAI',
         description:
           'Turn your course material into interactive AI lectures, flashcards, quizzes and timed practice exams.',
         theme_color: '#6C63FF',
