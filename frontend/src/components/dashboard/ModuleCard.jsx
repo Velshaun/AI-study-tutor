@@ -1,31 +1,101 @@
-import { ChevronRight, FileText } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { ChevronRight, FileText, Pencil } from 'lucide-react'
+import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
+import { api } from '../../lib/api'
 import { domainPillClass } from '../../lib/format'
 import { path } from '../../routes'
 
 /**
  * Module card with domain progress pills (§5.4).
  *
- * The list endpoint returns counts, not per-domain state, so pills render from
- * `domains` when a caller has them and fall back to a plain count otherwise —
- * fetching every module's domains just to colour the pills would be an N+1 on
- * the dashboard.
+ * The AI names the module during processing; the learner can rename it here by
+ * tapping the title (inline edit, no separate screen). The card itself is a
+ * click/keyboard target that opens the module — the title's own click is stopped
+ * so tapping the name edits rather than navigates.
  */
 export default function ModuleCard({ module }) {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const domains = module.domains ?? []
   const processing = module.status !== 'ready' && module.status !== 'failed'
 
+  const [editing, setEditing] = useState(false)
+  const [name, setName] = useState(module.title || '')
+
+  const rename = useMutation({
+    mutationFn: (title) => api.renameModule(module.id, title),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['modules'] }),
+  })
+
+  function open() {
+    if (!editing) navigate(path('module', { id: module.id }))
+  }
+  function startEdit(e) {
+    e.stopPropagation()
+    setName(module.title || '')
+    setEditing(true)
+  }
+  function commit() {
+    const next = name.trim()
+    setEditing(false)
+    if (next && next !== module.title) rename.mutate(next)
+  }
+
   return (
-    <Link
-      to={path('module', { id: module.id })}
-      className="card-interactive block"
+    <div
+      onClick={open}
+      onKeyDown={(e) => {
+        if (!editing && (e.key === 'Enter' || e.key === ' ')) {
+          e.preventDefault()
+          open()
+        }
+      }}
+      role="button"
+      tabIndex={0}
+      className="card-interactive block cursor-pointer"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <p className="truncate text-base font-semibold text-pri">
-            {module.title}
-          </p>
+          {editing ? (
+            <input
+              autoFocus
+              value={name}
+              maxLength={200}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => setName(e.target.value)}
+              onBlur={commit}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  commit()
+                } else if (e.key === 'Escape') {
+                  setName(module.title || '')
+                  setEditing(false)
+                }
+              }}
+              className="w-full rounded-lg border border-accent bg-surface2 px-2 py-1
+                         text-base font-semibold text-pri focus:outline-none"
+              aria-label="Module name"
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={startEdit}
+              title="Rename module"
+              className="group flex max-w-full items-center gap-1.5 text-left"
+            >
+              <span className="truncate text-base font-semibold text-pri">
+                {module.title || 'Processing…'}
+              </span>
+              <Pencil
+                size={13}
+                className="shrink-0 text-sec opacity-0 transition-opacity group-hover:opacity-100"
+                aria-hidden="true"
+              />
+            </button>
+          )}
           <p className="mt-0.5 truncate text-xs text-sec">
             {module.detected_subject || `${module.source_count ?? 0} source(s)`}
             {module.domain_count > 0 && ` · ${module.domain_count} domains`}
@@ -67,6 +137,6 @@ export default function ModuleCard({ module }) {
           </div>
         )
       )}
-    </Link>
+    </div>
   )
 }

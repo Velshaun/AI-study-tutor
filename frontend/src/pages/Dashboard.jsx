@@ -1,34 +1,35 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, LogIn, Plus, RefreshCw } from 'lucide-react'
-import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { AlertCircle, Loader2, LogIn, Plus, RefreshCw, Upload } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 
-import FirstRunEmpty from '../components/dashboard/EmptyState'
 import KpiRow from '../components/dashboard/KpiRow'
 import ModuleCard from '../components/dashboard/ModuleCard'
 import ResumeCard from '../components/dashboard/ResumeCard'
 import EmptyState from '../components/EmptyState'
-import Modal from '../components/Modal'
 import PageTitle from '../components/PageTitle'
 import SectionHeader from '../components/SectionHeader'
 import { api, ApiError } from '../lib/api'
+import { useToast } from '../hooks/useToast'
 import { ROUTES } from '../routes'
 
 /**
  * Dashboard — spec §5.4.
  *
- * Two independent queries, so a slow module list doesn't hold up the KPI row
- * and each can retry on its own.
- *
- * Sign-in doesn't exist yet, so an auth failure gets its own state rather than
- * the error state. Treating "not signed in" as a server error would leave a
- * new visitor staring at a red box telling them to retry something that cannot
- * succeed.
+ * Modules are created by *uploading*, never by a form: dropping or picking a
+ * file creates a module, attaches the source and kicks off the pipeline, which
+ * auto-names the module from the detected subject. The learner never types a
+ * name (they can rename later, on the card). The module list polls while
+ * anything is processing so the AI name and "ready" state land on their own.
  */
+
+const PROCESSING = ['processing', 'parsing', 'analysing', 'queued']
+const ACCEPT = '.pdf,.txt,.md,.mp3,.wav,.m4a,.mp4,.ogg,.webm,.flac,.mpga'
+
 export default function Dashboard() {
-  const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const [showCreate, setShowCreate] = useState(false)
+  const toast = useToast()
+  const fileInput = useRef(null)
 
   const dashboardQuery = useQuery({
     queryKey: ['dashboard'],
@@ -38,19 +39,39 @@ export default function Dashboard() {
   const modulesQuery = useQuery({
     queryKey: ['modules'],
     queryFn: ({ signal }) => api.modules(signal),
+    // Poll while any module is still being built, so its AI-generated name and
+    // ready state appear without a manual refresh.
+    refetchInterval: (query) =>
+      Array.isArray(query.state.data) &&
+      query.state.data.some((m) => PROCESSING.includes(m.status))
+        ? 4000
+        : false,
   })
 
-  const create = useMutation({
-    mutationFn: (title) => api.createModule({ title }),
+  // Upload = create module → attach sources → start pipeline. One action, no
+  // name prompt. The backend names the module from the detected subject.
+  const upload = useMutation({
+    mutationFn: async (files) => {
+      const list = Array.from(files || [])
+      if (!list.length) return null
+      const module = await api.createModule()
+      await api.uploadSources(module.id, list)
+      await api.processModule(module.id)
+      return module
+    },
     onSuccess: (module) => {
       queryClient.invalidateQueries({ queryKey: ['modules'] })
-      setShowCreate(false)
-      // Straight to the new module so they can add sources.
-      navigate(`/module/${module.id}`)
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      if (module) toast.success('Upload received — building your module…')
     },
+    onError: (e) => toast.error(e?.message || 'Upload failed. Please try again.'),
   })
 
-  const openCreate = () => setShowCreate(true)
+  const openPicker = () => fileInput.current?.click()
+  const handleFiles = (files) => {
+    const list = Array.from(files || [])
+    if (list.length) upload.mutate(list)
+  }
 
   const isLoading = dashboardQuery.isPending || modulesQuery.isPending
   const failure = dashboardQuery.error || modulesQuery.error
@@ -71,6 +92,21 @@ export default function Dashboard() {
     dashboardQuery.refetch()
     modulesQuery.refetch()
   }
+
+  // One hidden input drives every upload entry point (empty zone, header, FAB).
+  const hiddenInput = (
+    <input
+      ref={fileInput}
+      type="file"
+      multiple
+      accept={ACCEPT}
+      className="hidden"
+      onChange={(e) => {
+        handleFiles(e.target.files)
+        e.target.value = ''
+      }}
+    />
+  )
 
   if (state === 'loading') return <DashboardSkeleton />
 
@@ -116,11 +152,15 @@ export default function Dashboard() {
   const isEmpty = modules.length === 0
 
   return (
-    <Shell onNew={openCreate}>
+    <Shell onUpload={openPicker}>
+      {hiddenInput}
+
       {isEmpty ? (
-        <div className="flex min-h-[46vh] items-center justify-center">
-          <FirstRunEmpty onUpload={openCreate} />
-        </div>
+        <UploadZone
+          onPick={openPicker}
+          onFiles={handleFiles}
+          busy={upload.isPending}
+        />
       ) : (
         <>
           {resume && <ResumeCard resume={resume} />}
@@ -142,73 +182,112 @@ export default function Dashboard() {
         </>
       )}
 
-      {/* New Module FAB — mobile only. The md+ layout has room for a normal
-          button in the header, where a floating one would overlap content. */}
+      {/* Upload FAB — mobile only. The md+ layout uses the header button. */}
       {!isEmpty && (
         <button
-          onClick={openCreate}
-          aria-label="New module"
+          onClick={openPicker}
+          aria-label="Upload a source"
           className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-5 z-30
                      flex size-14 items-center justify-center rounded-full bg-accent
                      text-white shadow-lg shadow-accent/25 transition-colors
                      hover:bg-accent2 md:hidden"
         >
-          <Plus size={26} aria-hidden="true" />
+          {upload.isPending ? (
+            <Loader2 size={24} className="animate-spin" aria-hidden="true" />
+          ) : (
+            <Plus size={26} aria-hidden="true" />
+          )}
         </button>
       )}
-
-      <CreateModuleModal
-        open={showCreate}
-        onClose={() => setShowCreate(false)}
-        onSubmit={create.mutate}
-        pending={create.isPending}
-        error={create.error?.message}
-      />
     </Shell>
   )
 }
 
-function CreateModuleModal({ open, onClose, onSubmit, pending, error }) {
-  const [title, setTitle] = useState('')
+/**
+ * First-run upload target: drag & drop or click. Depth counter keeps the
+ * highlight steady while the cursor moves over the zone's own children.
+ */
+function UploadZone({ onPick, onFiles, busy }) {
+  const depth = useRef(0)
+  const [dragging, setDragging] = useState(false)
+
+  function onDragEnter(e) {
+    e.preventDefault()
+    if (![...(e.dataTransfer?.types || [])].includes('Files')) return
+    depth.current += 1
+    setDragging(true)
+  }
+  function onDragOver(e) {
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+  }
+  function onDragLeave() {
+    depth.current = Math.max(0, depth.current - 1)
+    if (depth.current === 0) setDragging(false)
+  }
+  function onDrop(e) {
+    e.preventDefault()
+    depth.current = 0
+    setDragging(false)
+    onFiles(e.dataTransfer.files)
+  }
+
   return (
-    <Modal open={open} title="New module" onClose={onClose}>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault()
-          if (title.trim()) onSubmit(title.trim())
-        }}
-        className="space-y-4"
+    <div className="flex min-h-[46vh] items-center justify-center">
+      <button
+        type="button"
+        onClick={onPick}
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+        className={[
+          'flex w-full max-w-md flex-col items-center gap-5 rounded-2xl border-2 px-6 py-16',
+          'text-center transition-colors',
+          dragging
+            ? 'border-solid border-accent bg-accent/10'
+            : 'border-dashed border-border hover:border-accent/50',
+        ].join(' ')}
       >
-        <input
-          autoFocus
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          placeholder="Module name (e.g. AWS Solutions Architect)"
-          className="input"
-        />
-        {error && <p className="text-sm text-warning">{error}</p>}
-        <button
-          type="submit"
-          disabled={pending || !title.trim()}
-          className="btn-primary w-full"
-        >
-          {pending ? 'Creating…' : 'Create module'}
-        </button>
-      </form>
-    </Modal>
+        <div className="flex size-16 items-center justify-center rounded-2xl bg-accent/10 text-accent2">
+          {busy ? (
+            <Loader2 size={30} className="animate-spin" aria-hidden="true" />
+          ) : (
+            <Upload size={30} aria-hidden="true" />
+          )}
+        </div>
+        <div className="space-y-1.5">
+          <p className={`text-base font-semibold ${dragging ? 'text-accent2' : 'text-pri'}`}>
+            {busy
+              ? 'Building your module…'
+              : dragging
+                ? 'Drop to upload'
+                : 'Drag & drop or click to upload'}
+          </p>
+          <p className="mx-auto max-w-xs text-sm leading-relaxed text-sec">
+            {busy
+              ? 'Reading your source and detecting the subject.'
+              : 'Upload a syllabus, lecture recording or notes. We’ll detect the exam and build your study plan — no naming needed.'}
+          </p>
+        </div>
+        {!busy && !dragging && (
+          <span className="text-xs text-sec">PDF, audio (MP3, WAV, M4A) or text</span>
+        )}
+      </button>
+    </div>
   )
 }
 
-function Shell({ children, onNew }) {
+function Shell({ children, onUpload }) {
   return (
     <div className="space-y-8">
       <PageTitle
         subtitle="Your modules and progress."
         actions={
-          onNew && (
-            <button onClick={onNew} className="btn-primary hidden md:inline-flex">
-              <Plus size={16} aria-hidden="true" />
-              New module
+          onUpload && (
+            <button onClick={onUpload} className="btn-primary hidden md:inline-flex">
+              <Upload size={16} aria-hidden="true" />
+              Upload
             </button>
           )
         }

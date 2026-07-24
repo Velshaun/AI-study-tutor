@@ -34,6 +34,10 @@ export default function SourcesCard({ moduleId, sources, moduleStatus }) {
   const queryClient = useQueryClient()
   const confirm = useConfirm()
   const fileInput = useRef(null)
+  // Depth counter for drag enter/leave: dragging over the zone's own children
+  // (icon, labels) fires leave/enter, so a plain boolean flickers. Counting
+  // keeps the highlight steady until the cursor truly leaves the zone.
+  const dragDepth = useRef(0)
   const [dragging, setDragging] = useState(false)
   const [linkUrl, setLinkUrl] = useState('')
   const [error, setError] = useState(null)
@@ -82,6 +86,32 @@ export default function SourcesCard({ moduleId, sources, moduleStatus }) {
     if (list.length) upload.mutate(list)
   }
 
+  // --- Drag & drop (desktop). Dropped files go through the same `pick` handler
+  // as the file picker — one code path, one set of validation/processing. Drag
+  // events never fire from a touch tap, so mobile keeps its tap-to-upload flow
+  // untouched.
+  function onDragEnter(e) {
+    e.preventDefault()
+    // Ignore drags that aren't files (selected text, page elements, …).
+    if (![...(e.dataTransfer?.types || [])].includes('Files')) return
+    dragDepth.current += 1
+    setDragging(true)
+  }
+  function onDragOver(e) {
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+  }
+  function onDragLeave() {
+    dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) setDragging(false)
+  }
+  function onDrop(e) {
+    e.preventDefault()
+    dragDepth.current = 0
+    setDragging(false)
+    pick(e.dataTransfer.files)
+  }
+
   const processing = ['processing', 'parsing', 'analysing', 'queued'].includes(
     moduleStatus,
   )
@@ -96,37 +126,42 @@ export default function SourcesCard({ moduleId, sources, moduleStatus }) {
         </span>
       </div>
 
-      {/* Drop zone */}
+      {/* Drop zone — three states: default (dashed), drag-over (solid purple +
+          tint), uploading (spinner). */}
       <button
         type="button"
         onClick={() => fileInput.current?.click()}
-        onDragOver={(e) => {
-          e.preventDefault()
-          setDragging(true)
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(e) => {
-          e.preventDefault()
-          setDragging(false)
-          pick(e.dataTransfer.files)
-        }}
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
         className={[
-          'flex w-full flex-col items-center gap-2 rounded-xl border-2 border-dashed px-4 py-8',
+          'flex w-full flex-col items-center gap-2 rounded-xl border-2 px-4 py-8',
           'text-center transition-colors',
-          dragging ? 'border-accent bg-surface2' : 'border-border hover:border-accent/50',
+          dragging
+            ? 'border-solid border-accent bg-accent/10'
+            : 'border-dashed border-border hover:border-accent/50',
         ].join(' ')}
       >
         {upload.isPending ? (
           <Loader2 size={22} className="animate-spin text-accent" aria-hidden="true" />
         ) : (
-          <Upload size={22} className="text-sec" aria-hidden="true" />
+          <Upload
+            size={22}
+            className={dragging ? 'text-accent2' : 'text-sec'}
+            aria-hidden="true"
+          />
         )}
-        <span className="text-sm text-pri">
-          {upload.isPending ? 'Uploading…' : 'Drop files or tap to upload'}
+        <span className={`text-sm ${dragging ? 'font-medium text-accent2' : 'text-pri'}`}>
+          {upload.isPending
+            ? 'Uploading…'
+            : dragging
+              ? 'Drop to upload'
+              : 'Drag & drop or click to upload'}
         </span>
-        <span className="text-xs text-sec">
-          PDF, audio (MP3, WAV, M4A) or text
-        </span>
+        {!dragging && (
+          <span className="text-xs text-sec">PDF, audio (MP3, WAV, M4A) or text</span>
+        )}
       </button>
       <input
         ref={fileInput}

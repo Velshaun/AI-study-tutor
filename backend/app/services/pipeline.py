@@ -157,7 +157,7 @@ def process_module(module_id: str, user_id: str) -> dict[str, Any]:
         module = (
             get_supabase()
             .table("modules")
-            .select("course_context, course_context_source")
+            .select("title, course_context, course_context_source")
             .eq("id", module_id)
             .limit(1)
             .execute()
@@ -167,6 +167,7 @@ def process_module(module_id: str, user_id: str) -> dict[str, Any]:
             if module[0].get("course_context_source") == "user"
             else None
         )
+        current_title = (module[0].get("title") or "").strip()
         if user_context:
             logger.info(
                 "Module %s: applying %d chars of user course context",
@@ -187,6 +188,11 @@ def process_module(module_id: str, user_id: str) -> dict[str, Any]:
             "weighting_sources": sources,
             "processed_at": _now_iso(),
         }
+        # Auto-name the module from the detected subject — but only when it has
+        # no title yet, so a name the learner set by hand is never clobbered.
+        if not current_title:
+            extra["title"] = (result.get("subject") or "Untitled module").strip()[:200]
+
         # Never overwrite a syllabus the learner supplied — Gemini's own
         # description of the course only fills an otherwise-empty field.
         if not user_context:

@@ -29,7 +29,9 @@ MAX_COURSE_CONTEXT_CHARS = 50_000
 
 # --- Schemas --------------------------------------------------------------
 class ModuleCreate(BaseModel):
-    title: str = Field(..., min_length=1, max_length=200)
+    # Optional: the pipeline auto-names the module from the detected subject, so
+    # a learner never types a name. A supplied title is still honoured.
+    title: str | None = Field(default=None, max_length=200)
     description: str = ""
     color: str = "#6C63FF"
 
@@ -244,10 +246,14 @@ async def create_module(
     payload: ModuleCreate,
     user: AuthUser = Depends(get_current_user),
 ) -> Module:
-    """Create an empty module, ready for sources to be uploaded into it."""
+    """Create an empty module, ready for sources to be uploaded into it.
+
+    The title is left blank when not supplied — the pipeline fills it in from the
+    detected subject once sources are processed, so the learner never names it.
+    """
     row = {
         "user_id": user.id,
-        "title": payload.title,
+        "title": (payload.title or "").strip(),
         "description": payload.description,
         "color": payload.color,
         "status": "processing",

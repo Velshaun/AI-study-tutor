@@ -120,7 +120,9 @@ export const api = {
   dashboard: (signal) => apiFetch('/stats/dashboard', { signal }),
   modules: (signal) => apiFetch('/modules', { signal }),
   module: (id, signal) => apiFetch(`/modules/${id}`, { signal }),
-  createModule: (body) => apiFetch('/modules', { method: 'POST', body }),
+  createModule: (body = {}) => apiFetch('/modules', { method: 'POST', body }),
+  renameModule: (id, title) =>
+    apiFetch(`/modules/${id}`, { method: 'PATCH', body: { title } }),
   deleteModule: (id) => apiFetch(`/modules/${id}`, { method: 'DELETE' }),
 
   // Sources & processing pipeline
