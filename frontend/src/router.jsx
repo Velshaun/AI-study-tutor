@@ -5,6 +5,7 @@
 
 import { lazy } from 'react'
 
+import { PublicOnly, RequireAuth } from './components/AuthGuards'
 import AppLayout from './layouts/AppLayout'
 import RootLayout from './layouts/RootLayout'
 import { ROUTES } from './routes'
@@ -48,34 +49,50 @@ export const routeConfig = [
   {
     element: <RootLayout />,
     children: [
-      // Public + immersive screens — no app shell.
-      { path: ROUTES.login, element: <Login /> },
-      { path: ROUTES.onboarding, element: <Onboarding /> },
-      { path: ROUTES.lecture, element: <LecturePlayer /> },
-
-      // Everything else renders inside the shell.
+      // The only screen a signed-out visitor can reach. An already-authenticated
+      // user is redirected away from it.
       {
-        element: <AppLayout />,
-        children: [
-          { path: ROUTES.dashboard, element: <Dashboard /> },
-          { path: ROUTES.module, element: <ModuleDetail /> },
-          { path: ROUTES.flashcards, element: <Flashcards /> },
-          { path: ROUTES.quizzes, element: <Quizzes /> },
-          { path: ROUTES.practice, element: <PracticeExam /> },
-          { path: ROUTES.practiceMode, element: <PracticeMode /> },
-          { path: ROUTES.reviewLater, element: <ReviewLater /> },
-          { path: ROUTES.qaReview, element: <QAReview /> },
-          { path: ROUTES.groups, element: <Groups /> },
-          { path: ROUTES.settings, element: <Settings /> },
-          { path: ROUTES.favourites, element: <Favourites /> },
-
-          // Not in the spec's list: the §5.1 design system reference. Kept
-          // reachable for development, absent from navigation.
-          { path: '/design', element: <DesignSystem /> },
-        ],
+        element: <PublicOnly />,
+        children: [{ path: ROUTES.login, element: <Login /> }],
       },
 
-      { path: '*', element: <NotFound /> },
+      // Everything else requires a session. RequireAuth redirects the
+      // unauthenticated to /login before any of these screens — or the app
+      // shell, or the catch-all — can render.
+      {
+        element: <RequireAuth />,
+        children: [
+          // Immersive screens — no app shell.
+          { path: ROUTES.onboarding, element: <Onboarding /> },
+          { path: ROUTES.lecture, element: <LecturePlayer /> },
+
+          // Everything else renders inside the shell.
+          {
+            element: <AppLayout />,
+            children: [
+              { path: ROUTES.dashboard, element: <Dashboard /> },
+              { path: ROUTES.module, element: <ModuleDetail /> },
+              { path: ROUTES.flashcards, element: <Flashcards /> },
+              { path: ROUTES.quizzes, element: <Quizzes /> },
+              { path: ROUTES.practice, element: <PracticeExam /> },
+              { path: ROUTES.practiceMode, element: <PracticeMode /> },
+              { path: ROUTES.reviewLater, element: <ReviewLater /> },
+              { path: ROUTES.qaReview, element: <QAReview /> },
+              { path: ROUTES.groups, element: <Groups /> },
+              { path: ROUTES.settings, element: <Settings /> },
+              { path: ROUTES.favourites, element: <Favourites /> },
+
+              // Not in the spec's list: the §5.1 design system reference. Kept
+              // reachable for development, absent from navigation.
+              { path: '/design', element: <DesignSystem /> },
+            ],
+          },
+
+          // Unknown paths: an authenticated user gets Not Found; a signed-out
+          // one is redirected to /login by RequireAuth above.
+          { path: '*', element: <NotFound /> },
+        ],
+      },
     ],
   },
 ]

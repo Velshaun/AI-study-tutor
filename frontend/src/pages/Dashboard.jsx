@@ -130,9 +130,13 @@ export default function Dashboard() {
             <h2 className="text-xs font-semibold uppercase tracking-widest text-sec">
               Your modules
             </h2>
-            <div className="grid gap-3 sm:grid-cols-2">
+            {/* Flex-centered rather than a 2-col grid so any count stays
+                centered — a lone card would otherwise hug the left cell. */}
+            <div className="flex flex-wrap justify-center gap-3">
               {modules.map((module) => (
-                <ModuleCard key={module.id} module={module} />
+                <div key={module.id} className="w-full sm:w-80">
+                  <ModuleCard module={module} />
+                </div>
               ))}
             </div>
           </section>
