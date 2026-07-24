@@ -3,19 +3,23 @@ import {
   AlertCircle,
   Download,
   FileJson,
+  FileText,
+  Loader2,
   MoreVertical,
+  Plus,
   Share2,
+  Sparkles,
   Trash2,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import Modal from '../components/Modal'
+import AddSourceSheet from '../components/module/AddSourceSheet'
 import CourseContextCard from '../components/module/CourseContextCard'
-import DomainList from '../components/module/DomainList'
 import ImportedExamsCard from '../components/module/ImportedExamsCard'
-import ModuleKpis from '../components/module/ModuleKpis'
-import SourcesCard from '../components/module/SourcesCard'
+import SourcesTab from '../components/module/SourcesTab'
+import StudioTab from '../components/module/StudioTab'
 import PageTitle from '../components/PageTitle'
 import { useConfirm } from '../hooks/useConfirm'
 import { useToast } from '../hooks/useToast'
@@ -37,6 +41,8 @@ export default function ModuleDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const toast = useToast()
+  const [tab, setTab] = useState('sources') // 'sources' | 'studio'
+  const [showAdd, setShowAdd] = useState(false)
 
   const moduleQuery = useQuery({
     queryKey: ['module', id],
@@ -96,7 +102,7 @@ export default function ModuleDetail() {
   const ready = module.status === 'ready'
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-28 md:pb-32">
       <PageTitle
         onBack={() => navigate(-1)}
         subtitle={
@@ -114,16 +120,89 @@ export default function ModuleDetail() {
         {module.title}
       </PageTitle>
 
-      {ready && <ModuleKpis moduleId={id} />}
+      {tab === 'sources' ? (
+        <div className="space-y-6">
+          <SourcesTab moduleId={id} sources={sources} />
+          <CourseContextCard moduleId={id} />
+        </div>
+      ) : ready ? (
+        <div className="space-y-6">
+          <StudioTab moduleId={id} domains={domains} />
+          <ImportedExamsCard moduleId={id} />
+        </div>
+      ) : (
+        <div className="card flex flex-col items-center gap-3 py-12 text-center">
+          <Loader2 size={24} className="animate-spin text-accent" aria-hidden="true" />
+          <p className="text-sm text-sec">
+            Your module is still being built. Check the Sources tab for progress.
+          </p>
+        </div>
+      )}
 
-      {ready && domains.length > 0 && <DomainList domains={domains} />}
+      {/* Fixed bottom: Add-a-source (Sources tab) + the tab bar */}
+      <ModuleTabBar
+        tab={tab}
+        onChange={setTab}
+        onAddSource={() => setShowAdd(true)}
+      />
 
-      {ready && domains.length > 0 && <ImportedExamsCard moduleId={id} />}
-
-      <SourcesCard moduleId={id} sources={sources} moduleStatus={module.status} />
-
-      <CourseContextCard moduleId={id} />
+      <AddSourceSheet open={showAdd} moduleId={id} onClose={() => setShowAdd(false)} />
     </div>
+  )
+}
+
+/* --- fixed bottom tab bar (Sources / Studio) ----------------------------- */
+function ModuleTabBar({ tab, onChange, onAddSource }) {
+  return (
+    <div
+      className="fixed inset-x-0 z-30 px-5
+                 bottom-[calc(4.5rem+env(safe-area-inset-bottom))] md:bottom-4 md:left-60"
+    >
+      <div className="mx-auto max-w-3xl space-y-2">
+        {tab === 'sources' && (
+          <button
+            onClick={onAddSource}
+            className="flex w-full items-center justify-center gap-2 rounded-xl border
+                       border-dashed border-border bg-surface/95 px-3 py-3 text-sm
+                       font-medium text-sec backdrop-blur transition-colors
+                       hover:border-accent/50 hover:text-pri"
+          >
+            <Plus size={16} aria-hidden="true" />
+            Add a source
+          </button>
+        )}
+        <div className="flex gap-1 rounded-2xl border border-border bg-surface/95 p-1 shadow-lg backdrop-blur">
+          <TabButton
+            active={tab === 'sources'}
+            onClick={() => onChange('sources')}
+            Icon={FileText}
+            label="Sources"
+          />
+          <TabButton
+            active={tab === 'studio'}
+            onClick={() => onChange('studio')}
+            Icon={Sparkles}
+            label="Studio"
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TabButton({ active, onClick, Icon, label }) {
+  return (
+    <button
+      onClick={onClick}
+      className={[
+        'flex flex-1 items-center justify-center gap-2 rounded-xl px-3 py-2.5',
+        'text-sm font-medium transition-colors',
+        active ? 'bg-accent/12 text-accent2' : 'text-sec hover:bg-surface2 hover:text-pri',
+      ].join(' ')}
+    >
+      <Icon size={16} aria-hidden="true" />
+      {label}
+    </button>
   )
 }
 

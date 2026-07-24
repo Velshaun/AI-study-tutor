@@ -348,6 +348,111 @@ async def get_module(
     return ModuleDetail(**base.model_dump())
 
 
+# --- Studio media (everything generated for a module) ----------------------
+class StudioLecture(BaseModel):
+    id: str
+    domain_title: str | None = None
+    duration_secs: int | None = None
+    status: str | None = None
+
+
+class StudioSet(BaseModel):
+    """A per-domain deck/set (flashcards, practice questions)."""
+
+    domain_id: str
+    domain_title: str | None = None
+    count: int = 0
+
+
+class StudioQuiz(BaseModel):
+    id: str
+    domain_id: str | None = None
+    domain_title: str | None = None
+    title: str = "Quiz"
+    question_count: int = 0
+    score: float | None = None
+
+
+class StudioMedia(BaseModel):
+    lectures: list[StudioLecture] = Field(default_factory=list)
+    flashcards: list[StudioSet] = Field(default_factory=list)
+    quizzes: list[StudioQuiz] = Field(default_factory=list)
+    practice: list[StudioSet] = Field(default_factory=list)
+
+
+@router.get("/{module_id}/studio", response_model=StudioMedia)
+async def studio_media(
+    module_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> StudioMedia:
+    """Everything already generated for this module, grouped by type and
+    labelled with the domain it belongs to — the Studio tab's "Generated media".
+    """
+    client = _client()
+    _fetch_own(module_id, user.id)
+
+    domains = (
+        client.table("domains").select("id, title")
+        .eq("module_id", module_id).eq("user_id", user.id).execute()
+    ).data or []
+    title_of = {d["id"]: d.get("title") for d in domains}
+    domain_ids = list(title_of.keys())
+
+    lecture_rows = (
+        client.table("lectures").select("id, domain_id, duration_secs, status")
+        .eq("module_id", module_id).eq("user_id", user.id).execute()
+    ).data or []
+    lectures = [
+        StudioLecture(
+            id=l["id"], domain_title=title_of.get(l.get("domain_id")),
+            duration_secs=l.get("duration_secs"), status=l.get("status"),
+        )
+        for l in lecture_rows
+        if l.get("status") == "ready"
+    ]
+
+    quiz_rows = (
+        client.table("quizzes").select("id, domain_id, title, question_count, score")
+        .eq("module_id", module_id).eq("user_id", user.id).execute()
+    ).data or []
+    quizzes = [
+        StudioQuiz(
+            id=q["id"], domain_id=q.get("domain_id"),
+            domain_title=title_of.get(q.get("domain_id")),
+            title=q.get("title") or "Quiz",
+            question_count=q.get("question_count") or 0, score=q.get("score"),
+        )
+        for q in quiz_rows
+    ]
+
+    def _by_domain(rows: list[dict[str, Any]]) -> list[StudioSet]:
+        counts: dict[str, int] = {}
+        for r in rows:
+            dom = r.get("domain_id")
+            if dom:
+                counts[dom] = counts.get(dom, 0) + 1
+        return [
+            StudioSet(domain_id=d, domain_title=title_of.get(d), count=n)
+            for d, n in counts.items()
+        ]
+
+    flashcards = _by_domain(
+        (client.table("flashcards").select("domain_id")
+         .eq("module_id", module_id).eq("user_id", user.id).execute()).data or []
+    )
+
+    practice: list[StudioSet] = []
+    if domain_ids:
+        practice = _by_domain(
+            (client.table("practice_questions").select("domain_id")
+             .in_("domain_id", domain_ids).is_("exam_id", "null").execute()).data or []
+        )
+
+    return StudioMedia(
+        lectures=lectures, flashcards=flashcards, quizzes=quizzes, practice=practice,
+    )
+
+
 # --- Course Context (upload screen) ----------------------------------------
 @router.put("/{module_id}/course-context", response_model=CourseContext)
 async def set_course_context(
