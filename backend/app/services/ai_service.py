@@ -644,3 +644,136 @@ def generate_term_explanations(
         if key and exp:
             out[key] = exp[:600]
     return out
+
+
+# --- web source discovery (Chat tab) ----------------------------------------
+DISCOVER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "answer": {
+            "type": "string",
+            "description": "A short 2-3 sentence answer to the learner's question "
+            "using the course context — empty string if it was purely a search.",
+        },
+        "resources": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "url": {"type": "string", "description": "Full https URL."},
+                    "type": {
+                        "type": "string",
+                        "description": "One of: youtube, pdf, docs, website.",
+                    },
+                },
+                "required": ["title", "url", "type"],
+            },
+        },
+    },
+    "required": ["answer", "resources"],
+}
+
+DISCOVER_TYPES = {"youtube", "pdf", "docs", "website"}
+
+
+def discover_resources(
+    query: str, *, subject: str = "this subject", context: str = "",
+) -> dict[str, Any]:
+    """Find free web study resources for a query + a short grounded answer.
+
+    Two calls, because Gemini rejects search grounding combined with a
+    ``response_schema``: (1) a grounded web search that finds resources and
+    answers the question, then (2) a structuring call that returns clean
+    ``{answer, resources:[{title, url, type}]}``.
+    """
+    if not settings.gemini_api_key:
+        raise GenerationError("GEMINI_API_KEY is not configured.")
+    from google.genai import types
+
+    q = (query or "").strip()[:500]
+    if not q:
+        raise GenerationError("Ask for something to search for.")
+    ctx = (context or "").strip()[:4000]
+
+    search_prompt = (
+        f'A learner studying {subject} asked: "{q}".\n\n'
+        "1. Search the web for FREE study resources that would help — prefer "
+        "YouTube videos, free PDFs, official documentation and reputable "
+        "websites. Offer up to 6, each with its exact title and a real, working "
+        "https URL.\n"
+        "2. If the message is also a question, answer it briefly (2-3 sentences) "
+        "using this course context where relevant:\n"
+        f"{ctx or '(no course context)'}"
+    )
+    try:
+        r1 = _generate(
+            "discover-search",
+            model=settings.gemini_model,
+            contents=search_prompt,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+                temperature=0.3,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise GenerationError(quota_hint(exc) or f"Search failed: {exc}") from exc
+
+    findings = (r1.text or "").strip()
+    grounded: list[str] = []
+    try:
+        md = r1.candidates[0].grounding_metadata
+        for chunk in (md.grounding_chunks or []) if md else []:
+            if chunk.web and chunk.web.uri:
+                grounded.append(f"- {chunk.web.title or ''} :: {chunk.web.uri}")
+    except (AttributeError, IndexError):  # grounding is best-effort
+        pass
+
+    struct_prompt = (
+        "From the research below produce (a) a short 2-3 sentence answer to the "
+        "learner's question — an empty string if it was purely a resource "
+        "search — and (b) a clean list of the most useful FREE resources, each "
+        "with a concise title, a full https URL, and a type (youtube, pdf, docs "
+        "or website).\n"
+        "For each URL, use the real DESTINATION link that appears in the RESEARCH "
+        "text (e.g. a youtube.com/watch link, the actual PDF or documentation "
+        "URL). The SEARCH RESULT LINKS below are Google redirect links — only "
+        "fall back to one of those if no direct URL is available. Skip any "
+        "resource you can't give a real URL for.\n\n"
+        f"Question: {q}\n\n--- RESEARCH ---\n{findings}\n\n"
+        f"--- SEARCH RESULT LINKS ---\n{chr(10).join(grounded) or '(none)'}"
+    )
+    try:
+        r2 = _generate(
+            "discover-structure",
+            model=settings.gemini_model,
+            contents=struct_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=DISCOVER_SCHEMA,
+                temperature=0.2,
+            ),
+        )
+        data = json.loads(r2.text)
+    except json.JSONDecodeError as exc:
+        raise GenerationError(f"Model returned invalid JSON: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise GenerationError(quota_hint(exc) or f"Structuring failed: {exc}") from exc
+
+    resources = []
+    for res in data.get("resources", []):
+        url = (res.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        rtype = (res.get("type") or "website").strip().lower()
+        if rtype not in DISCOVER_TYPES:
+            rtype = "website"
+        resources.append({
+            "title": (res.get("title") or url).strip()[:200],
+            "url": url[:1000],
+            "type": rtype,
+        })
+    return {
+        "answer": (data.get("answer") or "").strip()[:2000],
+        "resources": resources[:10],
+    }

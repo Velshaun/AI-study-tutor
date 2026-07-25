@@ -115,11 +115,12 @@ export default function Dashboard() {
       ) : (
         <section className="space-y-4">
           <SectionHeader>Your modules</SectionHeader>
-          <div className="flex flex-wrap justify-center gap-3">
+          {/* CSS grid: 1 col mobile, 2 tablet (md), 3 desktop (lg). auto-rows-fr
+              + the card's h-full keep every card a uniform height; the grid
+              fills left-to-right so a lone last card sits in the first column. */}
+          <div className="grid auto-rows-fr grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
             {modules.map((module) => (
-              <div key={module.id} className="w-full sm:w-80">
-                <ModuleCard module={module} />
-              </div>
+              <ModuleCard key={module.id} module={module} />
             ))}
           </div>
         </section>
@@ -246,9 +247,9 @@ function DashboardSkeleton() {
   return (
     <div className="space-y-6" role="status" aria-label="Loading dashboard">
       <div className="skeleton h-8 w-40" />
-      <div className="flex flex-wrap justify-center gap-3">
-        {Array.from({ length: 4 }, (_, i) => (
-          <div key={i} className="skeleton h-36 w-full rounded-2xl sm:w-80" />
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {Array.from({ length: 6 }, (_, i) => (
+          <div key={i} className="skeleton h-36 rounded-2xl" />
         ))}
       </div>
     </div>

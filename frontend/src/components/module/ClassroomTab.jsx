@@ -20,8 +20,9 @@ import { formatClock } from '../../lib/format'
 import { path } from '../../routes'
 
 /**
- * Studio tab — per-module KPIs, a "Generate new" panel, and everything already
- * generated for the module (grouped by type, each labelled with its domain).
+ * Classroom tab — per-module KPIs, a "Generate new" panel, and everything
+ * already generated for the module (grouped by type, each labelled with its
+ * domain).
  *
  * Generate buttons build the content type across the module's domains in the
  * background: the button shows a "Generating…" state, the learner stays put, and
@@ -88,7 +89,7 @@ const GENERATORS = {
   },
 }
 
-export default function StudioTab({ moduleId, domains }) {
+export default function ClassroomTab({ moduleId, domains }) {
   return (
     <div className="space-y-8">
       <ModuleKpis moduleId={moduleId} />

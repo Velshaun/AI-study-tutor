@@ -5,6 +5,7 @@ import {
   FileJson,
   FileText,
   Loader2,
+  MessageCircle,
   MoreVertical,
   Plus,
   Share2,
@@ -16,10 +17,11 @@ import { useNavigate, useParams } from 'react-router-dom'
 
 import Modal from '../components/Modal'
 import AddSourceSheet from '../components/module/AddSourceSheet'
+import ChatTab from '../components/module/ChatTab'
+import ClassroomTab from '../components/module/ClassroomTab'
 import CourseContextCard from '../components/module/CourseContextCard'
 import ImportedExamsCard from '../components/module/ImportedExamsCard'
 import SourcesTab from '../components/module/SourcesTab'
-import StudioTab from '../components/module/StudioTab'
 import PageTitle from '../components/PageTitle'
 import { useConfirm } from '../hooks/useConfirm'
 import { useToast } from '../hooks/useToast'
@@ -125,9 +127,11 @@ export default function ModuleDetail() {
           <SourcesTab moduleId={id} sources={sources} />
           <CourseContextCard moduleId={id} />
         </div>
+      ) : tab === 'chat' ? (
+        <ChatTab moduleId={id} />
       ) : ready ? (
         <div className="space-y-6">
-          <StudioTab moduleId={id} domains={domains} />
+          <ClassroomTab moduleId={id} domains={domains} />
           <ImportedExamsCard moduleId={id} />
         </div>
       ) : (
@@ -179,10 +183,16 @@ function ModuleTabBar({ tab, onChange, onAddSource }) {
             label="Sources"
           />
           <TabButton
-            active={tab === 'studio'}
-            onClick={() => onChange('studio')}
+            active={tab === 'chat'}
+            onClick={() => onChange('chat')}
+            Icon={MessageCircle}
+            label="Chat"
+          />
+          <TabButton
+            active={tab === 'classroom'}
+            onClick={() => onChange('classroom')}
             Icon={Sparkles}
-            label="Studio"
+            label="Classroom"
           />
         </div>
       </div>

@@ -1,11 +1,8 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Loader2, Upload } from 'lucide-react'
 import { useRef, useState } from 'react'
 
 import Modal from '../Modal'
-import { UPLOAD_ACCEPT } from '../../hooks/useModuleUpload'
-import { useToast } from '../../hooks/useToast'
-import { api } from '../../lib/api'
+import { UPLOAD_ACCEPT, useAddSourceToModule } from '../../hooks/useModuleUpload'
 
 /**
  * The "Add a source" bottom sheet for an existing module. Drops or picks files,
@@ -13,31 +10,14 @@ import { api } from '../../lib/api'
  * augments the module rather than creating a duplicate.
  */
 export default function AddSourceSheet({ open, moduleId, onClose }) {
-  const queryClient = useQueryClient()
-  const toast = useToast()
   const input = useRef(null)
   const depth = useRef(0)
   const [dragging, setDragging] = useState(false)
-
-  const upload = useMutation({
-    mutationFn: async (files) => {
-      const list = Array.from(files || [])
-      if (!list.length) return
-      await api.uploadSources(moduleId, list)
-      await api.processModule(moduleId)
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['sources', moduleId] })
-      queryClient.invalidateQueries({ queryKey: ['module', moduleId] })
-      toast.success('Source added — reprocessing your module…')
-      onClose()
-    },
-    onError: (e) => toast.error(e?.message || 'Upload failed. Please try again.'),
-  })
+  const upload = useAddSourceToModule(moduleId)
 
   function pick(files) {
     const list = Array.from(files || [])
-    if (list.length) upload.mutate(list)
+    if (list.length) upload.mutate(list, { onSuccess: onClose })
   }
 
   return (

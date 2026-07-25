@@ -123,6 +123,8 @@ export const api = {
   modules: (signal) => apiFetch('/modules', { signal }),
   module: (id, signal) => apiFetch(`/modules/${id}`, { signal }),
   studioMedia: (id, signal) => apiFetch(`/modules/${id}/studio`, { signal }),
+  discover: (id, query) =>
+    apiFetch(`/modules/${id}/discover`, { method: 'POST', body: { query } }),
   createModule: (body = {}) => apiFetch('/modules', { method: 'POST', body }),
   renameModule: (id, title) =>
     apiFetch(`/modules/${id}`, { method: 'PATCH', body: { title } }),

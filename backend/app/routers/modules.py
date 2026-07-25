@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
+from app.services.ai_service import GenerationError, discover_resources
 
 router = APIRouter(prefix="/modules", tags=["modules"])
 
@@ -450,6 +451,47 @@ async def studio_media(
 
     return StudioMedia(
         lectures=lectures, flashcards=flashcards, quizzes=quizzes, practice=practice,
+    )
+
+
+# --- Chat: web source discovery --------------------------------------------
+class DiscoverRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=500)
+
+
+class DiscoverResource(BaseModel):
+    title: str
+    url: str
+    type: str = "website"  # youtube | pdf | docs | website
+
+
+class DiscoverResponse(BaseModel):
+    answer: str = ""
+    resources: list[DiscoverResource] = Field(default_factory=list)
+
+
+@router.post("/{module_id}/discover", response_model=DiscoverResponse)
+async def discover(
+    module_id: str,
+    payload: DiscoverRequest,
+    user: AuthUser = Depends(get_current_user),
+) -> DiscoverResponse:
+    """Search the web for free study material for this module, plus a short
+    answer grounded in the module's own sources. Not a general chatbot — a
+    module-scoped source-discovery tool.
+    """
+    module = _fetch_own(module_id, user.id)
+    subject = module.get("detected_subject") or module.get("title") or "this subject"
+    context = module.get("source_summary") or module.get("course_context") or ""
+
+    try:
+        result = discover_resources(payload.query, subject=subject, context=context)
+    except GenerationError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+
+    return DiscoverResponse(
+        answer=result.get("answer", ""),
+        resources=[DiscoverResource(**r) for r in result.get("resources", [])],
     )
 
 

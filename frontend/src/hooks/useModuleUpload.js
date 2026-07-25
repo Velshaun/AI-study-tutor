@@ -35,3 +35,28 @@ export function useModuleUpload() {
     onError: (e) => toast.error(e?.message || 'Upload failed. Please try again.'),
   })
 }
+
+/**
+ * Add a source to an *existing* module: attach the files and re-run the
+ * pipeline so the new material is folded into the module (no duplicate). Shared
+ * by the Sources-tab dropzone and the "Add a source" sheet.
+ */
+export function useAddSourceToModule(moduleId) {
+  const queryClient = useQueryClient()
+  const toast = useToast()
+
+  return useMutation({
+    mutationFn: async (files) => {
+      const list = Array.from(files || [])
+      if (!list.length) return
+      await api.uploadSources(moduleId, list)
+      await api.processModule(moduleId)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sources', moduleId] })
+      queryClient.invalidateQueries({ queryKey: ['module', moduleId] })
+      toast.success('Source added — reprocessing your module…')
+    },
+    onError: (e) => toast.error(e?.message || 'Upload failed. Please try again.'),
+  })
+}
