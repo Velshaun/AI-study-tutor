@@ -32,11 +32,12 @@ export function RequireAuth() {
   return <Outlet />
 }
 
-/** Gate for the sign-in screen — an authenticated user shouldn't see it. */
+/** Gate for the sign-in screen — an authenticated user shouldn't see it, unless
+ *  they've just arrived via a password-reset link and need to set a password. */
 export function PublicOnly() {
-  const { isAuthenticated, loading } = useAuth()
+  const { isAuthenticated, loading, recovery } = useAuth()
   if (loading) return <FullScreenLoader />
-  if (isAuthenticated) {
+  if (isAuthenticated && !recovery) {
     return <Navigate to={hasOnboarded() ? ROUTES.dashboard : ROUTES.onboarding} replace />
   }
   return <Outlet />

@@ -21,6 +21,8 @@ export function AuthProvider({ children }) {
   // nothing to wait for, and setting state in the effect below would be a
   // synchronous-setState-in-effect violation.
   const [loading, setLoading] = useState(() => Boolean(supabase))
+  // True after arriving via a password-reset email, until a new password is set.
+  const [recovery, setRecovery] = useState(false)
 
   useEffect(() => {
     if (!supabase) return undefined
@@ -35,7 +37,8 @@ export function AuthProvider({ children }) {
     })
 
     // ...then track sign-in, sign-out and token refresh live.
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, next) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, next) => {
+      if (event === 'PASSWORD_RECOVERY') setRecovery(true)
       setSession(next)
       setLoading(false)
     })
@@ -56,6 +59,39 @@ export function AuthProvider({ children }) {
     if (error) throw error
   }, [])
 
+  const signInWithEmail = useCallback(async (email, password) => {
+    if (!supabase) throw new Error('Authentication is not configured.')
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    if (error) throw error
+  }, [])
+
+  const signUpWithEmail = useCallback(async (email, password) => {
+    if (!supabase) throw new Error('Authentication is not configured.')
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: { emailRedirectTo: `${window.location.origin}/login` },
+    })
+    if (error) throw error
+    // No session means the project requires email confirmation first.
+    return { needsConfirmation: !data.session }
+  }, [])
+
+  const resetPassword = useCallback(async (email) => {
+    if (!supabase) throw new Error('Authentication is not configured.')
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/login`,
+    })
+    if (error) throw error
+  }, [])
+
+  const updatePassword = useCallback(async (password) => {
+    if (!supabase) throw new Error('Authentication is not configured.')
+    const { error } = await supabase.auth.updateUser({ password })
+    if (error) throw error
+    setRecovery(false)
+  }, [])
+
   const signOut = useCallback(async () => {
     await supabase?.auth.signOut()
     setSession(null)
@@ -67,11 +103,26 @@ export function AuthProvider({ children }) {
       user: session?.user ?? null,
       isAuthenticated: Boolean(session),
       loading,
+      recovery,
       configured: Boolean(supabase),
       signInWithProvider,
+      signInWithEmail,
+      signUpWithEmail,
+      resetPassword,
+      updatePassword,
       signOut,
     }),
-    [session, loading, signInWithProvider, signOut],
+    [
+      session,
+      loading,
+      recovery,
+      signInWithProvider,
+      signInWithEmail,
+      signUpWithEmail,
+      resetPassword,
+      updatePassword,
+      signOut,
+    ],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

@@ -4,6 +4,7 @@
 /* eslint-disable react-refresh/only-export-components */
 
 import { lazy } from 'react'
+import { useRouteError } from 'react-router-dom'
 
 import { PublicOnly, RequireAuth } from './components/AuthGuards'
 import AppLayout from './layouts/AppLayout'
@@ -45,9 +46,38 @@ const Favourites = lazy(() => import('./pages/Favourites'))
 const DesignSystem = lazy(() => import('./pages/DesignSystem'))
 const NotFound = lazy(() => import('./pages/NotFound'))
 
+/**
+ * Route-level error fallback. The commonest cause here is a stale build after a
+ * deploy — a lazy route chunk that no longer exists 404s. `main.jsx` auto-reloads
+ * on `vite:preloadError`; this catches anything that slips past and offers a
+ * reload rather than a raw stack trace.
+ */
+function RouteError() {
+  const error = useRouteError()
+  const isChunk = /dynamically imported module|module script failed|Failed to fetch/i.test(
+    error?.message || '',
+  )
+  return (
+    <div className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-bg px-6 text-center">
+      <p className="text-lg font-semibold text-pri">
+        {isChunk ? 'A new version is available' : 'Something went wrong'}
+      </p>
+      <p className="max-w-sm text-sm text-sec">
+        {isChunk
+          ? 'The app was updated while you were away. Reload to get the latest version.'
+          : 'An unexpected error occurred. Reloading usually fixes it.'}
+      </p>
+      <button onClick={() => window.location.reload()} className="btn-primary">
+        Reload
+      </button>
+    </div>
+  )
+}
+
 export const routeConfig = [
   {
     element: <RootLayout />,
+    errorElement: <RouteError />,
     children: [
       // The only screen a signed-out visitor can reach. An already-authenticated
       // user is redirected away from it.

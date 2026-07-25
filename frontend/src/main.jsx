@@ -13,6 +13,17 @@ import { queryClient } from './lib/queryClient'
 import { routeConfig } from './router.jsx'
 import './index.css'
 
+// After a deploy, hashed route chunks are renamed; a client still running the
+// previous build 404s when it lazy-loads a route ("Failed to fetch dynamically
+// imported module"). Reload once to pick up the fresh build — guarded against a
+// reload loop if a chunk is genuinely broken.
+window.addEventListener('vite:preloadError', () => {
+  const last = Number(sessionStorage.getItem('chunk-reload-at') || 0)
+  if (Date.now() - last < 10_000) return
+  sessionStorage.setItem('chunk-reload-at', String(Date.now()))
+  window.location.reload()
+})
+
 const router = createBrowserRouter(routeConfig)
 
 createRoot(document.getElementById('root')).render(

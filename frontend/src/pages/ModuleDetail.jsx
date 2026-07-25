@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   Download,
@@ -43,8 +43,18 @@ export default function ModuleDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const toast = useToast()
-  const [tab, setTab] = useState('sources') // 'sources' | 'studio'
+  const queryClient = useQueryClient()
+  const [tab, setTab] = useState('sources') // 'sources' | 'chat' | 'classroom'
   const [showAdd, setShowAdd] = useState(false)
+
+  const rename = useMutation({
+    mutationFn: (title) => api.renameModule(id, title),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['module', id] })
+      queryClient.invalidateQueries({ queryKey: ['modules'] })
+    },
+    onError: (e) => toast.error(e?.message || 'Could not rename the module'),
+  })
 
   const moduleQuery = useQuery({
     queryKey: ['module', id],
@@ -113,6 +123,7 @@ export default function ModuleDetail() {
     <div className="space-y-6 pb-28 md:pb-32">
       <PageTitle
         onBack={() => navigate(-1)}
+        onRename={(title) => rename.mutate(title)}
         subtitle={
           module.detected_subject ||
           (module.status === 'failed'
