@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { AlertCircle, Loader2, LogIn, Plus, RefreshCw, Upload } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import ModuleCard from '../components/dashboard/ModuleCard'
@@ -45,7 +45,20 @@ export default function Dashboard() {
 
   const error = modulesQuery.error
   const isAuth = error instanceof ApiError && error.isAuth
-  const modules = Array.isArray(modulesQuery.data) ? modulesQuery.data : []
+  const modules = useMemo(
+    () => (Array.isArray(modulesQuery.data) ? modulesQuery.data : []),
+    [modulesQuery.data],
+  )
+
+  // Most recently studied module (by its last-played lecture) — flagged with a
+  // green outline. Nothing is flagged until something has actually been studied.
+  const activeId = useMemo(() => {
+    const played = modules.filter((m) => m.resume_last_played_at)
+    if (!played.length) return null
+    return played.reduce((a, b) =>
+      new Date(b.resume_last_played_at) > new Date(a.resume_last_played_at) ? b : a,
+    ).id
+  }, [modules])
 
   const hiddenInput = (
     <input
@@ -115,12 +128,14 @@ export default function Dashboard() {
       ) : (
         <section className="space-y-4">
           <SectionHeader>Your modules</SectionHeader>
-          {/* CSS grid: 1 col mobile, 2 tablet (md), 3 desktop (lg). auto-rows-fr
-              + the card's h-full keep every card a uniform height; the grid
-              fills left-to-right so a lone last card sits in the first column. */}
-          <div className="grid auto-rows-fr grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {/* Full-width list — one card per row. */}
+          <div className="space-y-3">
             {modules.map((module) => (
-              <ModuleCard key={module.id} module={module} />
+              <ModuleCard
+                key={module.id}
+                module={module}
+                active={module.id === activeId}
+              />
             ))}
           </div>
         </section>
@@ -247,9 +262,9 @@ function DashboardSkeleton() {
   return (
     <div className="space-y-6" role="status" aria-label="Loading dashboard">
       <div className="skeleton h-8 w-40" />
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {Array.from({ length: 6 }, (_, i) => (
-          <div key={i} className="skeleton h-36 rounded-2xl" />
+      <div className="space-y-3">
+        {Array.from({ length: 4 }, (_, i) => (
+          <div key={i} className="skeleton h-28 w-full rounded-2xl" />
         ))}
       </div>
     </div>

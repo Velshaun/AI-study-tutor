@@ -94,8 +94,10 @@ class Module(BaseModel):
     source_count: int = 0
     domain_count: int = 0
     # An in-progress lecture in this module, if any — powers the "Resume" button
-    # on the dashboard module card.
+    # on the dashboard module card. `resume_last_played_at` is when it was last
+    # played, so the dashboard can flag the most recently accessed module.
     resume_lecture_id: str | None = None
+    resume_last_played_at: datetime | None = None
     # Lightweight domain list for the dashboard's progress pills. The detail
     # view carries the same field with full descriptions/weights.
     domains: list[Domain] = Field(default_factory=list)
@@ -177,6 +179,7 @@ def _to_module(row: dict[str, Any], sources: int = 0, domains: int = 0,
         source_count=sources,
         domain_count=domains,
         resume_lecture_id=row.get("_resume_lecture_id"),
+        resume_last_played_at=row.get("_resume_last_played_at"),
         domains=[_to_domain(d) for d in (domain_rows or [])],
     )
 
@@ -243,11 +246,13 @@ async def list_modules(user: AuthUser = Depends(get_current_user)) -> list[Modul
         .is_("completed_at", "null").gt("last_position_secs", 0)
         .order("last_played_at", desc=True).execute()
     ).data or []
-    resume_by_module: dict[str, str] = {}
+    resume_by_module: dict[str, dict[str, Any]] = {}
     for lec in resume_rows:
-        resume_by_module.setdefault(lec["module_id"], lec["id"])
+        resume_by_module.setdefault(lec["module_id"], lec)
     for row in rows:
-        row["_resume_lecture_id"] = resume_by_module.get(row["id"])
+        r = resume_by_module.get(row["id"])
+        row["_resume_lecture_id"] = r["id"] if r else None
+        row["_resume_last_played_at"] = r.get("last_played_at") if r else None
 
     return [
         _to_module(

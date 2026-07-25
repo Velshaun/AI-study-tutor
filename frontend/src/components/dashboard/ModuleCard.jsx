@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, Pencil, Play } from 'lucide-react'
+import { Pencil } from 'lucide-react'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -7,17 +7,28 @@ import { api } from '../../lib/api'
 import { path } from '../../routes'
 
 /**
- * Dashboard module card (§5.4, revised): name, cert/subject, an overall
- * progress bar, and a Resume button when a lecture in this module is in
- * progress. No KPI widgets — those live inside the module.
+ * Dashboard module card — a full-width list row.
  *
- * The whole card opens the module; the title is tap-to-rename and the Resume
- * button jumps to the lecture, both stopping propagation so they don't navigate
- * into the module instead.
+ * Left: the module name (in full, never truncated), its subject, an overall
+ * progress bar and meta (sources · last updated). Right: a row of per-domain
+ * tick marks. The most recently studied module is flagged with a green outline
+ * and a "Continue" label so it stands out in a list of similar names.
  */
 const PROCESSING = ['processing', 'parsing', 'analysing', 'queued']
 
-export default function ModuleCard({ module }) {
+function updatedLabel(iso) {
+  if (!iso) return null
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return null
+  const s = Math.max(0, (Date.now() - t) / 1000)
+  if (s < 60) return 'just now'
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+  if (s < 86400 * 7) return `${Math.floor(s / 86400)}d ago`
+  return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+}
+
+export default function ModuleCard({ module, active = false }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
@@ -27,6 +38,8 @@ export default function ModuleCard({ module }) {
   const pct = total ? Math.round((done / total) * 100) : 0
   const processing = PROCESSING.includes(module.status)
   const failed = module.status === 'failed'
+  const updated = updatedLabel(module.updated_at)
+  const sourceN = module.source_count ?? 0
 
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(module.title || '')
@@ -49,10 +62,6 @@ export default function ModuleCard({ module }) {
     setEditing(false)
     if (next && next !== module.title) rename.mutate(next)
   }
-  function resume(e) {
-    e.stopPropagation()
-    navigate(path('lecture', { id: module.resume_lecture_id }))
-  }
 
   return (
     <div
@@ -65,10 +74,23 @@ export default function ModuleCard({ module }) {
       }}
       role="button"
       tabIndex={0}
-      className="card-interactive flex h-full flex-col gap-3 cursor-pointer"
+      className={[
+        'block w-full cursor-pointer rounded-2xl border bg-surface p-5 transition-colors',
+        active
+          ? 'border-success/60 hover:border-success'
+          : 'border-border hover:border-accent/40 hover:bg-surface2',
+      ].join(' ')}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
+      <div className="flex items-start gap-4">
+        {/* Left: identity + progress */}
+        <div className="min-w-0 flex-1 space-y-2">
+          {active && (
+            <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-success">
+              <span className="size-1.5 rounded-full bg-success" aria-hidden="true" />
+              Continue
+            </span>
+          )}
+
           {editing ? (
             <input
               autoFocus
@@ -95,66 +117,90 @@ export default function ModuleCard({ module }) {
               type="button"
               onClick={startEdit}
               title="Rename module"
-              className="group flex max-w-full items-center gap-1.5 text-left"
+              className="group flex items-start gap-1.5 text-left"
             >
-              <span className="truncate text-base font-semibold text-pri">
+              {/* Full name — wraps, never truncates. */}
+              <span className="wrap-anywhere text-base font-semibold leading-snug text-pri">
                 {module.title || 'Processing…'}
               </span>
               <Pencil
                 size={13}
-                className="shrink-0 text-sec opacity-0 transition-opacity group-hover:opacity-100"
+                className="mt-1 shrink-0 text-sec opacity-0 transition-opacity group-hover:opacity-100"
                 aria-hidden="true"
               />
             </button>
           )}
-          <p className="mt-0.5 truncate text-xs text-sec">
+
+          <p className="text-xs text-sec">
             {module.detected_subject ||
               (processing ? 'Detecting subject…' : 'Add a source to get started')}
           </p>
-        </div>
-        <ChevronRight size={18} className="mt-0.5 shrink-0 text-sec" aria-hidden="true" />
-      </div>
 
-      {/* Progress / state */}
-      <div className="mt-auto">
-        {failed ? (
-          <p className="text-xs text-warning">
-            {module.error_message || 'Processing failed.'}
+          {/* Overall progress */}
+          {failed ? (
+            <p className="text-xs text-warning">
+              {module.error_message || 'Processing failed.'}
+            </p>
+          ) : processing ? (
+            <div className="flex items-center gap-2 text-xs text-sec">
+              <span className="size-1.5 animate-pulse rounded-full bg-accent" aria-hidden="true" />
+              {module.status_detail || 'Processing'}…
+            </div>
+          ) : (
+            <div className="space-y-1 pt-0.5">
+              <div className="h-1.5 overflow-hidden rounded-full bg-surface2">
+                <div
+                  className={`h-full rounded-full transition-[width] duration-300 ${
+                    pct >= 100 ? 'bg-success' : 'bg-accent'
+                  }`}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Meta */}
+          <p className="text-xs text-sec">
+            {sourceN} source{sourceN === 1 ? '' : 's'}
+            {updated && ` · Updated ${updated}`}
           </p>
-        ) : processing ? (
-          <div className="flex items-center gap-2 text-xs text-sec">
-            <span className="size-1.5 animate-pulse rounded-full bg-accent" aria-hidden="true" />
-            {module.status_detail || 'Processing'}…
-          </div>
-        ) : (
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between text-[11px] text-sec">
-              <span>{total > 0 ? `${done}/${total} domains` : 'Ready'}</span>
-              {total > 0 && <span className="tabular-nums">{pct}%</span>}
-            </div>
-            <div className="h-1.5 overflow-hidden rounded-full bg-surface2">
-              <div
-                className={`h-full rounded-full transition-[width] duration-300 ${
-                  pct >= 100 ? 'bg-success' : 'bg-accent'
-                }`}
-                style={{ width: `${pct}%` }}
-              />
-            </div>
+        </div>
+
+        {/* Right: per-domain tick marks */}
+        {!processing && !failed && total > 0 && (
+          <div className="flex shrink-0 flex-col items-end gap-1.5 pt-0.5">
+            <DomainTicks domains={domains} />
+            <span className="text-[11px] tabular-nums text-sec">
+              {done}/{total} done
+            </span>
           </div>
         )}
       </div>
+    </div>
+  )
+}
 
-      {/* Resume, when a lecture is part-way through */}
-      {module.resume_lecture_id && (
-        <button
-          onClick={resume}
-          className="btn inline-flex items-center justify-center gap-1.5 bg-accent/15 py-2
-                     text-sm font-medium text-accent2 hover:bg-accent/20"
-        >
-          <Play size={14} aria-hidden="true" />
-          Resume lecture
-        </button>
+/** A row of small circles, one per domain (max 8, then "+N"). */
+function DomainTicks({ domains }) {
+  const MAX = 8
+  const shown = domains.slice(0, MAX)
+  const extra = domains.length - shown.length
+
+  return (
+    <div className="flex max-w-32 flex-wrap items-center justify-end gap-1">
+      {shown.map((d) => (
+        <Tick key={d.id} status={d.status} title={`${d.title}: ${d.status}`} />
+      ))}
+      {extra > 0 && (
+        <span className="ml-0.5 text-[11px] font-medium text-sec tabular-nums">+{extra}</span>
       )}
     </div>
   )
+}
+
+function Tick({ status, title }) {
+  let cls = 'border border-sec/40' // not started
+  if (status === 'completed') cls = 'bg-accent border border-accent'
+  else if (status === 'in_progress') cls = 'border-2 border-accent'
+  return <span title={title} className={`size-2.5 shrink-0 rounded-full ${cls}`} aria-hidden="true" />
 }
