@@ -122,6 +122,7 @@ export const api = {
     apiFetch(`/stats/module/${moduleId}`, { signal }),
   modules: (signal) => apiFetch('/modules', { signal }),
   module: (id, signal) => apiFetch(`/modules/${id}`, { signal }),
+  touchModule: (id) => apiFetch(`/modules/${id}/touch`, { method: 'POST' }),
   studioMedia: (id, signal) => apiFetch(`/modules/${id}/studio`, { signal }),
   discover: (id, query) =>
     apiFetch(`/modules/${id}/discover`, { method: 'POST', body: { query } }),

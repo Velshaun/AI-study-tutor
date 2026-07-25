@@ -50,15 +50,29 @@ export default function Dashboard() {
     [modulesQuery.data],
   )
 
-  // Most recently studied module (by its last-played lecture) — flagged with a
-  // green outline. Nothing is flagged until something has actually been studied.
+  // Most recently accessed module — by module open (last_accessed_at) or lecture
+  // play (resume_last_played_at), whichever is newer. Null until something has
+  // actually been opened, so the "Last visited" section can hide entirely.
   const activeId = useMemo(() => {
-    const played = modules.filter((m) => m.resume_last_played_at)
-    if (!played.length) return null
-    return played.reduce((a, b) =>
-      new Date(b.resume_last_played_at) > new Date(a.resume_last_played_at) ? b : a,
-    ).id
+    let bestId = null
+    let bestT = -Infinity
+    for (const m of modules) {
+      const t = Math.max(
+        m.last_accessed_at ? Date.parse(m.last_accessed_at) : -Infinity,
+        m.resume_last_played_at ? Date.parse(m.resume_last_played_at) : -Infinity,
+      )
+      if (t > bestT) {
+        bestT = t
+        bestId = m.id
+      }
+    }
+    return bestT === -Infinity ? null : bestId
   }, [modules])
+
+  const activeModule = useMemo(
+    () => modules.find((m) => m.id === activeId) || null,
+    [modules, activeId],
+  )
 
   const hiddenInput = (
     <input
@@ -126,19 +140,30 @@ export default function Dashboard() {
           busy={upload.isPending}
         />
       ) : (
-        <section className="space-y-4">
-          <SectionHeader>Your modules</SectionHeader>
-          {/* Full-width list — one card per row. */}
-          <div className="space-y-3">
-            {modules.map((module) => (
-              <ModuleCard
-                key={module.id}
-                module={module}
-                active={module.id === activeId}
-              />
-            ))}
-          </div>
-        </section>
+        <>
+          {/* Last visited — the same card, above the full list. Hidden until a
+              module has actually been opened. */}
+          {activeModule && (
+            <section className="space-y-4">
+              <SectionHeader>Continue where you left off</SectionHeader>
+              <ModuleCard module={activeModule} active />
+            </section>
+          )}
+
+          <section className="space-y-4">
+            <SectionHeader>Your modules</SectionHeader>
+            {/* Full-width list — one card per row. */}
+            <div className="space-y-3">
+              {modules.map((module) => (
+                <ModuleCard
+                  key={module.id}
+                  module={module}
+                  active={module.id === activeId}
+                />
+              ))}
+            </div>
+          </section>
+        </>
       )}
 
       {/* Upload FAB — mobile only. The md+ layout uses the header + sidebar. */}

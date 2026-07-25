@@ -10,7 +10,7 @@ scoped to ``user_id`` explicitly — that filter is the access check.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -98,6 +98,9 @@ class Module(BaseModel):
     # played, so the dashboard can flag the most recently accessed module.
     resume_lecture_id: str | None = None
     resume_last_played_at: datetime | None = None
+    # When the learner last opened this module — the primary "last visited"
+    # signal for the dashboard.
+    last_accessed_at: datetime | None = None
     # Lightweight domain list for the dashboard's progress pills. The detail
     # view carries the same field with full descriptions/weights.
     domains: list[Domain] = Field(default_factory=list)
@@ -180,6 +183,7 @@ def _to_module(row: dict[str, Any], sources: int = 0, domains: int = 0,
         domain_count=domains,
         resume_lecture_id=row.get("_resume_lecture_id"),
         resume_last_played_at=row.get("_resume_last_played_at"),
+        last_accessed_at=row.get("_last_accessed_at"),
         domains=[_to_domain(d) for d in (domain_rows or [])],
     )
 
@@ -249,10 +253,18 @@ async def list_modules(user: AuthUser = Depends(get_current_user)) -> list[Modul
     resume_by_module: dict[str, dict[str, Any]] = {}
     for lec in resume_rows:
         resume_by_module.setdefault(lec["module_id"], lec)
+
+    access_rows = (
+        client.table("module_access").select("module_id, accessed_at")
+        .eq("user_id", user.id).in_("module_id", module_ids).execute()
+    ).data or []
+    access_by_module = {a["module_id"]: a.get("accessed_at") for a in access_rows}
+
     for row in rows:
         r = resume_by_module.get(row["id"])
         row["_resume_lecture_id"] = r["id"] if r else None
         row["_resume_last_played_at"] = r.get("last_played_at") if r else None
+        row["_last_accessed_at"] = access_by_module.get(row["id"])
 
     return [
         _to_module(
@@ -352,6 +364,27 @@ async def get_module(
     sources, _ = _counts(module_id)
     base = _to_module(row, sources, len(domain_rows), domain_rows=domain_rows)
     return ModuleDetail(**base.model_dump())
+
+
+@router.post("/{module_id}/touch", status_code=status.HTTP_204_NO_CONTENT)
+async def touch_module(
+    module_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> None:
+    """Record that the learner just opened this module ("last visited").
+
+    Written to `module_access` (not `modules`) so the module list order — by
+    `modules.updated_at` — doesn't shuffle every time a module is opened.
+    """
+    _fetch_own(module_id, user.id)
+    _client().table("module_access").upsert(
+        {
+            "user_id": user.id,
+            "module_id": module_id,
+            "accessed_at": datetime.now(timezone.utc).isoformat(),
+        },
+        on_conflict="user_id,module_id",
+    ).execute()
 
 
 # --- Studio media (everything generated for a module) ----------------------

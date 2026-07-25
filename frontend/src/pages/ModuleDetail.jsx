@@ -60,6 +60,12 @@ export default function ModuleDetail() {
       PROCESSING.includes(moduleQuery.data?.status) ? 4000 : false,
   })
 
+  // Record the open for the dashboard's "Last visited" section. Once per module
+  // (not on each poll), and best-effort — a failed touch never blocks the view.
+  useEffect(() => {
+    api.touchModule(id).catch(() => {})
+  }, [id])
+
   // Announce the moment processing finishes — the learner may be on another
   // screen when the pipeline completes, so it's a genuine "it's ready" beat.
   const prevStatus = useRef(null)

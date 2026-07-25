@@ -60,24 +60,8 @@ function GroupList({ onOpen }) {
   const isAuth = error instanceof ApiError && error.isAuth
 
   return (
-    <div className="space-y-8">
-      <PageTitle
-        subtitle="Study together and share domains."
-        actions={
-          <>
-            <button onClick={() => setShowJoin(true)} className="btn-secondary">
-              <LogIn size={16} aria-hidden="true" />
-              Join
-            </button>
-            <button onClick={() => setShowCreate(true)} className="btn-primary">
-              <Plus size={16} aria-hidden="true" />
-              New
-            </button>
-          </>
-        }
-      >
-        Groups
-      </PageTitle>
+    <div className="space-y-6">
+      <PageTitle subtitle="Study together and share domains.">Groups</PageTitle>
 
       {isPending ? (
         <div className="space-y-3" role="status" aria-label="Loading">
@@ -91,27 +75,28 @@ function GroupList({ onOpen }) {
           title="Sign in to see your groups"
           message="Your groups and shared domains are tied to your account."
         />
-      ) : groups.length === 0 ? (
-        <EmptyState
-          centered
-          icon={Users}
-          title="No groups yet"
-          message="Create a group to share your domains, or join one with an invite code."
-          action={
-            <div className="flex gap-2">
-              <button onClick={() => setShowJoin(true)} className="btn-secondary">
-                <LogIn size={16} aria-hidden="true" />
-                Join
-              </button>
-              <button onClick={() => setShowCreate(true)} className="btn-primary">
-                <Plus size={16} aria-hidden="true" />
-                Create group
-              </button>
-            </div>
-          }
-        />
       ) : (
-        <div className="space-y-3">
+        <>
+          {/* Join / Create — the only place these buttons live now. */}
+          <div className="flex gap-2">
+            <button onClick={() => setShowJoin(true)} className="btn-secondary">
+              <LogIn size={16} aria-hidden="true" />
+              Join
+            </button>
+            <button onClick={() => setShowCreate(true)} className="btn-primary">
+              <Plus size={16} aria-hidden="true" />
+              Create Group
+            </button>
+          </div>
+
+          {groups.length === 0 ? (
+            <EmptyState
+              icon={Users}
+              title="No groups yet"
+              message="Create a group to share your domains, or join one with an invite code."
+            />
+          ) : (
+            <div className="space-y-3">
           {groups.map((g) => (
             <button
               key={g.id}
@@ -130,7 +115,9 @@ function GroupList({ onOpen }) {
               </div>
             </button>
           ))}
-        </div>
+            </div>
+          )}
+        </>
       )}
 
       <CreateModal
