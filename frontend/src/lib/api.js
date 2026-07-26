@@ -93,6 +93,51 @@ export async function apiUpload(path, formData, method = 'POST') {
   return payload
 }
 
+/**
+ * POST and consume a newline-delimited JSON (NDJSON) stream, invoking `onEvent`
+ * for each object as it arrives — used for low-latency streamed responses
+ * (e.g. the voice-Q&A answer). Resolves when the stream ends.
+ */
+export async function apiStreamNDJSON(path, body, onEvent, signal) {
+  if (!BASE) throw new ApiError('VITE_API_URL is not configured.', { status: 0 })
+  const token = await getAccessToken()
+  if (!token) throw new ApiError('Not signed in.', { status: 401 })
+
+  const response = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    signal,
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok || !response.body) {
+    const payload = await response.json().catch(() => null)
+    throw new ApiError(payload?.detail || `Request failed (${response.status})`, {
+      status: response.status,
+      body: payload,
+    })
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  const flush = (line) => {
+    const trimmed = line.trim()
+    if (trimmed) onEvent(JSON.parse(trimmed))
+  }
+
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let nl
+    while ((nl = buffer.indexOf('\n')) >= 0) {
+      flush(buffer.slice(0, nl))
+      buffer = buffer.slice(nl + 1)
+    }
+  }
+  flush(buffer)
+}
+
 /** Fetch a file endpoint with auth and trigger a browser download. */
 export async function apiDownload(path, filename) {
   const token = await getAccessToken()

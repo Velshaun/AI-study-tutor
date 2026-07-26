@@ -23,6 +23,7 @@ import CourseContextCard from '../components/module/CourseContextCard'
 import ImportedExamsCard from '../components/module/ImportedExamsCard'
 import SourcesTab from '../components/module/SourcesTab'
 import PageTitle from '../components/PageTitle'
+import ErrorBanner from '../components/ErrorBanner'
 import { useConfirm } from '../hooks/useConfirm'
 import { useToast } from '../hooks/useToast'
 import { ApiError, api } from '../lib/api'
@@ -412,7 +413,7 @@ function ShareModal({ open, module, onClose }) {
               ))}
             </select>
           </Field>
-          {share.error && <p className="text-sm text-warning">{share.error.message}</p>}
+          <ErrorBanner message={share.error?.message} onDismiss={share.reset} />
           <button
             onClick={() => share.mutate()}
             disabled={!domainId || !groupId || share.isPending}

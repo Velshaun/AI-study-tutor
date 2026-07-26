@@ -14,6 +14,7 @@ import Modal from '../Modal'
 import { useConfirm } from '../../hooks/useConfirm'
 import { useToast } from '../../hooks/useToast'
 import { api } from '../../lib/api'
+import ErrorBanner from '../ErrorBanner'
 
 /**
  * Imported practice exams — spec Prompt 10c (items 5 & 6).
@@ -204,7 +205,7 @@ function ImportModal({ open, moduleId, onClose, onDone }) {
             }}
             className="hidden"
           />
-          {error && <p className="text-sm text-warning">{error}</p>}
+          <ErrorBanner message={error} onDismiss={() => setError(null)} />
         </div>
       )}
     </Modal>

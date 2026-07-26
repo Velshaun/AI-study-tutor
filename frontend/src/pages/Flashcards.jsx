@@ -102,6 +102,7 @@ export default function Flashcards() {
           onGenerate={generate.mutate}
           generating={generate.isPending}
           error={generate.error?.message}
+          onDismissError={generate.reset}
         />
       ) : (
         <FlashcardDeck

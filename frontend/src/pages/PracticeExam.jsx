@@ -1,8 +1,9 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { AlertCircle, Loader2 } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
+import ErrorBanner from '../components/ErrorBanner'
 import PageTitle from '../components/PageTitle'
 import QuizRunner from '../components/study/QuizRunner'
 import Toggle from '../components/Toggle'
@@ -161,12 +162,10 @@ export default function PracticeExam() {
             />
           </div>
 
-          {generate.error && (
-            <p className="flex items-center gap-2 text-sm text-warning">
-              <AlertCircle size={15} aria-hidden="true" />
-              {generate.error.message}
-            </p>
-          )}
+          <ErrorBanner
+            message={generate.error?.message}
+            onDismiss={generate.reset}
+          />
 
           <button
             onClick={() => generate.mutate()}

@@ -1,6 +1,7 @@
 import { Loader2, Sparkles } from 'lucide-react'
 import { useState } from 'react'
 
+import ErrorBanner from '../ErrorBanner'
 import { usePreferences } from '../../hooks/usePreferences'
 
 /**
@@ -17,6 +18,7 @@ export default function GenerateForm({
   onGenerate,
   generating,
   error,
+  onDismissError,
 }) {
   const { preferences } = usePreferences()
   const prefKey = kind === 'quiz' ? 'quiz_difficulty' : 'flashcard_difficulty'
@@ -89,7 +91,7 @@ export default function GenerateForm({
         />
       </div>
 
-      {error && <p className="text-sm text-warning">{error}</p>}
+      <ErrorBanner message={error} onDismiss={onDismissError} />
 
       <button
         onClick={() => onGenerate({ difficulty, count })}

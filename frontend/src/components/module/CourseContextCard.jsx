@@ -3,6 +3,7 @@ import { Check, FileText, Loader2, Type, Upload, X } from 'lucide-react'
 import { useRef, useState } from 'react'
 
 import { api } from '../../lib/api'
+import ErrorBanner from '../ErrorBanner'
 
 /**
  * Course Context card — spec Prompt 9.3.
@@ -156,7 +157,7 @@ export default function CourseContextCard({ moduleId }) {
             </>
           )}
 
-          {error && <p className="text-sm text-warning">{error}</p>}
+          <ErrorBanner message={error} onDismiss={() => setError(null)} />
         </>
       )}
     </div>

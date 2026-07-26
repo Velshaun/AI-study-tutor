@@ -79,6 +79,9 @@ class Settings:
         self.whisper_model: str = os.getenv("WHISPER_MODEL", "whisper-1")
         # TTS HD narrates generated lectures (§4.4).
         self.openai_tts_model: str = os.getenv("OPENAI_TTS_MODEL", "tts-1-hd")
+        # Voice Q&A answers use the faster (non-HD) model — latency matters more
+        # than fidelity in a live back-and-forth. Lectures keep the HD model.
+        self.openai_tts_model_qa: str = os.getenv("OPENAI_TTS_MODEL_QA", "tts-1")
         self.openai_voice_marcus: str = os.getenv("OPENAI_TTS_VOICE_MARCUS", "onyx")
         self.openai_voice_sophia: str = os.getenv("OPENAI_TTS_VOICE_SOPHIA", "nova")
 

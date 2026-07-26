@@ -2,6 +2,8 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { CheckCheck, CheckCircle, Flag, Lightbulb, Loader2, XCircle } from 'lucide-react'
 import { useState } from 'react'
 
+import ErrorBanner from '../ErrorBanner'
+
 /**
  * Practice Exam Mode runner — spec 6.4 / Prompt 11.
  *
@@ -138,7 +140,7 @@ export default function PracticeRunner({
         </motion.div>
       </AnimatePresence>
 
-      {error && <p className="text-sm text-warning">{error}</p>}
+      <ErrorBanner message={error} onDismiss={() => setError(null)} />
 
       {/* Actions */}
       {!revealed ? (

@@ -8,9 +8,16 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
     <!-- Dark-first: paints browser chrome dark before CSS loads, which avoids
-         a white flash on first paint. theme-color matches --color-bg. -->
+         a white flash on first paint. theme-color matches --color-bg and is kept
+         in step with the active theme at runtime (see applyTheme). -->
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#0F0F0F" />
+    <!-- Installed-PWA status bar. On iOS, black-translucent gives white status
+         text over the dark app; applyTheme swaps this to `default` (dark text)
+         in light mode so the time/battery stay readable either way. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta
       name="description"
       content="Turn your course material into interactive AI lectures, flashcards, quizzes and timed practice exams."

@@ -77,7 +77,9 @@ export default function ModuleCard({ module, active = false }) {
       className={[
         'block w-full cursor-pointer rounded-2xl border bg-surface p-5 transition-colors',
         active
-          ? 'border-success/60 hover:border-success'
+          // Dark keeps the green outline; light swaps to the accent purple with a
+          // faint purple tint, since green sits badly on a white/purple palette.
+          ? 'border-success/60 hover:border-success light:border-accent light:bg-[#f0eeff] light:hover:border-accent'
           : 'border-border hover:border-accent/40 hover:bg-surface2',
       ].join(' ')}
     >
@@ -85,8 +87,8 @@ export default function ModuleCard({ module, active = false }) {
         {/* Left: identity + progress */}
         <div className="min-w-0 flex-1 space-y-2">
           {active && (
-            <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-success">
-              <span className="size-1.5 rounded-full bg-success" aria-hidden="true" />
+            <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-success light:text-accent">
+              <span className="size-1.5 rounded-full bg-success light:bg-accent" aria-hidden="true" />
               Continue
             </span>
           )}

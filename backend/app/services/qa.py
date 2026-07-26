@@ -272,7 +272,9 @@ def synthesise_answer(
 
     try:
         audio = OpenAI(api_key=settings.openai_api_key).audio.speech.create(
-            model=settings.openai_tts_model,
+            # Q&A replies use the faster (non-HD) model — in a live back-and-forth
+            # latency matters more than fidelity. Lectures keep tts-1-hd.
+            model=settings.openai_tts_model_qa,
             voice=openai_voice,
             input=text,
             response_format="mp3",

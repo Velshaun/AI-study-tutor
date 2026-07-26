@@ -13,6 +13,7 @@ import { useRef, useState } from 'react'
 
 import { useConfirm } from '../../hooks/useConfirm'
 import { api } from '../../lib/api'
+import ErrorBanner from '../ErrorBanner'
 
 /**
  * Sources card — spec Prompt 9 (audio uploads) + upload UI.
@@ -202,7 +203,7 @@ export default function SourcesCard({ moduleId, sources, moduleStatus }) {
         </button>
       </form>
 
-      {error && <p className="text-sm text-warning">{error}</p>}
+      <ErrorBanner message={error} onDismiss={() => setError(null)} />
 
       {/* Source list */}
       {sources.length > 0 && (

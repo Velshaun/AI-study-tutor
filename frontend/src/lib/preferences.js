@@ -84,12 +84,24 @@ export function markOnboarded() {
  */
 export function applyTheme(theme) {
   const root = document.documentElement
-  root.classList.toggle('dark', theme !== 'light')
-  root.classList.toggle('light', theme === 'light')
+  const light = theme === 'light'
+  root.classList.toggle('dark', !light)
+  root.classList.toggle('light', light)
 
-  // Keep the browser chrome in step with the surface behind it.
-  const meta = document.querySelector('meta[name="theme-color"]')
-  if (meta) meta.setAttribute('content', theme === 'light' ? '#FFFFFF' : '#0F0F0F')
+  // Keep the browser/OS chrome in step with the surface behind it. theme-color
+  // tints the Android/desktop chrome and the PWA status-bar area; it must match
+  // the page background (--color-bg) for each theme.
+  const themeColor = document.querySelector('meta[name="theme-color"]')
+  if (themeColor) themeColor.setAttribute('content', light ? '#F5F5F5' : '#0F0F0F')
+
+  // iOS installed-PWA status bar: `default` paints dark text (readable on the
+  // light background); `black-translucent` gives white text over the dark app.
+  const statusBar = document.querySelector(
+    'meta[name="apple-mobile-web-app-status-bar-style"]',
+  )
+  if (statusBar) {
+    statusBar.setAttribute('content', light ? 'default' : 'black-translucent')
+  }
 }
 
 /**

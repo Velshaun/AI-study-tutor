@@ -23,6 +23,7 @@
    exists for explicit `dark:` overrides and for a future light theme; the
    `:where()` keeps specificity at zero so overrides stay predictable. */
 @custom-variant dark (&:where(.dark, .dark *));
+@custom-variant light (&:where(.light, .light *));
 
 @theme {
   /* --- surfaces ------------------------------------------------------- */
@@ -64,19 +65,22 @@
   :root.light {
     color-scheme: light;
 
-    --color-bg: #ffffff;
-    --color-surface: #f7f7F8;
-    --color-surface2: #eeeef0;
-    --color-border: #e0e0e4;
+    /* A tonal light palette — deliberately not flat white. An off-white page
+       sits behind white cards, with a recessed grey for pills and tags, so the
+       theme reads as designed rather than dark-mode inverted. */
+    --color-bg: #f5f5f5;       /* page — off white, not pure white */
+    --color-surface: #ffffff;  /* cards */
+    --color-surface2: #eeeeee; /* pills, tags, chips, progress tracks */
+    --color-border: #e0e0e0;   /* card and nav borders */
 
-    --color-accent: #5a51e8;
-    --color-accent2: #4840d4;
+    /* The accent is the SAME purple as dark mode; accent2 darkens so
+       accent-coloured text and hovers stay legible on white. */
+    --color-accent: #6c63ff;
+    --color-accent2: #5a51e8;
 
-    --color-pri: #16161a;
-    --color-sec: #61616b;
-    /* Dark graphite for titles on light surfaces — the premium-heading role,
-       inverted. */
-    --color-title: #1b1b22;
+    --color-pri: #212121;      /* near-black primary text */
+    --color-sec: #616161;      /* medium grey — section headers, labels, meta */
+    --color-title: #212121;    /* graphite heading / gradient start */
 
     --color-success: #2e7d32;
     --color-warning: #e07000;
@@ -187,7 +191,24 @@
   padding-bottom: 0.06em;
 }
 :root.light .title-gradient {
-  background-image: linear-gradient(to right, #1b1b22, var(--color-accent));
+  /* Dark-grey → purple, so the leading half reads on a light ground while the
+     accent still carries the tail. */
+  background-image: linear-gradient(to right, #212121, var(--color-accent));
+}
+
+/* Light-theme field refinements. Inputs sit on white with a stronger grey
+   border (a step darker than the #E0E0E0 card border) and take the accent on
+   focus; pills and tags share that stronger border so they read as distinct,
+   tappable surfaces rather than blending into the cards behind them. */
+:root.light .input {
+  background-color: #ffffff;
+  border-color: #bdbdbd;
+}
+:root.light .input:focus {
+  border-color: var(--color-accent);
+}
+:root.light .chip {
+  border-color: #bdbdbd;
 }
 
 /* ---------------------------------------------------------------------------

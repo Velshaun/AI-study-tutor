@@ -3,6 +3,7 @@ import { Copy, LogIn, MessageSquare, Plus, Users } from 'lucide-react'
 import { useState } from 'react'
 
 import EmptyState from '../components/EmptyState'
+import ErrorBanner from '../components/ErrorBanner'
 import Modal from '../components/Modal'
 import PageTitle from '../components/PageTitle'
 import SectionHeader from '../components/SectionHeader'
@@ -122,23 +123,31 @@ function GroupList({ onOpen }) {
 
       <CreateModal
         open={showCreate}
-        onClose={() => setShowCreate(false)}
+        onClose={() => {
+          setShowCreate(false)
+          create.reset() // drop a stale error so it can't reappear on reopen
+        }}
         onSubmit={create.mutate}
         pending={create.isPending}
         error={create.error?.message}
+        onDismissError={create.reset}
       />
       <JoinModal
         open={showJoin}
-        onClose={() => setShowJoin(false)}
+        onClose={() => {
+          setShowJoin(false)
+          join.reset()
+        }}
         onSubmit={join.mutate}
         pending={join.isPending}
         error={join.error?.message}
+        onDismissError={join.reset}
       />
     </div>
   )
 }
 
-function CreateModal({ open, onClose, onSubmit, pending, error }) {
+function CreateModal({ open, onClose, onSubmit, pending, error, onDismissError }) {
   const [name, setName] = useState('')
   return (
     <Modal open={open} title="New group" onClose={onClose}>
@@ -156,7 +165,7 @@ function CreateModal({ open, onClose, onSubmit, pending, error }) {
           placeholder="Group name"
           className="input"
         />
-        {error && <p className="text-sm text-warning">{error}</p>}
+        <ErrorBanner message={error} onDismiss={onDismissError} />
         <button
           type="submit"
           disabled={pending || !name.trim()}
@@ -169,7 +178,7 @@ function CreateModal({ open, onClose, onSubmit, pending, error }) {
   )
 }
 
-function JoinModal({ open, onClose, onSubmit, pending, error }) {
+function JoinModal({ open, onClose, onSubmit, pending, error, onDismissError }) {
   const [code, setCode] = useState('')
   return (
     <Modal open={open} title="Join a group" onClose={onClose}>
@@ -188,7 +197,7 @@ function JoinModal({ open, onClose, onSubmit, pending, error }) {
           className="input text-center font-mono tracking-widest"
           maxLength={16}
         />
-        {error && <p className="text-sm text-warning">{error}</p>}
+        <ErrorBanner message={error} onDismiss={onDismissError} />
         <button
           type="submit"
           disabled={pending || !code.trim()}

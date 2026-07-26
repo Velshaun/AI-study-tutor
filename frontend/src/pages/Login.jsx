@@ -2,6 +2,7 @@ import { GraduationCap, Loader2 } from 'lucide-react'
 import { useState } from 'react'
 import { Navigate } from 'react-router-dom'
 
+import ErrorBanner from '../components/ErrorBanner'
 import { useAuth } from '../hooks/useAuth'
 import { hasOnboarded } from '../lib/preferences'
 import { ROUTES } from '../routes'
@@ -129,7 +130,11 @@ export default function Login() {
             {busy === 'email' ? <Loader2 size={18} className="animate-spin" /> : 'Update password'}
           </button>
         </form>
-        {error && <p className="pt-1 text-center text-sm text-warning">{error}</p>}
+        <ErrorBanner
+          message={error}
+          onDismiss={() => setError(null)}
+          className="mt-3"
+        />
       </Shell>
     )
   }
@@ -198,7 +203,7 @@ export default function Login() {
           </form>
 
           {notice && <p className="text-center text-sm text-success">{notice}</p>}
-          {error && <p className="text-center text-sm text-warning">{error}</p>}
+          <ErrorBanner message={error} onDismiss={() => setError(null)} />
 
           <p className="text-center text-sm text-sec">
             {mode === 'signin' ? 'New here? ' : 'Have an account? '}

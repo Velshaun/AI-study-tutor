@@ -71,6 +71,10 @@ class Lecture(BaseModel):
     id: str
     domain_id: str | None = None
     module_id: str | None = None
+    # Human labels for the player header and Media Session metadata (lock screen
+    # / notification tray). Populated by the detail endpoint; None elsewhere.
+    title: str | None = None
+    module_title: str | None = None
     status: str = "pending"
     error_message: str | None = None
     transcript: str | None = None
@@ -353,7 +357,24 @@ async def lecture_detail(
     Distinct from ``GET /lectures/{domain_id}``, which keys off the *domain*
     per §4.4. The player routes on the lecture id, so it needs this.
     """
-    return _to_lecture(_own_lecture(lecture_id, user.id), with_urls=True)
+    row = _own_lecture(lecture_id, user.id)
+    lecture = _to_lecture(row, with_urls=True)
+
+    # Enrich with human titles for the player header and the lock-screen /
+    # notification-tray metadata: the lecture's own name is its domain's title,
+    # and the "album" shown on the lock screen is the module it belongs to.
+    client = _client()
+    if row.get("domain_id"):
+        rows = (client.table("domains").select("title")
+                .eq("id", row["domain_id"]).limit(1).execute()).data or []
+        if rows:
+            lecture.title = rows[0].get("title")
+    if row.get("module_id"):
+        rows = (client.table("modules").select("title")
+                .eq("id", row["module_id"]).limit(1).execute()).data or []
+        if rows:
+            lecture.module_title = rows[0].get("title")
+    return lecture
 
 
 @router.get("/{lecture_id}/audio", response_model=list[AudioChunk])

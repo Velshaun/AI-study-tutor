@@ -51,6 +51,7 @@ from app.services.qa import (
 from app.services.qa_session import (
     SESSION_IDLE_SECS,
     classify_exchange,
+    classify_intent,
     end_session,
     get_or_create_active_session,
     increment_question_count,
@@ -109,17 +110,29 @@ class AskRequest(BaseModel):
         None, description="Omit to continue the active session, or start one."
     )
     speak: bool = Field(True, description="Narrate the reply in the tutor's voice.")
+    tutor_message: str | None = Field(
+        None,
+        max_length=5000,
+        description="The tutor's last spoken message, for intent classification.",
+    )
 
 
 class ClassifyRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=5000)
+    tutor_message: str | None = Field(
+        None,
+        max_length=5000,
+        description="The tutor's last message (the closing check-in), for "
+                    "context-aware intent detection.",
+    )
 
 
 class ClassifyResponse(BaseModel):
-    kind: str  # 'knowledge' | 'confirmation' | 'closing'
+    kind: str  # 'confirmation' | 'knowledge' | 'unclear'
     classified_by: str
-    # True for the voice-first resume flow: a confirmation or closing means
-    # "carry on with the lecture", a knowledge question means "answer me".
+    # True for the voice-first resume flow: a confirmation — or an unclear reply,
+    # which is treated as one — means "carry on with the lecture"; a knowledge
+    # question means "answer me".
     is_resume_signal: bool
 
 
@@ -285,7 +298,9 @@ async def ask(
     voice = lecture.get("tutor_voice") or "marcus"
     channel = f"qa:{lecture_id}"
 
-    kind, classified_by = classify_exchange(payload.voice_transcription)
+    kind, classified_by = classify_exchange(
+        payload.voice_transcription, payload.tutor_message
+    )
     is_knowledge = kind == "knowledge"
     broadcast.publish(channel, {
         "event": "classified",
@@ -443,15 +458,18 @@ async def classify(
     speaking, whether they confirmed (resume the lecture) or asked something
     (generate an answer). Running the full ``/qa`` pipeline just to find out
     would generate a throwaway acknowledgement and its TTS for every "yeah" —
-    so this exposes the classifier on its own. It is keyword-first, so the
-    common confirmations resolve in microseconds with no model call.
+    so this exposes the classifier on its own.
+
+    Intent is decided by AI from the meaning of the reply in the context of the
+    tutor's last message — no keyword matching. An ``unclear`` reply is a resume
+    signal too: the student is never asked to repeat themselves.
     """
     _one("lectures", lecture_id, user.id, "Lecture")
-    kind, classified_by = classify_exchange(payload.text)
+    intent, classified_by = classify_intent(payload.text, payload.tutor_message)
     return ClassifyResponse(
-        kind=kind,
+        kind=intent,
         classified_by=classified_by,
-        is_resume_signal=kind in ("confirmation", "closing"),
+        is_resume_signal=intent in ("confirmation", "unclear"),
     )
 
 

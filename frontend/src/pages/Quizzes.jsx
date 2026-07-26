@@ -118,6 +118,7 @@ export default function Quizzes() {
           onGenerate={generate.mutate}
           generating={generate.isPending}
           error={generate.error?.message}
+          onDismissError={generate.reset}
         />
       ) : (
         <div className="space-y-3">

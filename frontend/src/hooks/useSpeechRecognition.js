@@ -190,11 +190,14 @@ export function useSpeechRecognition({
     }
   }, [armSilenceTimer, finish, hardStop])
 
-  /** Abandon without submitting. */
+  /** Abandon without submitting. Clears any error too, so a caller dismissing
+   *  the mic (e.g. "Back to the lecture") isn't left stuck in an error state —
+   *  the error lives here, not in the caller, so only this can clear it. */
   const cancel = useCallback(() => {
     finalRef.current = ''
     spokeRef.current = false
     setTranscript('')
+    setError(null)
     clearSilenceTimer()
     listeningRef.current = false
     setListening(false)
@@ -204,6 +207,9 @@ export function useSpeechRecognition({
       /* ignore */
     }
   }, [clearSilenceTimer])
+
+  /** Clear the last error without otherwise touching recognition state. */
+  const clearError = useCallback(() => setError(null), [])
 
   useEffect(() => () => {
     clearSilenceTimer()
@@ -223,5 +229,6 @@ export function useSpeechRecognition({
     start,
     stop: finish, // submit what's captured now
     cancel,
+    clearError,
   }
 }

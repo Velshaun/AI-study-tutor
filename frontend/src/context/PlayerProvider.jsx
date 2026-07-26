@@ -11,6 +11,23 @@ import {
 import { POSITION_SAVE_MS, SKIP_SECONDS } from '../lib/playerConstants'
 import { PlayerContext } from './player-context'
 
+// A 44-byte silent WAV (zero samples). Played inside the mic-tap gesture to
+// unlock the answer element on iOS, where an element must play once from a user
+// gesture before it may play programmatically.
+const SILENT_WAV =
+  'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
+
+// iOS (iPhone + iPadOS, which reports as MacIntel with touch). On iOS, routing a
+// media element through an AudioContext hands its output to Web Audio, which the
+// OS suspends the moment the app is backgrounded or the screen locks — silencing
+// playback. A plain <audio> element keeps playing in the background. So on iOS we
+// never build the analyser graph: reliable background audio matters more than the
+// visualiser, which falls back to a gentle idle wave anyway.
+const IS_IOS =
+  typeof navigator !== 'undefined' &&
+  (/iP(hone|ad|od)/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1))
+
 /**
  * Audio playback for lectures — spec §5.5.
  *
@@ -37,6 +54,10 @@ export function PlayerProvider({ children }) {
   const analyserRef = useRef(null)
   const sourceRef = useRef(null)
   const savedAtRef = useRef(0)
+  // Whether playback is currently *intended*. Guards the async chunk-load path:
+  // if a pause lands between requesting a chunk and its metadata arriving, the
+  // deferred autoplay must not fire and resurrect audio after the user paused.
+  const playIntentRef = useRef(false)
 
   const [lecture, setLecture] = useState(null)
   const [chunks, setChunks] = useState([])
@@ -71,6 +92,28 @@ export function PlayerProvider({ children }) {
     }
   }, [])
 
+  // A *second* element, dedicated to speaking Q&A answers. It's separate from
+  // the lecture element so answer playback never disturbs the lecture's chunk
+  // index, position tracking or analyser graph — the lecture simply stays
+  // paused underneath. Owned here (not created ad hoc in VoiceInput) for one
+  // reason that matters on mobile: iOS only lets an <audio> element play
+  // programmatically once it has played inside a user gesture. `primeAnswerAudio`
+  // unlocks it on the mic tap; `speak` can then autoplay the answer that arrives
+  // a couple of seconds later, outside any gesture.
+  const answerAudioRef = useRef(null)
+  const answerEndedRef = useRef(null)
+  const answerPrimedRef = useRef(false)
+  useEffect(() => {
+    if (typeof Audio === 'undefined') return undefined
+    const el = new Audio()
+    el.preload = 'auto'
+    answerAudioRef.current = el
+    return () => {
+      el.pause()
+      answerAudioRef.current = null
+    }
+  }, [])
+
   const timeline = useMemo(
     () => buildTimeline(splitSentences(lecture?.transcript || ''), chunks, durations),
     [lecture?.transcript, chunks, durations],
@@ -82,8 +125,13 @@ export function PlayerProvider({ children }) {
   )
 
   /** Lazily build the Web Audio graph. Must follow a user gesture, or the
-   *  context starts suspended and the bars never move. */
+   *  context starts suspended and the bars never move.
+   *
+   *  Skipped entirely on iOS: connecting the element to Web Audio there breaks
+   *  background/lock-screen playback (see IS_IOS above). The visualiser degrades
+   *  to its idle wave, which is invisible while backgrounded anyway. */
   const ensureAnalyser = useCallback(() => {
+    if (IS_IOS) return null
     const audio = audioRef.current
     if (analyserRef.current || !audio) return analyserRef.current
     const Ctx = window.AudioContext || window.webkitAudioContext
@@ -136,6 +184,7 @@ export function PlayerProvider({ children }) {
       const chunk = chunks[index]
       if (!audio || !chunk?.url) return
 
+      if (autoplay) playIntentRef.current = true
       setChunkIndex(index)
       audio.src = chunk.url
       audio.playbackRate = speed
@@ -143,7 +192,12 @@ export function PlayerProvider({ children }) {
 
       const start = () => {
         if (offset > 0) audio.currentTime = Math.min(offset, audio.duration || offset)
-        if (autoplay) audio.play().catch(() => setPlaying(false))
+        // Only start if playback is still intended — a pause may have landed
+        // while this chunk was loading.
+        if (autoplay && playIntentRef.current) {
+          audioCtxRef.current?.resume?.()
+          audio.play().catch(() => setPlaying(false))
+        }
       }
       if (audio.readyState >= 1) start()
       else audio.addEventListener('loadedmetadata', start, { once: true })
@@ -211,13 +265,89 @@ export function PlayerProvider({ children }) {
   const play = useCallback(() => {
     const audio = audioRef.current
     if (!audio) return
+    playIntentRef.current = true
+    // Reanchor the timeline to the audio element's true position before playing.
+    // After a voice-Q&A pause the element holds the exact resume point, so this
+    // snaps the transcript highlight/scroll back to it rather than leaving
+    // `position` stale (or at zero). Guarded to currentTime > 0 so it never
+    // clobbers a fresh load that hasn't yet seeked to its saved position.
+    if (audio.currentTime > 0) {
+      setPosition(chunkStartTime(chunkIndex, chunks, durations) + audio.currentTime)
+    }
     ensureAnalyser()
     audioCtxRef.current?.resume?.()
     audio.play().catch(() => setPlaying(false))
-  }, [ensureAnalyser])
+  }, [ensureAnalyser, chunkIndex, chunks, durations])
 
   const pause = useCallback(() => {
+    // Drop the intent first, so any chunk still loading won't autoplay into a
+    // "resumed" state behind the user's back.
+    playIntentRef.current = false
     audioRef.current?.pause()
+    // Suspend the Web Audio graph as well. A MediaElementAudioSourceNode keeps
+    // pulling from the element through the context even after the element is
+    // paused, which on some browsers leaves the last decoded buffer looping or
+    // buzzing — the "last word on repeat" bug. Suspending guarantees silence.
+    // No-op on iOS, where the graph is never built.
+    audioCtxRef.current?.suspend?.()
+  }, [])
+
+  /** Unlock the answer element for later programmatic playback. Call this from
+   *  within a user gesture (the mic tap). Idempotent. */
+  const primeAnswerAudio = useCallback(() => {
+    const el = answerAudioRef.current
+    if (!el || answerPrimedRef.current) return
+    answerPrimedRef.current = true
+    try {
+      el.src = SILENT_WAV
+      const p = el.play()
+      if (p?.then) p.then(() => el.pause()).catch(() => {})
+    } catch {
+      // If the browser rejects the priming clip, speak() still tries directly.
+    }
+  }, [])
+
+  /** Speak a Q&A answer through the dedicated element, pausing the lecture
+   *  first. `onEnded` fires when narration finishes (or can't start) — that's
+   *  the signal to reopen the mic. The lecture is never resumed here. */
+  const speak = useCallback(
+    (url, onEnded) => {
+      const el = answerAudioRef.current
+      if (!el || !url) {
+        onEnded?.()
+        return
+      }
+      audioRef.current?.pause() // lecture stays paused while the tutor speaks
+      if (answerEndedRef.current) {
+        el.removeEventListener('ended', answerEndedRef.current)
+      }
+      const handler = () => {
+        el.removeEventListener('ended', handler)
+        answerEndedRef.current = null
+        onEnded?.()
+      }
+      answerEndedRef.current = handler
+      el.addEventListener('ended', handler)
+      el.src = url
+      el.currentTime = 0
+      el.playbackRate = 1
+      const p = el.play()
+      // Autoplay blocked despite priming — hand back so the mic still reopens
+      // rather than leaving the flow stuck mid-answer.
+      if (p?.catch) p.catch(() => handler())
+    },
+    [],
+  )
+
+  /** Stop any answer narration and drop its ended handler. */
+  const stopSpeaking = useCallback(() => {
+    const el = answerAudioRef.current
+    if (!el) return
+    el.pause()
+    if (answerEndedRef.current) {
+      el.removeEventListener('ended', answerEndedRef.current)
+      answerEndedRef.current = null
+    }
   }, [])
 
   const toggle = useCallback(() => {
@@ -310,26 +440,26 @@ export function PlayerProvider({ children }) {
     }
   }, [chunkIndex, chunks, durations, duration, loadChunk, persistPosition])
 
-  // --- Media Session (lock screen / headset controls) ---------------------
+  // --- Media Session (lock screen / notification-tray controls) -----------
+  // The latest control callbacks, so the action handlers below can be
+  // registered ONCE yet always call current closures. Re-registering handlers
+  // (and re-creating metadata) on every timeupdate — which the old single
+  // effect did, since `skip`/`seek` change with `position` — makes some
+  // platforms drop or flicker the lock-screen controls.
+  const mediaCtl = useRef({ play, pause, skip, seek })
   useEffect(() => {
-    if (!('mediaSession' in navigator) || !lecture) return
+    mediaCtl.current = { play, pause, skip, seek }
+  }, [play, pause, skip, seek])
 
-    navigator.mediaSession.metadata = new window.MediaMetadata({
-      title: lecture.title || 'Lecture',
-      artist: lecture.tutor_voice === 'sophia' ? 'Sophia' : 'Marcus',
-      album: 'ConverseAI Tutor',
-      artwork: [
-        { src: '/artwork-512.png', sizes: '512x512', type: 'image/png' },
-        { src: '/artwork-192.png', sizes: '192x192', type: 'image/png' },
-      ],
-    })
-
+  // Register the transport handlers a single time.
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return undefined
     const handlers = [
-      ['play', () => play()],
-      ['pause', () => pause()],
-      ['seekbackward', () => skip(-SKIP_SECONDS)],
-      ['seekforward', () => skip(SKIP_SECONDS)],
-      ['seekto', (details) => details.seekTime != null && seek(details.seekTime)],
+      ['play', () => mediaCtl.current.play()],
+      ['pause', () => mediaCtl.current.pause()],
+      ['seekbackward', () => mediaCtl.current.skip(-SKIP_SECONDS)],
+      ['seekforward', () => mediaCtl.current.skip(SKIP_SECONDS)],
+      ['seekto', (d) => d.seekTime != null && mediaCtl.current.seek(d.seekTime)],
     ]
     for (const [action, handler] of handlers) {
       try {
@@ -345,7 +475,46 @@ export function PlayerProvider({ children }) {
         } catch { /* ignore */ }
       }
     }
-  }, [lecture, play, pause, skip, seek])
+  }, [])
+
+  // Metadata — set once per lecture (title, tutor as artist, module as album).
+  // Destructured deps so it doesn't re-run on every transcript/position change.
+  const metaTitle = lecture?.title
+  const metaTutor = lecture?.tutor_voice
+  const metaAlbum = lecture?.module_title
+  const hasLecture = Boolean(lecture?.id)
+  useEffect(() => {
+    if (!('mediaSession' in navigator) || !hasLecture) return
+    navigator.mediaSession.metadata = new window.MediaMetadata({
+      title: metaTitle || 'Lecture',
+      artist: metaTutor === 'sophia' ? 'Sophia' : 'Marcus',
+      album: metaAlbum || 'ConverseAI Tutor',
+      artwork: [
+        { src: '/artwork-512.png', sizes: '512x512', type: 'image/png' },
+        { src: '/artwork-192.png', sizes: '192x192', type: 'image/png' },
+      ],
+    })
+  }, [hasLecture, metaTitle, metaTutor, metaAlbum])
+
+  // Returning from the background: while the tab was hidden, `timeupdate` stops
+  // firing, so `position` (and the play/pause state) can lag what the element is
+  // actually doing. Re-sync both to the element's truth, and resume the analyser
+  // context if the OS suspended it. Never pauses — background audio keeps going.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return
+      const audio = audioRef.current
+      if (!audio) return
+      setPosition(chunkStartTime(chunkIndex, chunks, durations) + audio.currentTime)
+      setPlaying(!audio.paused)
+      // Only wake the Web Audio graph if audio is actually playing. Resuming the
+      // context while paused would re-feed the last buffer and bring back the
+      // looping-tail bug on return from the background.
+      if (!audio.paused) audioCtxRef.current?.resume?.()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [chunkIndex, chunks, durations])
 
   useEffect(() => {
     if (!('mediaSession' in navigator)) return
@@ -379,13 +548,15 @@ export function PlayerProvider({ children }) {
       loading, error, minimised, chunkIndex,
       open, openWith, play, pause, toggle, seek, skip, changeSpeed, close,
       setMinimised,
+      speak, stopSpeaking, primeAnswerAudio,
       getAnalyser: () => analyserRef.current,
       ensureAnalyser,
       SKIP_SECONDS,
     }),
     [lecture, chunks, timeline, duration, position, playing, speed, loading,
      error, minimised, chunkIndex, open, openWith, play, pause, toggle, seek,
-     skip, changeSpeed, close, ensureAnalyser],
+     skip, changeSpeed, close, speak, stopSpeaking, primeAnswerAudio,
+     ensureAnalyser],
   )
 
   return <PlayerContext.Provider value={value}>{children}</PlayerContext.Provider>

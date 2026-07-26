@@ -3,17 +3,27 @@
 A session is one conversational thread on one topic. Follow-ups stay in the
 same session; a new topic starts a new one.
 
-    classify_exchange(text)              -> 'knowledge' | 'confirmation' | 'closing'
+    classify_intent(response, tutor_message) -> 'confirmation'|'knowledge'|'unclear'
+    classify_exchange(text, tutor_message)   -> stored 'knowledge'|'confirmation'
     create_session(lecture_id, domain_id) -> session id
     end_session(session_id)               -> sets ended_at
     increment_question_count(session_id)  -> only for knowledge questions
     get_or_create_active_session(lecture_id) -> open session, or a new one
 
-Classification uses keyword matching *then* Gemini, in that order. The keyword
-pass resolves the overwhelmingly common cases — "got it", "yeah let's go",
-anything phrased as a question — without an API call, which matters because
-this sits on the hot path while the student is paused mid-lecture. Gemini is
-consulted only for genuinely ambiguous utterances.
+Classification is entirely AI-driven: a single Gemini call reads the student's
+spoken reply in the context of the tutor's last message (the closing check-in)
+and returns the student's *intent*. There are no hardcoded word or phrase lists
+anywhere — "right on", "good to go", "I think I understand" and countless other
+natural confirmations are recognised by meaning, not by matching a fixed list.
+
+Intent is one of:
+  * confirmation — satisfied, ready to continue the lecture
+  * knowledge    — asking a new question or for more explanation
+  * unclear      — too ambiguous to classify confidently
+
+An unclear reply is treated as a confirmation and the lecture resumes: the
+student is never asked to repeat themselves, and can re-open the mic if they
+did have a question.
 
 Session boundaries (§4.5b):
   * the student signals they're ready to continue  -> 'closing'
@@ -28,7 +38,6 @@ nothing.
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
@@ -37,81 +46,33 @@ from app.database import get_supabase
 
 logger = logging.getLogger(__name__)
 
+# What the AI classifier decides — the student's intent.
+Intent = Literal["confirmation", "knowledge", "unclear"]
+# What gets stored on the exchange row (the DB CHECK constraint permits these).
 ExchangeKind = Literal["knowledge", "confirmation", "closing"]
 
 # §4.5b: a session lapses after 30 seconds of silence and the lecture resumes.
 SESSION_IDLE_SECS = 30
 
-# Keyword matching only applies to short utterances. "Okay, so what is a
-# Trojan?" starts like a confirmation but is plainly a question, so length and
-# question-shape are checked first.
-MAX_KEYWORD_CHARS = 70
-
-CONFIRMATION_PHRASES = (
-    "got it", "gotcha", "okay", "ok", "oh ok", "alright", "all right",
-    "that makes sense", "makes sense", "understood", "i see", "i understand",
-    "yes", "yeah", "yep", "yup", "sure", "right", "cool", "nice", "perfect",
-    "great", "thanks", "thank you", "cheers", "brilliant", "fair enough",
-    "no worries", "sounds good", "clear",
-)
-
-CLOSING_PHRASES = (
-    "ready to continue", "ready", "let's go", "lets go", "let's continue",
-    "lets continue", "move on", "moving on", "good to go", "carry on",
-    "keep going", "continue", "next", "go ahead", "play", "resume",
-    "i'm done", "im done", "that's all", "thats all", "no more questions",
-    "nothing else", "we can continue", "back to the lecture",
-)
-
-QUESTION_STARTERS = (
-    "what", "why", "how", "when", "where", "which", "who", "whose", "whom",
-    "can you", "could you", "would you", "is it", "are they", "does",
-    "do you", "did", "should", "explain", "tell me", "describe", "define",
-    "clarify", "elaborate", "give me an example", "i don't understand",
-    "i dont understand", "i'm confused", "im confused", "not sure what",
-    "what's the difference", "whats the difference",
-)
-
-# Interrogative phrases that mark a question wherever they appear, not just at
-# the start — spoken questions are routinely prefixed with a filler
-# acknowledgement ("okay but what about worms", "right but how does that
-# differ"). Without these, such utterances fall through to a Gemini call for
-# what is obviously a question.
-#
-# Deliberately narrow: bare "what" would misfire on "that's what I thought",
-# so each pattern pins the interrogative to its following word.
-INTERROGATIVE_PATTERNS = tuple(re.compile(p) for p in (
-    r"\bwhat(?:'?s| is| are| was| were| does| do| about| happens| makes)\b",
-    r"\bhow(?:'?s| is| are| does| do| did| can| would| much| many| come)\b",
-    r"\bwhy(?:'?s| is| are| does| do| did| would| not)\b",
-    r"\bwhen(?:'?s| is| are| does| do| did| would)\b",
-    r"\bwhere(?:'?s| is| are| does| do| did)\b",
-    r"\bwhich(?: is| are| one| of)\b",
-    r"\b(?:can|could|would|should) (?:you|i|we|it|they)\b",
-    r"\bis (?:there|that|it|this) (?:a|an|the|any)\b",
-    r"\b(?:difference|differ) (?:between|from)\b",
-    r"\bnot (?:really )?sure (?:what|how|why|if|when)\b",
-    r"\b(?:don'?t|do not) (?:understand|get|follow)\b",
-    r"\b(?:explain|clarify|elaborate)\b",
-    r"\btell me (?:about|more|what|how|why)\b",
-    r"\bwhat if\b",
-))
-
-CLASSIFY_SCHEMA: dict[str, Any] = {
+INTENT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "kind": {
+        "intent": {
             "type": "string",
-            "enum": ["knowledge", "confirmation", "closing"],
+            "enum": ["confirmation", "knowledge", "unclear"],
             "description": (
-                "'knowledge' if asking for information, clarification or "
-                "explanation; 'confirmation' for acknowledgements and "
-                "pleasantries; 'closing' if signalling they're ready to "
-                "resume the lecture."
+                "'confirmation' if the student is satisfied and ready to "
+                "continue the lecture; 'knowledge' if they are asking a new "
+                "question or for more explanation; 'unclear' if the reply is "
+                "too ambiguous to classify confidently."
             ),
         },
+        "confidence": {
+            "type": "number",
+            "description": "Confidence in the chosen intent, from 0 to 1.",
+        },
     },
-    "required": ["kind"],
+    "required": ["intent"],
 }
 
 
@@ -119,113 +80,92 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _normalise(text: str) -> str:
-    """Lowercase, strip punctuation and filler, for keyword comparison."""
-    cleaned = (text or "").lower().strip()
-    cleaned = re.sub(r"\b(um|uh|er|erm|like|you know|i mean|so|well)\b", " ", cleaned)
-    cleaned = re.sub(r"[^\w\s']", " ", cleaned)
-    return re.sub(r"\s+", " ", cleaned).strip()
-
-
 # --- classification ---------------------------------------------------------
-def classify_by_keyword(text: str) -> ExchangeKind | None:
-    """Fast path. Returns None when the utterance needs a real model."""
-    raw = (text or "").strip()
-    if not raw:
-        return None
+def classify_intent(
+    student_response: str, tutor_message: str | None = None
+) -> tuple[Intent, str]:
+    """Detect the student's intent with a single Gemini call — no keyword lists.
 
-    normalised = _normalise(raw)
-    if not normalised:
-        return None
+    Reads the student's spoken reply in the context of the tutor's last message
+    (the closing check-in, e.g. "Does that make sense?") and decides intent from
+    *meaning*, so any natural confirmation works — "right on", "good to go",
+    "I think I understand", "makes sense now" — without matching a fixed list.
 
-    words = normalised.split()
-
-    # Anything question-shaped is a knowledge question, whatever its length.
-    if "?" in raw or any(normalised.startswith(q) for q in QUESTION_STARTERS):
-        return "knowledge"
-
-    # ...including questions buried behind a filler acknowledgement.
-    lowered = raw.lower()
-    if any(pattern.search(lowered) for pattern in INTERROGATIVE_PATTERNS):
-        return "knowledge"
-
-    # Beyond this point only short utterances are safe to match on keywords.
-    if len(raw) > MAX_KEYWORD_CHARS or len(words) > 12:
-        return None
-
-    # Closing is checked before confirmation: "yeah, let's go" is both an
-    # acknowledgement and a signal to resume, and resuming is what matters.
-    if any(phrase in normalised for phrase in CLOSING_PHRASES):
-        return "closing"
-
-    if any(phrase in normalised for phrase in CONFIRMATION_PHRASES):
-        # Every word must be part of the pleasantry — "okay but what about
-        # worms" must not slip through as a confirmation.
-        filler = set()
-        for phrase in CONFIRMATION_PHRASES:
-            filler.update(phrase.split())
-        filler.update({"that", "it", "this", "now", "very", "really", "much", "a"})
-        # Students address the tutor by name: "got it, thanks Marcus".
-        filler.update({"marcus", "sophia"})
-        if all(word in filler for word in words):
-            return "confirmation"
-
-    return None
-
-
-def classify_by_gemini(text: str) -> ExchangeKind | None:
-    """Ask Gemini when keywords are inconclusive. None if unavailable."""
+    Returns ``(intent, decided_by)``. Falls back to ``'knowledge'`` only when
+    Gemini is unavailable, so an API outage never silently swallows a real
+    question. A genuine *unclear* verdict is returned as-is (the caller resumes).
+    """
+    text = (student_response or "").strip()
+    if not text:
+        return "unclear", "empty"
     if not settings.gemini_api_key:
-        return None
+        return "knowledge", "default"
+
+    import json
 
     from google.genai import types
 
     from app.services.domains import _generate
 
+    tutor = (tutor_message or "").strip()
+    context = (
+        f'The tutor had just said to them: "{tutor[:600]}"\n'
+        if tutor
+        else "The tutor had not asked them anything yet.\n"
+    )
     prompt = (
-        "A student paused an audio lecture and said this out loud. Classify "
-        "what they are doing.\n\n"
-        "knowledge    — asking for information, clarification or explanation\n"
-        "confirmation — acknowledging or thanking; no new question\n"
-        "closing      — signalling they are ready to resume the lecture\n\n"
-        f"They said: \"{text.strip()[:600]}\""
+        "A student is partway through an audio lecture, which they paused to "
+        "speak to the tutor. Decide the student's intent from the MEANING of "
+        "what they said in context — never from specific keywords or phrases, "
+        "and never from how short or long the reply is.\n\n"
+        + context
+        + f'The student then said: "{text[:600]}"\n\n'
+        "Classify the reply as exactly one intent:\n"
+        "- confirmation: the student is satisfied and ready to continue the "
+        "lecture. This covers any agreement or acknowledgement — from a plain "
+        "\"yes\" to \"good to go\", \"makes sense now\", \"I understand now\", "
+        "\"sounds good\", \"alright let's keep going\" — i.e. any signal that "
+        "they are done for now.\n"
+        "- knowledge: the student is asking a new question, or asking for more "
+        "explanation, clarification, repetition or an example.\n"
+        "- unclear: the reply is too ambiguous to classify confidently, such as "
+        "a hesitant \"hmm\", \"maybe\", or \"okay I think so\".\n\n"
+        "Give a confidence from 0 to 1 for your chosen intent."
     )
     try:
         response = _generate(
-            "classify",
+            "classify_intent",
             model=settings.gemini_model,
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_schema=CLASSIFY_SCHEMA,
+                response_schema=INTENT_SCHEMA,
                 temperature=0.0,
             ),
         )
-        import json
-
-        kind = json.loads(response.text).get("kind")
-        return kind if kind in ("knowledge", "confirmation", "closing") else None
+        intent = json.loads(response.text).get("intent")
+        if intent in ("confirmation", "knowledge", "unclear"):
+            return intent, "gemini"
     except Exception as exc:  # noqa: BLE001 - classification must never block
-        logger.warning("Gemini classification failed, defaulting: %s", exc)
-        return None
-
-
-def classify_exchange(text: str) -> tuple[ExchangeKind, str]:
-    """Classify an utterance. Returns ``(kind, decided_by)``.
-
-    Defaults to 'knowledge' when nothing is certain — answering a pleasantry
-    wastes a little money, but silently swallowing a real question loses the
-    student's actual point.
-    """
-    keyword = classify_by_keyword(text)
-    if keyword:
-        return keyword, "keyword"
-
-    gemini = classify_by_gemini(text)
-    if gemini:
-        return gemini, "gemini"
-
+        logger.warning(
+            "Intent classification failed, defaulting to knowledge: %s", exc
+        )
     return "knowledge", "default"
+
+
+def classify_exchange(
+    text: str, tutor_message: str | None = None
+) -> tuple[ExchangeKind, str]:
+    """Classify an utterance for the ask endpoint, mapping the AI intent onto
+    the stored ``exchange_kind``.
+
+        knowledge    -> 'knowledge'    (answered; counts toward the badge)
+        confirmation -> 'confirmation' (brief acknowledgement, no answer)
+        unclear      -> 'confirmation' (treated as one; the lecture resumes)
+    """
+    intent, decided_by = classify_intent(text, tutor_message)
+    kind: ExchangeKind = "knowledge" if intent == "knowledge" else "confirmation"
+    return kind, decided_by
 
 
 # --- session titling --------------------------------------------------------

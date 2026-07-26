@@ -46,9 +46,19 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // Audio is deliberately NOT precached — only app-shell assets are.
         globPatterns: ['**/*.{js,css,html,svg,woff2}'],
         navigateFallbackDenylist: [/^\/api/],
         runtimeCaching: [
+          {
+            // Never let the worker touch streaming lecture/answer audio. Caching
+            // it (or mishandling a Range request) would break playback and
+            // seeking, so it always goes straight to the network. Listed first
+            // so it wins before any other rule.
+            urlPattern: ({ request }) =>
+              request.destination === 'audio' || request.destination === 'video',
+            handler: 'NetworkOnly',
+          },
           {
             // App shell / static assets — serve instantly, refresh in the
             // background.
