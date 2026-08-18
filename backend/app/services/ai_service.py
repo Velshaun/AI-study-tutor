@@ -21,6 +21,7 @@ from typing import Any
 from app.config import settings
 from app.database import get_supabase
 from app.services.domains import _generate, quota_hint
+from app.services.terms import TERM_PROMPT_RULES, TERM_SCHEMA, clean_terms
 
 logger = logging.getLogger(__name__)
 
@@ -164,8 +165,9 @@ FLASHCARD_SCHEMA: dict[str, Any] = {
                               "description": "The prompt side — a term or question."},
                     "back": {"type": "string",
                              "description": "The answer side — concise, self-contained."},
+                    "terms": TERM_SCHEMA,
                 },
-                "required": ["front", "back"],
+                "required": ["front", "back", "terms"],
             },
         },
     },
@@ -197,7 +199,9 @@ def generate_flashcards(
         "- Base every card on the material below — do not invent facts that "
         "contradict it. You may add widely-known context where it helps.\n"
         "- Plain text only: no markdown, numbering or 'Front:'/'Back:' labels.\n"
-        "- British spelling.\n\n"
+        "- British spelling.\n"
+        + TERM_PROMPT_RULES
+        + "\n"
         f"--- DOMAIN MATERIAL ---\n{domain_content or topic or subject}"
     )
 
@@ -223,7 +227,11 @@ def generate_flashcards(
         front = (card.get("front") or "").strip()
         back = (card.get("back") or "").strip()
         if front and back:
-            cards.append({"front": front[:500], "back": back[:1000]})
+            cards.append({
+                "front": front[:500],
+                "back": back[:1000],
+                "terms": clean_terms(card.get("terms"), front, back),
+            })
     if not cards:
         raise GenerationError("No usable flashcards were produced.")
     return cards
@@ -260,9 +268,10 @@ QUIZ_SCHEMA: dict[str, Any] = {
                                        "options: why that option is correct, or why "
                                        "it is wrong.",
                     },
+                    "terms": TERM_SCHEMA,
                 },
                 "required": ["question", "options", "correct_index", "explanation",
-                             "option_explanations"],
+                             "option_explanations", "terms"],
             },
         },
     },
@@ -303,7 +312,9 @@ def generate_quiz(
         "tested). A learner who guessed correctly should still learn something "
         "from the other three.\n"
         "- Base questions on the material below. Plain text, British spelling, "
-        "no markdown or 'A)' prefixes inside the option text.\n\n"
+        "no markdown or 'A)' prefixes inside the option text.\n"
+        + TERM_PROMPT_RULES
+        + "\n"
         f"--- DOMAIN MATERIAL ---\n{domain_content or topic or subject}"
     )
 
@@ -348,6 +359,9 @@ def generate_quiz(
             "correct_index": correct,
             "explanation": (q.get("explanation") or "").strip()[:1000],
             "option_explanations": per_option,
+            # Tappable terms are matched against everything the learner reads,
+            # so one in an option is highlighted there too.
+            "terms": clean_terms(q.get("terms"), text, *options, *per_option),
         })
     if not questions:
         raise GenerationError("No usable quiz questions were produced.")
@@ -520,9 +534,11 @@ PRACTICE_SCHEMA: dict[str, Any] = {
                         "description": "2-3 sentences explaining WHY the correct "
                         "answer is correct — the Why Card.",
                     },
+                    "terms": TERM_SCHEMA,
                 },
                 "required": [
                     "question_text", "options", "correct_option", "why_summary",
+                    "terms",
                 ],
             },
         },
@@ -634,7 +650,9 @@ def _generate_practice_batch(
         "right should still learn something from the other three.\n"
         + avoid_clause
         + "- Base everything on the material below. Plain text, British spelling, "
-        "no markdown and no 'A)' prefixes inside option text.\n\n"
+        "no markdown and no 'A)' prefixes inside option text.\n"
+        + TERM_PROMPT_RULES
+        + "\n"
         f"--- DOMAIN MATERIAL ---\n{domain_content or topic or subject}"
     )
 
@@ -685,6 +703,10 @@ def _generate_practice_batch(
             "options": options,
             "correct_option": correct,
             "why_summary": (q.get("why_summary") or "").strip()[:1200],
+            "terms": clean_terms(
+                q.get("terms"), text, *[o["text"] for o in options],
+                *[o.get("explanation", "") for o in options],
+            ),
         })
     if not out:
         raise GenerationError("No usable practice questions were produced.")

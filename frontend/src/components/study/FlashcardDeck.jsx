@@ -2,6 +2,10 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Check, RotateCcw, Star, Trash2, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
+import { planExpansions } from '../../lib/terms'
+import TermSheet from './TermSheet'
+import TermText from './TermText'
+
 /**
  * Swipeable flashcard deck — spec Prompt 6.5.
  *
@@ -12,6 +16,10 @@ import { useMemo, useState } from 'react'
  *
  * The flip is a 3D rotateY; the whole card is the drag target. `direction`
  * carries the swipe so the exit animation flies the card off the matching side.
+ *
+ * Key terms on either face are tappable for a definition, with acronyms
+ * expanded inline the first time they appear. Tapping a term must not flip the
+ * card, so those taps stop propagating.
  */
 
 const SWIPE_THRESHOLD = 100
@@ -21,6 +29,7 @@ export default function FlashcardDeck({ cards, onFavourite, onDelete, onRestart 
   const [flipped, setFlipped] = useState(false)
   const [direction, setDirection] = useState(0)
   const [known, setKnown] = useState(0)
+  const [openTerm, setOpenTerm] = useState(null)
 
   const current = cards[index]
   const done = index >= cards.length
@@ -28,6 +37,13 @@ export default function FlashcardDeck({ cards, onFavourite, onDelete, onRestart 
   const progress = useMemo(
     () => (cards.length ? Math.round((index / cards.length) * 100) : 0),
     [index, cards.length],
+  )
+
+  // Front then back, so an acronym is expanded on the side the learner reads
+  // first and not repeated on the other.
+  const terms = current?.terms || []
+  const [frontExpand, backExpand] = planExpansions(
+    [current?.front || '', current?.back || ''], terms,
   )
 
   function advance(dir, countKnown) {
@@ -109,7 +125,7 @@ export default function FlashcardDeck({ cards, onFavourite, onDelete, onRestart 
               opacity: 0,
               transition: { duration: 0.18 },
             })}
-            onClick={() => setFlipped((f) => !f)}
+            onClick={() => !openTerm && setFlipped((f) => !f)}
             className="absolute inset-0 cursor-pointer"
           >
             <motion.div
@@ -123,7 +139,14 @@ export default function FlashcardDeck({ cards, onFavourite, onDelete, onRestart 
                 <span className="mb-3 text-xs font-medium uppercase tracking-wider text-sec">
                   Question
                 </span>
-                <p className="text-lg font-medium text-pri">{current.front}</p>
+                <p className="text-lg font-medium text-pri">
+                  <TermText
+                    text={current.front}
+                    terms={terms}
+                    expand={frontExpand}
+                    onSelect={setOpenTerm}
+                  />
+                </p>
                 <span className="mt-6 text-xs text-sec">Tap to flip</span>
               </Face>
               {/* Back */}
@@ -131,7 +154,14 @@ export default function FlashcardDeck({ cards, onFavourite, onDelete, onRestart 
                 <span className="mb-3 text-xs font-medium uppercase tracking-wider text-accent2">
                   Answer
                 </span>
-                <p className="text-base leading-relaxed text-pri">{current.back}</p>
+                <p className="text-base leading-relaxed text-pri">
+                  <TermText
+                    text={current.back}
+                    terms={terms}
+                    expand={backExpand}
+                    onSelect={setOpenTerm}
+                  />
+                </p>
               </Face>
             </motion.div>
           </motion.div>
@@ -182,6 +212,8 @@ export default function FlashcardDeck({ cards, onFavourite, onDelete, onRestart 
       <p className="text-center text-xs text-sec">
         Swipe right if you knew it, left to skip
       </p>
+
+      <TermSheet term={openTerm} onClose={() => setOpenTerm(null)} />
     </div>
   )
 }

@@ -41,7 +41,7 @@ from pydantic import BaseModel, Field
 
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import exam_profile
+from app.services import exam_profile, schema_features
 from app.services.ai_service import (
     PRACTICE_BATCH_SIZE,
     GenerationError,
@@ -107,6 +107,9 @@ class PracticeQuestion(BaseModel):
     question_text: str
     options: list[PracticeOption] = Field(default_factory=list)
     is_flagged: bool = False
+    # Tappable vocabulary and acronyms found in this text, generated with it so
+    # the definition popover opens with no round trip.
+    terms: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class PracticeSet(BaseModel):
@@ -199,6 +202,7 @@ def _row_to_question(row: dict[str, Any], *, flagged: bool) -> PracticeQuestion:
         question_text=row.get("prompt") or "",
         options=options,
         is_flagged=flagged,
+        terms=row.get("terms") or [],
     )
 
 
@@ -419,9 +423,11 @@ def _generate_into(
             "why_summary": q["why_summary"],
             "position": start + i,
             "points": 1,
+            "terms": q.get("terms") or [],
         })
     if not rows:
         return []
+    rows = schema_features.strip_unsupported("practice_questions", rows, "terms")
     return (_client().table("practice_questions").insert(rows).execute()).data or []
 
 

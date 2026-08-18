@@ -50,6 +50,12 @@ class Question(BaseModel):
     options: list[str]
     correct_index: int
     explanation: str = ""
+    # Why each option is right or wrong, positionally aligned with `options`.
+    option_explanations: list[str] = Field(default_factory=list)
+    # Tappable vocabulary and acronyms in this question, generated with it so
+    # the definition popover opens with no round trip. Quizzes store their whole
+    # question list as jsonb, so these ride along with no schema change.
+    terms: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class Quiz(BaseModel):
@@ -126,6 +132,8 @@ def _to_quiz(row: dict[str, Any]) -> Quiz:
             options=q.get("options") or [],
             correct_index=int(q.get("correct_index", 0)),
             explanation=q.get("explanation") or "",
+            option_explanations=q.get("option_explanations") or [],
+            terms=q.get("terms") or [],
         )
         for i, q in enumerate(_questions(row))
     ]

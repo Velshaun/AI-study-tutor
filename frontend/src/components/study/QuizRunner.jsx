@@ -2,6 +2,10 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Check, Clock, RotateCcw, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
+import { planExpansions } from '../../lib/terms'
+import TermSheet from './TermSheet'
+import TermText from './TermText'
+
 /**
  * Quiz runner — spec Prompt 6.6.
  *
@@ -13,6 +17,10 @@ import { useEffect, useRef, useState } from 'react'
  * When the exam carries a duration the run is timed: a countdown sits above the
  * progress bar and, at zero, the paper is submitted as it stands — the same
  * thing that happens in the real sitting.
+ *
+ * Key vocabulary and acronyms in the question are tappable: acronyms carry
+ * their expansion inline on first mention, and any term opens a definition
+ * sheet. That data is generated with the question, so it costs nothing to show.
  *
  * The correct answers ship with the quiz (it's a study quiz, not a proctored
  * exam), so feedback is instant with no round-trip. The full set of answers is
@@ -37,6 +45,7 @@ export default function QuizRunner({ quiz, onSubmit, onRestart }) {
   const [result, setResult] = useState(null)
   const [remaining, setRemaining] = useState(durationMinutes * 60)
   const [timedOut, setTimedOut] = useState(false)
+  const [openTerm, setOpenTerm] = useState(null)
 
   // The countdown works from a fixed deadline rather than by decrementing, so a
   // backgrounded tab (where timers are throttled) still comes back honest.
@@ -79,7 +88,8 @@ export default function QuizRunner({ quiz, onSubmit, onRestart }) {
   }, [durationMinutes, finished])
 
   function choose(optionIndex) {
-    if (locked) return
+    // A tap that opened a definition must not also lock in an answer.
+    if (locked || openTerm) return
     const next = [...answersRef.current]
     next[index] = optionIndex
     answersRef.current = next
@@ -148,6 +158,12 @@ export default function QuizRunner({ quiz, onSubmit, onRestart }) {
   if (!q) return null
 
   const optionExplanations = q.option_explanations || []
+  const terms = q.terms || []
+  // An acronym expands on the first occurrence a learner reads, counted across
+  // the whole question rather than per line.
+  const [questionExpand, ...optionExpand] = planExpansions(
+    [q.question, ...q.options], terms,
+  )
   // Under a tenth of the clock (or the last two minutes) counts as the run-in.
   const urgent =
     durationMinutes > 0 &&
@@ -190,7 +206,14 @@ export default function QuizRunner({ quiz, onSubmit, onRestart }) {
           transition={{ duration: 0.2 }}
           className="space-y-4"
         >
-          <p className="text-lg font-medium text-pri">{q.question}</p>
+          <p className="text-lg font-medium text-pri">
+            <TermText
+              text={q.question}
+              terms={terms}
+              expand={questionExpand}
+              onSelect={setOpenTerm}
+            />
+          </p>
 
           <div className="space-y-2.5">
             {q.options.map((option, i) => {
@@ -228,7 +251,14 @@ export default function QuizRunner({ quiz, onSubmit, onRestart }) {
                     >
                       {String.fromCharCode(65 + i)}
                     </span>
-                    <span className="flex-1 text-sm text-pri">{option}</span>
+                    <span className="flex-1 text-sm text-pri">
+                      <TermText
+                        text={option}
+                        terms={terms}
+                        expand={optionExpand[i]}
+                        onSelect={setOpenTerm}
+                      />
+                    </span>
                     {showState && isCorrect && (
                       <Check size={18} className="shrink-0 text-success" aria-hidden="true" />
                     )}
@@ -265,6 +295,8 @@ export default function QuizRunner({ quiz, onSubmit, onRestart }) {
       <button onClick={next} disabled={!locked} className="btn-primary w-full">
         {index < questions.length - 1 ? 'Next question' : 'Finish & score'}
       </button>
+
+      <TermSheet term={openTerm} onClose={() => setOpenTerm(null)} />
     </div>
   )
 }

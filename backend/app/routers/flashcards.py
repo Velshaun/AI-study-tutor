@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.database import get_supabase
+from app.services import schema_features
 from app.routers.auth import AuthUser, get_current_user
 from app.services.ai_service import (
     GenerationError,
@@ -53,6 +54,9 @@ class Flashcard(BaseModel):
     module_id: str | None = None
     front: str
     back: str
+    # Tappable vocabulary and acronyms found in this text, generated with it so
+    # the definition popover opens with no round trip.
+    terms: list[dict[str, Any]] = Field(default_factory=list)
     difficulty: str | None = None
     is_favourite: bool = False
     created_at: datetime | None = None
@@ -152,9 +156,11 @@ async def generate(
             "front": c["front"],
             "back": c["back"],
             "difficulty": difficulty,
+            "terms": c.get("terms") or [],
         }
         for c in cards
     ]
+    rows = schema_features.strip_unsupported("flashcards", rows, "terms")
     inserted = _client().table("flashcards").insert(rows).execute()
     return [_to_card(r) for r in (inserted.data or [])]
 

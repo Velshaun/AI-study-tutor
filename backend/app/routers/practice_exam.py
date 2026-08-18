@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import exam_profile
+from app.services import exam_profile, schema_features
 from app.services.ai_service import (
     MAX_QUIZ_QUESTIONS,
     GenerationError,
@@ -100,6 +100,9 @@ class ExamQuestion(BaseModel):
     # is right, or why it is wrong. Shown for every option once an answer is in,
     # so a lucky guess still teaches the other three.
     option_explanations: list[str] = Field(default_factory=list)
+    # Tappable vocabulary and acronyms found in this text, generated with it so
+    # the definition popover opens with no round trip.
+    terms: list[dict[str, Any]] = Field(default_factory=list)
     origin: str = "generated"  # 'generated' | 'imported'
     domain_title: str | None = None
 
@@ -521,6 +524,7 @@ async def generate_exam(
                     correct_index=gq["correct_index"],
                     explanation=gq["explanation"],
                     option_explanations=gq.get("option_explanations") or [],
+                    terms=gq.get("terms") or [],
                     origin="generated",
                     domain_title=domain.get("title"),
                 ))
@@ -556,19 +560,24 @@ async def generate_exam(
         "total_points": len(questions),
     }).execute().data[0]
 
-    client.table("practice_questions").insert([
-        {
-            "exam_id": exam_row["id"],
-            "kind": "mcq",
-            "prompt": q.question,
-            "options": _options_payload(q),
-            "correct_index": q.correct_index,
-            "expected_answer": q.explanation,
-            "points": 1,
-            "position": q.index,
-        }
-        for q in questions
-    ]).execute()
+    client.table("practice_questions").insert(schema_features.strip_unsupported(
+        "practice_questions",
+        [
+            {
+                "exam_id": exam_row["id"],
+                "kind": "mcq",
+                "prompt": q.question,
+                "options": _options_payload(q),
+                "correct_index": q.correct_index,
+                "expected_answer": q.explanation,
+                "points": 1,
+                "position": q.index,
+                "terms": q.terms,
+            }
+            for q in questions
+        ],
+        "terms",
+    )).execute()
 
     return PracticeExam(
         id=exam_row["id"],
@@ -639,6 +648,7 @@ def _to_exam(row: dict[str, Any], questions: list[dict[str, Any]]) -> PracticeEx
                 correct_index=int(q.get("correct_index") or 0),
                 explanation=q.get("expected_answer") or "",
                 option_explanations=_option_explanations(q.get("options")),
+                terms=q.get("terms") or [],
             )
             for i, q in enumerate(questions)
         ],

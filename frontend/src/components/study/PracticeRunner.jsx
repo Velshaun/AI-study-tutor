@@ -2,7 +2,10 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { CheckCheck, CheckCircle, Flag, Lightbulb, Loader2, XCircle } from 'lucide-react'
 import { useState } from 'react'
 
+import { planExpansions } from '../../lib/terms'
 import ErrorBanner from '../ErrorBanner'
+import TermSheet from './TermSheet'
+import TermText from './TermText'
 
 /**
  * Practice Exam Mode runner — spec 6.4 / Prompt 11.
@@ -43,6 +46,7 @@ export default function PracticeRunner({
   const [revealed, setRevealed] = useState(null) // AnswerResult once submitted
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
+  const [openTerm, setOpenTerm] = useState(null)
 
   const count = Math.max(total || 0, questions.length)
   const q = questions[index]
@@ -89,6 +93,11 @@ export default function PracticeRunner({
   // After the reveal, options come from the server payload (they carry the
   // explanations); before it, from the question itself.
   const options = revealed?.options?.length ? revealed.options : q?.options || []
+  const terms = q?.terms || []
+  // Acronyms expand once per question, on the first line that mentions them.
+  const [questionExpand, ...optionExpand] = planExpansions(
+    [q?.question_text || '', ...options.map((o) => o.text)], terms,
+  )
 
   return (
     <div className="space-y-5">
@@ -127,17 +136,27 @@ export default function PracticeRunner({
           transition={{ duration: 0.2 }}
           className="space-y-4"
         >
-          <p className="text-lg font-medium text-pri">{q.question_text}</p>
+          <p className="text-lg font-medium text-pri">
+            <TermText
+              text={q.question_text}
+              terms={terms}
+              expand={questionExpand}
+              onSelect={setOpenTerm}
+            />
+          </p>
 
           <div className="space-y-2.5">
-            {options.map((opt) => (
+            {options.map((opt, i) => (
               <OptionCard
                 key={opt.label}
                 option={opt}
                 selected={selected === opt.label}
                 revealed={!!revealed}
                 isCorrect={revealed?.correct_option === opt.label}
-                onChoose={() => !revealed && setSelected(opt.label)}
+                terms={terms}
+                expand={optionExpand[i]}
+                onTerm={setOpenTerm}
+                onChoose={() => !revealed && !openTerm && setSelected(opt.label)}
               />
             ))}
           </div>
@@ -221,6 +240,8 @@ export default function PracticeRunner({
           onNext={advance}
         />
       )}
+
+      <TermSheet term={openTerm} onClose={() => setOpenTerm(null)} />
     </div>
   )
 }
@@ -274,7 +295,9 @@ function Actions({ mode, isCorrect, onFlag, onGotIt, onNext }) {
   )
 }
 
-function OptionCard({ option, selected, revealed, isCorrect, onChoose }) {
+function OptionCard({
+  option, selected, revealed, isCorrect, terms, expand, onTerm, onChoose,
+}) {
   const wrongPick = revealed && selected && !isCorrect
 
   let tone = 'border-border bg-surface hover:border-accent/50'
@@ -300,7 +323,14 @@ function OptionCard({ option, selected, revealed, isCorrect, onChoose }) {
         >
           {option.label}
         </span>
-        <span className="flex-1 text-sm text-pri">{option.text}</span>
+        <span className="flex-1 text-sm text-pri">
+          <TermText
+            text={option.text}
+            terms={terms}
+            expand={expand}
+            onSelect={onTerm}
+          />
+        </span>
         {revealed && isCorrect && (
           <CheckCircle size={18} className="shrink-0 text-success" aria-hidden="true" />
         )}
