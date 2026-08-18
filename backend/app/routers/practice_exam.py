@@ -79,8 +79,13 @@ class ImportedSet(BaseModel):
 class GenerateRequest(BaseModel):
     module_id: str
     # Unset means "as long as the real exam" — resolved from the module's stated
-    # exam length, else its largest imported past paper.
+    # exam length, the published spec for the certification it's about, else its
+    # largest imported past paper.
     question_count: int | None = Field(None, ge=1, le=MAX_QUESTIONS)
+    # Unset means "as long as the real sitting", scaled to a shorter run.
+    duration_minutes: int | None = Field(
+        None, ge=1, le=exam_profile.MAX_DURATION_MINUTES,
+    )
     include_imported: bool = True
     difficulty: str | None = None
 
@@ -91,6 +96,10 @@ class ExamQuestion(BaseModel):
     options: list[str]
     correct_index: int
     explanation: str = ""
+    # One line per option, positionally aligned with `options`: why that choice
+    # is right, or why it is wrong. Shown for every option once an answer is in,
+    # so a lucky guess still teaches the other three.
+    option_explanations: list[str] = Field(default_factory=list)
     origin: str = "generated"  # 'generated' | 'imported'
     domain_title: str | None = None
 
@@ -115,6 +124,7 @@ class QuestionResult(BaseModel):
     correct_index: int
     is_correct: bool
     explanation: str = ""
+    option_explanations: list[str] = Field(default_factory=list)
 
 
 class ExamResult(BaseModel):
@@ -423,6 +433,8 @@ def _imported_to_exam_q(row: dict[str, Any], index: int) -> ExamQuestion | None:
         index=index,
         question=row.get("question_text") or "",
         options=texts,
+        # An imported paper explains its answer, not each distractor.
+        option_explanations=[""] * len(texts),
         correct_index=correct_index,
         explanation=row.get("why_summary") or "",
         origin="imported",
@@ -508,6 +520,7 @@ async def generate_exam(
                     options=gq["options"],
                     correct_index=gq["correct_index"],
                     explanation=gq["explanation"],
+                    option_explanations=gq.get("option_explanations") or [],
                     origin="generated",
                     domain_title=domain.get("title"),
                 ))
@@ -532,7 +545,9 @@ async def generate_exam(
     for i, q in enumerate(questions):
         q.index = i
 
-    duration = exam_profile.exam_duration_minutes(len(questions), module)
+    duration = exam_profile.exam_duration_minutes(
+        len(questions), module, requested=payload.duration_minutes,
+    )
     exam_row = client.table("practice_exams").insert({
         "module_id": payload.module_id,
         "user_id": user.id,
@@ -546,7 +561,7 @@ async def generate_exam(
             "exam_id": exam_row["id"],
             "kind": "mcq",
             "prompt": q.question,
-            "options": q.options,
+            "options": _options_payload(q),
             "correct_index": q.correct_index,
             "expected_answer": q.explanation,
             "points": 1,
@@ -569,6 +584,38 @@ async def generate_exam(
 # ============================================================================
 # Take / grade
 # ============================================================================
+def _options_payload(q: ExamQuestion) -> list[dict[str, str]]:
+    """How an exam question's options are stored.
+
+    ``practice_questions.options`` is jsonb and already holds objects for
+    practice mode, so per-option explanations ride along with the option text
+    rather than needing a column of their own. Rows written before this keep
+    working — see ``_option_texts``.
+    """
+    explanations = q.option_explanations or []
+    return [
+        {"text": text,
+         "explanation": explanations[i] if i < len(explanations) else ""}
+        for i, text in enumerate(q.options)
+    ]
+
+
+def _option_texts(raw: list[Any] | None) -> list[str]:
+    """Option text, from either storage shape (plain string or {text,...})."""
+    return [
+        o if isinstance(o, str) else (o or {}).get("text", "")
+        for o in (raw or [])
+    ]
+
+
+def _option_explanations(raw: list[Any] | None) -> list[str]:
+    """Per-option explanations; empty strings for exams written before them."""
+    return [
+        "" if isinstance(o, str) else ((o or {}).get("explanation") or "")
+        for o in (raw or [])
+    ]
+
+
 def _exam_questions(exam_id: str) -> list[dict[str, Any]]:
     return (
         _client().table("practice_questions").select("*")
@@ -588,9 +635,10 @@ def _to_exam(row: dict[str, Any], questions: list[dict[str, Any]]) -> PracticeEx
             ExamQuestion(
                 index=q.get("position", i),
                 question=q.get("prompt") or "",
-                options=q.get("options") or [],
+                options=_option_texts(q.get("options")),
                 correct_index=int(q.get("correct_index") or 0),
                 explanation=q.get("expected_answer") or "",
+                option_explanations=_option_explanations(q.get("options")),
             )
             for i, q in enumerate(questions)
         ],
@@ -651,6 +699,7 @@ async def submit_exam(
         results.append(QuestionResult(
             index=i, chosen_index=chosen, correct_index=correct_index,
             is_correct=is_correct, explanation=q.get("expected_answer") or "",
+            option_explanations=_option_explanations(q.get("options")),
         ))
 
     total = len(questions)

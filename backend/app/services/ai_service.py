@@ -253,8 +253,16 @@ QUIZ_SCHEMA: dict[str, Any] = {
                         "description": "Why the correct option is right, one or two "
                                        "sentences.",
                     },
+                    "option_explanations": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "One line per option, in the same order as "
+                                       "options: why that option is correct, or why "
+                                       "it is wrong.",
+                    },
                 },
-                "required": ["question", "options", "correct_index", "explanation"],
+                "required": ["question", "options", "correct_index", "explanation",
+                             "option_explanations"],
             },
         },
     },
@@ -289,6 +297,11 @@ def generate_quiz(
         "answer — no obviously silly options.\n"
         "- The explanation says why the correct option is right (and, where "
         "useful, why a tempting distractor is wrong).\n"
+        "- option_explanations: one line for EVERY option, in the same order. "
+        "For the correct one say why it is right; for each wrong one say what "
+        "makes it wrong (what it actually does, or the distinction being "
+        "tested). A learner who guessed correctly should still learn something "
+        "from the other three.\n"
         "- Base questions on the material below. Plain text, British spelling, "
         "no markdown or 'A)' prefixes inside the option text.\n\n"
         f"--- DOMAIN MATERIAL ---\n{domain_content or topic or subject}"
@@ -323,11 +336,18 @@ def generate_quiz(
             continue
         if not 0 <= correct <= 3:
             continue
+        # One line per option, positionally aligned; padded so index maths
+        # downstream never has to bounds-check.
+        per_option = [
+            str(e).strip()[:400] for e in (q.get("option_explanations") or [])
+        ][:4]
+        per_option += [""] * (4 - len(per_option))
         questions.append({
             "question": text[:1000],
             "options": [o[:400] for o in options],
             "correct_index": correct,
             "explanation": (q.get("explanation") or "").strip()[:1000],
+            "option_explanations": per_option,
         })
     if not questions:
         raise GenerationError("No usable quiz questions were produced.")
@@ -480,8 +500,15 @@ PRACTICE_SCHEMA: dict[str, Any] = {
                                     "names, normalised to lower snake_case "
                                     "(e.g. 'tcp_ip', 'mitochondrion').",
                                 },
+                                "explanation": {
+                                    "type": "string",
+                                    "description": "Why this option is correct, "
+                                    "or why it is wrong, in one or two "
+                                    "sentences.",
+                                },
                             },
-                            "required": ["label", "text", "term_key"],
+                            "required": ["label", "text", "term_key",
+                                         "explanation"],
                         },
                     },
                     "correct_option": {
@@ -601,6 +628,10 @@ def _generate_practice_batch(
         "lower snake_case (letters, digits and underscores only, e.g. 'tcp_ip').\n"
         "- why_summary is a 2-3 sentence explanation of WHY the correct answer "
         "is correct — this is shown as a highlighted 'Why' card.\n"
+        "- EVERY option carries its own explanation: for the correct one, why "
+        "it is right; for each wrong one, what makes it wrong — what it "
+        "actually does, or the distinction being tested. A learner who guessed "
+        "right should still learn something from the other three.\n"
         + avoid_clause
         + "- Base everything on the material below. Plain text, British spelling, "
         "no markdown and no 'A)' prefixes inside option text.\n\n"
@@ -639,6 +670,10 @@ def _generate_practice_batch(
                 "label": label,
                 "text": otext[:400],
                 "term_key": _normalise_term(o.get("term_key") or otext),
+                # Why this option is right or wrong, written alongside the
+                # question so every choice can be explained the instant an
+                # answer lands — no second call, nothing to look up.
+                "explanation": (o.get("explanation") or "").strip()[:600],
             })
         # Keep only well-formed 4-option questions with a valid correct label.
         labels = [o["label"] for o in options]

@@ -10,9 +10,12 @@ Resolution order — first hit wins:
   1. an explicit request (the learner picked a count in the UI),
   2. ``modules.exam_question_count`` — the real paper's length, as stated by the
      learner (LPI Linux Essentials: 40),
-  3. the largest imported practice-exam batch for the module — a past paper the
-     learner uploaded is strong evidence of the real length,
-  4. ``DEFAULT_QUESTION_COUNT``.
+  3. the published spec for the certification the module is about, from
+     ``exam_catalog`` — a module titled "CompTIA Security+" sits 90 questions
+     in 90 minutes whether or not anyone has said so,
+  4. the largest imported practice-exam batch for the module — a past paper the
+     learner uploaded is evidence of the real length,
+  5. ``DEFAULT_QUESTION_COUNT``.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import logging
 from typing import Any
 
 from app.database import get_supabase
+from app.services import exam_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +35,8 @@ MAX_QUESTION_COUNT = 100
 DEFAULT_QUESTION_COUNT = 20
 # Typical multiple-choice pacing, for a realistic timed run.
 MINUTES_PER_QUESTION = 1.5
+# Long enough for a bar-exam-style sitting, short enough to be a typo guard.
+MAX_DURATION_MINUTES = 600
 
 
 def clamp_count(value: int | None, default: int = DEFAULT_QUESTION_COUNT) -> int:
@@ -99,6 +105,10 @@ def exam_question_count(
     if stated:
         return clamp_count(stated)
 
+    known = exam_catalog.find(row.get("title"), row.get("detected_subject"))
+    if known:
+        return clamp_count(known.question_count)
+
     try:
         imported = _largest_imported_batch(module_id, user_id)
     except Exception as exc:  # noqa: BLE001 — inference is best-effort
@@ -111,17 +121,29 @@ def exam_question_count(
 
 
 def exam_duration_minutes(
-    question_count: int, module_row: dict[str, Any] | None = None
+    question_count: int, module_row: dict[str, Any] | None = None,
+    *, requested: int | None = None,
 ) -> int:
     """Timed-run length for a set of ``question_count`` questions.
 
-    Uses the real paper's timing when the module states it — pro rata, so a
-    short practice run gets a proportionate slice rather than the full sitting.
-    Falls back to typical multiple-choice pacing.
+    An explicit request wins. Otherwise the real paper's timing is used — the
+    module's own, else the published spec for the certification it is about —
+    pro rata, so a half-length practice run gets half the clock rather than the
+    full sitting. Falls back to typical multiple-choice pacing.
     """
+    if requested:
+        return max(1, min(int(requested), MAX_DURATION_MINUTES))
+
     row = module_row or {}
     stated_minutes = row.get("exam_duration_minutes")
     stated_count = row.get("exam_question_count")
+
+    if not stated_minutes:
+        known = exam_catalog.find(row.get("title"), row.get("detected_subject"))
+        if known:
+            stated_minutes = known.duration_minutes
+            stated_count = stated_count or known.question_count
+
     if stated_minutes and stated_count:
         return max(5, round(int(stated_minutes) * question_count / int(stated_count)))
     if stated_minutes:

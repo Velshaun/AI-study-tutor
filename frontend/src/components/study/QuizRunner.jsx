@@ -1,37 +1,89 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { Check, RotateCcw, X } from 'lucide-react'
-import { useState } from 'react'
+import { Check, Clock, RotateCcw, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 
 /**
  * Quiz runner — spec Prompt 6.6.
  *
  * One question at a time, four options. Selecting an option locks it in and
- * reveals immediate correct/incorrect feedback plus the explanation; the
- * correct option is highlighted whether or not it was chosen. A score screen
- * closes the run.
+ * reveals immediate correct/incorrect feedback: the correct option is
+ * highlighted whether or not it was chosen, and *every* option explains itself,
+ * so a lucky guess still teaches the other three. A score screen closes the run.
+ *
+ * When the exam carries a duration the run is timed: a countdown sits above the
+ * progress bar and, at zero, the paper is submitted as it stands — the same
+ * thing that happens in the real sitting.
  *
  * The correct answers ship with the quiz (it's a study quiz, not a proctored
  * exam), so feedback is instant with no round-trip. The full set of answers is
  * still submitted at the end for an authoritative, recorded score.
  */
+
+/** mm:ss for a countdown. */
+function clock(totalSeconds) {
+  const s = Math.max(0, totalSeconds)
+  const mins = Math.floor(s / 60)
+  const secs = s % 60
+  return `${mins}:${String(secs).padStart(2, '0')}`
+}
+
 export default function QuizRunner({ quiz, onSubmit, onRestart }) {
   const questions = quiz.questions || []
+  const durationMinutes = quiz.duration_minutes || 0
   const [index, setIndex] = useState(0)
   const [answers, setAnswers] = useState(() => questions.map(() => null))
   const [locked, setLocked] = useState(false)
   const [finished, setFinished] = useState(false)
   const [result, setResult] = useState(null)
+  const [remaining, setRemaining] = useState(durationMinutes * 60)
+  const [timedOut, setTimedOut] = useState(false)
+
+  // The countdown works from a fixed deadline rather than by decrementing, so a
+  // backgrounded tab (where timers are throttled) still comes back honest.
+  const deadlineRef = useRef(null)
+  // A mirror of `answers` that the timer can read: it fires from an interval,
+  // long after the render that queued it, so it can't close over state.
+  const answersRef = useRef(questions.map(() => null))
+  const submittingRef = useRef(false)
 
   const q = questions[index]
   const chosen = answers[index]
 
+  async function finish(answerList, { expired = false } = {}) {
+    if (submittingRef.current) return
+    submittingRef.current = true
+    if (expired) setTimedOut(true)
+    const res = await onSubmit(answerList)
+    setResult(res)
+    setFinished(true)
+  }
+
+  useEffect(() => {
+    if (!durationMinutes || finished) return undefined
+    if (deadlineRef.current == null) {
+      deadlineRef.current = Date.now() + durationMinutes * 60 * 1000
+    }
+    const id = setInterval(() => {
+      const left = Math.max(0, Math.round((deadlineRef.current - Date.now()) / 1000))
+      setRemaining(left)
+      if (left === 0) {
+        clearInterval(id)
+        // Time's up: hand in the paper exactly as it stands.
+        finish(answersRef.current, { expired: true })
+      }
+    }, 1000)
+    return () => clearInterval(id)
+    // `finish` is stable enough for this: it guards itself with a ref, and the
+    // answers it submits are read from a ref at call time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [durationMinutes, finished])
+
   function choose(optionIndex) {
     if (locked) return
-    setAnswers((prev) => {
-      const next = [...prev]
-      next[index] = optionIndex
-      return next
-    })
+    const next = [...answersRef.current]
+    next[index] = optionIndex
+    answersRef.current = next
+    setAnswers(next)
     setLocked(true)
   }
 
@@ -41,18 +93,20 @@ export default function QuizRunner({ quiz, onSubmit, onRestart }) {
       setLocked(answers[index + 1] != null)
       return
     }
-    // Last question — submit for the authoritative score.
-    const res = await onSubmit(answers)
-    setResult(res)
-    setFinished(true)
+    await finish(answers)
   }
 
   function restart() {
     setIndex(0)
-    setAnswers(questions.map(() => null))
+    answersRef.current = questions.map(() => null)
+    setAnswers(answersRef.current)
     setLocked(false)
     setFinished(false)
     setResult(null)
+    setTimedOut(false)
+    setRemaining(durationMinutes * 60)
+    deadlineRef.current = null
+    submittingRef.current = false
     onRestart?.()
   }
 
@@ -74,11 +128,13 @@ export default function QuizRunner({ quiz, onSubmit, onRestart }) {
             {result.correct} of {result.total} correct
           </h2>
           <p className="text-sm text-sec">
-            {good
-              ? 'Strong — you know this domain well.'
-              : pct >= 40
-                ? 'Getting there. Worth another pass.'
-                : 'This one needs more review.'}
+            {timedOut
+              ? 'Time ran out — the paper was submitted as it stood.'
+              : good
+                ? 'Strong — you know this domain well.'
+                : pct >= 40
+                  ? 'Getting there. Worth another pass.'
+                  : 'This one needs more review.'}
           </p>
         </div>
         <button onClick={restart} className="btn-primary">
@@ -91,6 +147,12 @@ export default function QuizRunner({ quiz, onSubmit, onRestart }) {
 
   if (!q) return null
 
+  const optionExplanations = q.option_explanations || []
+  // Under a tenth of the clock (or the last two minutes) counts as the run-in.
+  const urgent =
+    durationMinutes > 0 &&
+    remaining <= Math.min(120, Math.round(durationMinutes * 60 * 0.1))
+
   return (
     <div className="space-y-5">
       {/* Progress */}
@@ -99,6 +161,17 @@ export default function QuizRunner({ quiz, onSubmit, onRestart }) {
           <span>
             Question {index + 1} of {questions.length}
           </span>
+          {durationMinutes > 0 && (
+            <span
+              className={`inline-flex items-center gap-1 tabular-nums ${
+                urgent ? 'font-semibold text-warning' : ''
+              }`}
+              aria-label={`${clock(remaining)} remaining`}
+            >
+              <Clock size={12} aria-hidden="true" />
+              {clock(remaining)} left
+            </span>
+          )}
         </div>
         <div className="h-1.5 overflow-hidden rounded-full bg-surface2">
           <div
@@ -124,6 +197,7 @@ export default function QuizRunner({ quiz, onSubmit, onRestart }) {
               const isChosen = chosen === i
               const isCorrect = i === q.correct_index
               const showState = locked
+              const why = optionExplanations[i]
 
               let tone = 'border-border bg-surface hover:border-accent/50'
               if (showState && isCorrect) {
@@ -139,33 +213,40 @@ export default function QuizRunner({ quiz, onSubmit, onRestart }) {
                   key={i}
                   onClick={() => choose(i)}
                   disabled={locked}
-                  className={`flex w-full items-center gap-3 rounded-xl border px-4 py-3 text-left transition-colors ${tone}`}
+                  className={`flex w-full flex-col gap-2 rounded-xl border px-4 py-3 text-left transition-colors ${tone}`}
                 >
-                  <span
-                    className={[
-                      'flex size-7 shrink-0 items-center justify-center rounded-lg text-sm font-semibold',
-                      showState && isCorrect
-                        ? 'bg-success text-white'
-                        : showState && isChosen
-                          ? 'bg-warning text-white'
-                          : 'bg-surface2 text-sec',
-                    ].join(' ')}
-                  >
-                    {String.fromCharCode(65 + i)}
-                  </span>
-                  <span className="flex-1 text-sm text-pri">{option}</span>
-                  {showState && isCorrect && (
-                    <Check size={18} className="shrink-0 text-success" aria-hidden="true" />
-                  )}
-                  {showState && isChosen && !isCorrect && (
-                    <X size={18} className="shrink-0 text-warning" aria-hidden="true" />
+                  <div className="flex items-center gap-3">
+                    <span
+                      className={[
+                        'flex size-7 shrink-0 items-center justify-center rounded-lg text-sm font-semibold',
+                        showState && isCorrect
+                          ? 'bg-success text-white'
+                          : showState && isChosen
+                            ? 'bg-warning text-white'
+                            : 'bg-surface2 text-sec',
+                      ].join(' ')}
+                    >
+                      {String.fromCharCode(65 + i)}
+                    </span>
+                    <span className="flex-1 text-sm text-pri">{option}</span>
+                    {showState && isCorrect && (
+                      <Check size={18} className="shrink-0 text-success" aria-hidden="true" />
+                    )}
+                    {showState && isChosen && !isCorrect && (
+                      <X size={18} className="shrink-0 text-warning" aria-hidden="true" />
+                    )}
+                  </div>
+                  {/* Every option explains itself once an answer is in — right
+                      or wrong, chosen or not. */}
+                  {showState && why && (
+                    <p className="pl-10 text-xs leading-relaxed text-sec">{why}</p>
                   )}
                 </button>
               )
             })}
           </div>
 
-          {/* Explanation, once answered */}
+          {/* The overall rationale, once answered */}
           {locked && q.explanation && (
             <motion.div
               initial={{ opacity: 0, height: 0 }}

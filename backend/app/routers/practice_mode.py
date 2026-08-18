@@ -298,18 +298,28 @@ def _resolve_explanations(
 def _attach_explanations(
     domain_id: str, user_id: str, questions: list[dict[str, Any]], *, subject: str
 ) -> None:
-    """Resolve every option's explanation and store it on the option, in place.
+    """Make sure every option carries an explanation, in place.
 
-    Done once at generation time so answering a question is a plain read — the
-    2-4s stall a learner used to see between "Submit" and the reveal was this
-    work happening per answer. Explanations never reach the client before
-    submission: ``_row_to_question`` maps only label/text/term_key.
+    The generator now writes one per option as it writes the question — "why
+    this is right", "why this is wrong" — which is both better feedback and one
+    fewer model call. This fills any gaps from the concept cache, so a question
+    whose options came back bare still explains itself.
+
+    Either way the work happens at generation time, so answering is a plain
+    read; explanations never reach the client before submission, because
+    ``_row_to_question`` maps only label/text/term_key.
     """
-    all_options = [o for q in questions for o in q.get("options") or []]
+    missing = [
+        o for q in questions for o in q.get("options") or []
+        if not (o.get("explanation") or "").strip()
+    ]
+    if not missing:
+        return
+
     explanations = _resolve_explanations(
-        domain_id, user_id, all_options, subject=subject
+        domain_id, user_id, missing, subject=subject
     )
-    for option in all_options:
+    for option in missing:
         option["explanation"] = explanations.get(_term_key(option), "")
 
 

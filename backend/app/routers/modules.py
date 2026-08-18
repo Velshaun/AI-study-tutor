@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import dead_links, exam_profile
+from app.services import dead_links, exam_catalog, exam_profile
 from app.services.ai_service import GenerationError, discover_resources
 from app.services.link_check import validate_resources
 
@@ -97,6 +97,26 @@ class CourseContext(BaseModel):
     char_count: int = 0
 
 
+class RecommendedExam(BaseModel):
+    """The published sitting for the certification this module is about.
+
+    This is the *baseline* — what the certification's vendor publishes — not
+    necessarily what this module now uses. Once a learner sets their own length
+    it takes over as the module's recommendation; see `exam_profile_source`.
+
+    `matched` is false when the module isn't a recognised certification (a
+    college course, say), in which case these are the app's generic defaults.
+    `published` is false where the vendor states a duration but not a question
+    count, so the UI can say the count is a well-reported estimate.
+    """
+
+    label: str = exam_catalog.GENERIC_LABEL
+    question_count: int = exam_catalog.GENERIC_QUESTION_COUNT
+    duration_minutes: int = exam_catalog.GENERIC_DURATION_MINUTES
+    matched: bool = False
+    published: bool = False
+
+
 class Module(BaseModel):
     id: str
     title: str
@@ -119,6 +139,15 @@ class Module(BaseModel):
     exam_question_count: int | None = None
     exam_duration_minutes: int | None = None
     practice_question_count: int = exam_profile.DEFAULT_QUESTION_COUNT
+    practice_duration_minutes: int = exam_catalog.GENERIC_DURATION_MINUTES
+    # Where practice_* came from, so the setup screen can say whose numbers
+    # these are: 'custom' (this learner set them, and they now carry forward to
+    # every exam in this module), 'certification' (the published spec) or
+    # 'generic' (no certification matched).
+    exam_profile_source: str = "generic"
+    # The published baseline, so a learner who has customised can still see —
+    # and go back to — what the real paper does.
+    recommended_exam: RecommendedExam = Field(default_factory=RecommendedExam)
     created_at: datetime
     updated_at: datetime | None = None
     source_count: int = 0
@@ -198,6 +227,24 @@ def _to_module(row: dict[str, Any], sources: int = 0, domains: int = 0,
     # per module; the detail route resolves the imported-paper fallback too.
     resolved = practice_count or row.get("exam_question_count") \
         or exam_profile.DEFAULT_QUESTION_COUNT
+    baseline = exam_catalog.recommend(row.get("title"), row.get("detected_subject"))
+    resolved_minutes = exam_profile.exam_duration_minutes(resolved, row)
+
+    # A length the learner set themselves becomes this module's recommendation
+    # from here on. Matching the published spec doesn't count as customising —
+    # someone who typed 40 for a 40-question paper hasn't overridden anything,
+    # and shouldn't be told they have.
+    customised = (
+        resolved != baseline["question_count"]
+        or resolved_minutes != baseline["duration_minutes"]
+    )
+    if customised:
+        source = "custom"
+    elif baseline["matched"]:
+        source = "certification"
+    else:
+        source = "generic"
+
     return Module(
         id=row["id"],
         title=row.get("title") or "",
@@ -217,6 +264,9 @@ def _to_module(row: dict[str, Any], sources: int = 0, domains: int = 0,
         exam_question_count=row.get("exam_question_count"),
         exam_duration_minutes=row.get("exam_duration_minutes"),
         practice_question_count=resolved,
+        practice_duration_minutes=resolved_minutes,
+        exam_profile_source=source,
+        recommended_exam=RecommendedExam(**baseline),
         created_at=row["created_at"],
         updated_at=row.get("updated_at"),
         source_count=sources,
