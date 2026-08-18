@@ -7,6 +7,7 @@ import {
   Loader2,
   Plus,
   Search,
+  ThumbsDown,
   Video,
 } from 'lucide-react'
 import { useRef, useState } from 'react'
@@ -38,6 +39,7 @@ export default function ChatTab({ moduleId }) {
   const [messages, setMessages] = useState([])
   const [busy, setBusy] = useState(false)
   const [added, setAdded] = useState(() => new Set())
+  const [reported, setReported] = useState(() => new Set())
 
   const add = useMutation({
     mutationFn: async (url) => {
@@ -53,6 +55,18 @@ export default function ChatTab({ moduleId }) {
     onError: (e) => toast.error(e?.message || 'Could not add that source.'),
   })
 
+  // The validator can prove a link is broken now; only the learner can say it
+  // was useless. A reported link (and, after a few, its whole host) stops
+  // coming back in this learner's searches.
+  const report = useMutation({
+    mutationFn: (url) => api.reportDeadLink(moduleId, url),
+    onSuccess: (_data, url) => {
+      setReported((prev) => new Set(prev).add(url))
+      toast.success('Thanks — that one won’t come back')
+    },
+    onError: (e) => toast.error(e?.message || 'Could not report that link.'),
+  })
+
   async function submit(e) {
     e.preventDefault()
     const q = input.trim()
@@ -66,7 +80,13 @@ export default function ChatTab({ moduleId }) {
       seq.current += 1
       setMessages((m) => [
         ...m,
-        { id: seq.current, role: 'assistant', answer: res.answer, resources: res.resources },
+        {
+          id: seq.current,
+          role: 'assistant',
+          answer: res.answer,
+          resources: res.resources,
+          filtered: res.filtered_count || 0,
+        },
       ])
     } catch (err) {
       seq.current += 1
@@ -134,17 +154,21 @@ export default function ChatTab({ moduleId }) {
                 </p>
               ) : (
                 <>
-                  {m.resources?.length > 0 && (
+                  {m.resources?.some((r) => !reported.has(r.url)) && (
                     <div className="space-y-2">
-                      {m.resources.map((r, i) => (
-                        <ResourceCard
-                          key={`${m.id}-${i}`}
-                          resource={r}
-                          added={added.has(r.url)}
-                          pending={add.isPending && add.variables === r.url}
-                          onAdd={() => add.mutate(r.url)}
-                        />
-                      ))}
+                      {m.resources
+                        .filter((r) => !reported.has(r.url))
+                        .map((r, i) => (
+                          <ResourceCard
+                            key={`${m.id}-${i}`}
+                            resource={r}
+                            added={added.has(r.url)}
+                            pending={add.isPending && add.variables === r.url}
+                            reporting={report.isPending && report.variables === r.url}
+                            onAdd={() => add.mutate(r.url)}
+                            onReport={() => report.mutate(r.url)}
+                          />
+                        ))}
                     </div>
                   )}
                   {m.answer && (
@@ -152,8 +176,22 @@ export default function ChatTab({ moduleId }) {
                       <p className="text-sm leading-relaxed text-pri">{m.answer}</p>
                     </div>
                   )}
+                  {/* Every suggestion is link-checked server-side, so say what
+                      was thrown away rather than just showing a short list. */}
+                  {m.filtered > 0 && (m.resources?.length > 0 || m.answer) && (
+                    <p className="text-xs text-sec">
+                      {m.filtered} broken, paywalled or off-topic{' '}
+                      {m.filtered === 1 ? 'link' : 'links'} filtered out.
+                    </p>
+                  )}
                   {!m.answer && !m.resources?.length && (
-                    <p className="text-sm text-sec">No free resources found — try rephrasing.</p>
+                    <p className="text-sm text-sec">
+                      {m.filtered > 0
+                        ? `No freely accessible resources found — ${m.filtered} suggestion${
+                            m.filtered === 1 ? ' was' : 's were'
+                          } broken, paywalled or off-topic. Try rephrasing.`
+                        : 'No free resources found — try rephrasing.'}
+                    </p>
                   )}
                 </>
               )}
@@ -172,7 +210,7 @@ export default function ChatTab({ moduleId }) {
   )
 }
 
-function ResourceCard({ resource, added, pending, onAdd }) {
+function ResourceCard({ resource, added, pending, reporting, onAdd, onReport }) {
   const Icon = TYPE_ICON[resource.type] || Globe
   let host = resource.url
   try {
@@ -214,6 +252,19 @@ function ResourceCard({ resource, added, pending, onAdd }) {
           Add to Sources
         </button>
       )}
+      <button
+        onClick={onReport}
+        disabled={reporting}
+        title="Broken or paywalled? Report it and it won't come back"
+        aria-label={`Report ${resource.title} as broken`}
+        className="shrink-0 rounded-lg p-2 text-sec transition-colors hover:bg-surface2 hover:text-warning"
+      >
+        {reporting ? (
+          <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+        ) : (
+          <ThumbsDown size={14} aria-hidden="true" />
+        )}
+      </button>
     </div>
   )
 }

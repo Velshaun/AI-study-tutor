@@ -38,7 +38,9 @@ from pydantic import BaseModel, Field
 
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
+from app.services import exam_profile
 from app.services.ai_service import (
+    MAX_QUIZ_QUESTIONS,
     GenerationError,
     gather_domain_content,
     generate_quiz,
@@ -49,8 +51,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/practice-exam", tags=["practice_exam"])
 
-MAX_QUESTIONS = 50
+MAX_QUESTIONS = exam_profile.MAX_QUESTION_COUNT
 LETTERS = "ABCDEFGH"
+# Extra passes allowed to make up questions the model didn't return, so a
+# 40-question exam doesn't quietly come back as 31.
+TOPUP_ROUNDS = 2
 
 
 # --- Schemas ----------------------------------------------------------------
@@ -73,7 +78,9 @@ class ImportedSet(BaseModel):
 
 class GenerateRequest(BaseModel):
     module_id: str
-    question_count: int = Field(20, ge=1, le=MAX_QUESTIONS)
+    # Unset means "as long as the real exam" — resolved from the module's stated
+    # exam length, else its largest imported past paper.
+    question_count: int | None = Field(None, ge=1, le=MAX_QUESTIONS)
     include_imported: bool = True
     difficulty: str | None = None
 
@@ -301,9 +308,38 @@ async def delete_imported(
 # ============================================================================
 # Weighted generation
 # ============================================================================
-def _allocate(question_count: int, domains: list[dict[str, Any]]) -> dict[str, int]:
+def _effective_weights(
+    domains: list[dict[str, Any]], deck_ids: set[str],
+) -> dict[str, float]:
+    """Blueprint weights, with imported decks folded in.
+
+    An imported deck is stored as a zero-weight domain so it never distorts the
+    exam blueprint, which also meant it could never contribute a question. Decks
+    that hold their own material are given the smallest stated weight in the
+    blueprint: enough to be represented, not enough to displace a real domain.
+    """
+    weights = {d["id"]: float(d.get("weight_pct") or 0) for d in domains}
+    if not deck_ids:
+        return weights
+    stated = [w for w in weights.values() if w > 0]
+    if not stated:  # nothing is weighted — the even split already covers decks
+        return weights
+    floor = min(stated)
+    for domain_id in deck_ids:
+        if domain_id in weights and weights[domain_id] <= 0:
+            weights[domain_id] = floor
+    return weights
+
+
+def _allocate(
+    question_count: int, domains: list[dict[str, Any]],
+    weight_by_id: dict[str, float] | None = None,
+) -> dict[str, int]:
     """Split questions across domains by weight (largest-remainder rounding)."""
-    weights = [(d, float(d.get("weight_pct") or 0)) for d in domains]
+    weights = [
+        (d, (weight_by_id or {}).get(d["id"], float(d.get("weight_pct") or 0)))
+        for d in domains
+    ]
     total_weight = sum(w for _, w in weights)
     if total_weight <= 0:  # unweighted — split evenly
         base, extra = divmod(question_count, len(domains))
@@ -320,6 +356,58 @@ def _allocate(question_count: int, domains: list[dict[str, Any]]) -> dict[str, i
     for k in order[:remainder]:
         floors[k] += 1
     return floors
+
+
+def _deck_domain_ids(domains: list[dict[str, Any]], user_id: str) -> set[str]:
+    """Zero-weight domains that hold flashcards — i.e. imported decks.
+
+    One batched query: an imported deck can only contribute questions if it
+    actually has cards to generate them from.
+    """
+    unweighted = [d["id"] for d in domains if not (d.get("weight_pct") or 0)]
+    if not unweighted:
+        return set()
+    rows = (
+        _client().table("flashcards").select("domain_id")
+        .in_("domain_id", unweighted).eq("user_id", user_id).execute()
+    ).data or []
+    return {r["domain_id"] for r in rows if r.get("domain_id")}
+
+
+def _question_key(text: str) -> str:
+    """Loose identity for a question, so a top-up round can't repeat one."""
+    return " ".join((text or "").lower().split())[:160]
+
+
+def _generate_for_domain(
+    domain: dict[str, Any], user_id: str, difficulty: str, count: int,
+) -> list[dict[str, Any]]:
+    """Generate ``count`` questions for one domain.
+
+    ``generate_quiz`` tops out at ``MAX_QUIZ_QUESTIONS`` per call, so a domain
+    that owes more than that is filled over several calls — otherwise a
+    single-domain 40-question exam would silently come back as 20.
+    """
+    gathered = gather_domain_content(domain["id"], user_id)
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    # One call per full batch, plus one spare for a batch that returned short.
+    rounds = count // MAX_QUIZ_QUESTIONS + 2
+    for _ in range(rounds):
+        if len(out) >= count:
+            break
+        want = min(MAX_QUIZ_QUESTIONS, count - len(out))
+        generated = generate_quiz(
+            gathered["content"], difficulty, want,
+            subject=gathered["subject"], topic=domain.get("title") or "",
+        )
+        fresh = [q for q in generated if _question_key(q["question"]) not in seen]
+        for q in fresh:
+            seen.add(_question_key(q["question"]))
+        out.extend(fresh)
+        if not fresh:  # nothing new came back — stop rather than loop
+            break
+    return out[:count]
 
 
 def _imported_to_exam_q(row: dict[str, Any], index: int) -> ExamQuestion | None:
@@ -364,8 +452,13 @@ async def generate_exam(
             "This module has no domains yet — generate its study plan first.",
         )
 
-    total = payload.question_count
+    # As long as the real paper unless the learner asked for a specific length.
+    total = exam_profile.exam_question_count(
+        payload.module_id, user.id,
+        requested=payload.question_count, module_row=module,
+    )
     questions: list[ExamQuestion] = []
+    seen: set[str] = set()
 
     # 1. Imported share — real past-paper questions, up to half the exam.
     if payload.include_imported:
@@ -379,26 +472,36 @@ async def generate_exam(
             q = _imported_to_exam_q(row, len(questions))
             if q:
                 questions.append(q)
+                seen.add(_question_key(q.question))
 
-    # 2. Fill the rest with AI-generated questions, weighted by domain.
-    remaining = total - len(questions)
-    if remaining > 0:
-        allocation = _allocate(remaining, domains)
-        by_id = {d["id"]: d for d in domains}
-        for domain_id, count in allocation.items():
+    # 2. Fill the rest with AI-generated questions, weighted by domain. A model
+    #    that returns short leaves the exam under length, so the shortfall is
+    #    re-allocated over a couple of further rounds.
+    by_id = {d["id"]: d for d in domains}
+    weight_by_id = _effective_weights(domains, _deck_domain_ids(domains, user.id))
+    for attempt in range(1 + TOPUP_ROUNDS):
+        remaining = total - len(questions)
+        if remaining <= 0:
+            break
+        # Chasing the last question or two isn't worth another fan-out of model
+        # calls across every domain.
+        if attempt and remaining < max(3, round(total * 0.1)):
+            break
+        before = len(questions)
+        for domain_id, count in _allocate(remaining, domains, weight_by_id).items():
             if count <= 0:
                 continue
             domain = by_id[domain_id]
             try:
-                gathered = gather_domain_content(domain_id, user.id)
-                generated = generate_quiz(
-                    gathered["content"], difficulty, count,
-                    subject=gathered["subject"], topic=domain.get("title") or "",
-                )
+                generated = _generate_for_domain(domain, user.id, difficulty, count)
             except GenerationError as exc:
                 logger.warning("Exam gen failed for domain %s: %s", domain_id, exc)
                 continue
             for gq in generated:
+                key = _question_key(gq["question"])
+                if key in seen:
+                    continue
+                seen.add(key)
                 questions.append(ExamQuestion(
                     index=len(questions),
                     question=gq["question"],
@@ -408,6 +511,15 @@ async def generate_exam(
                     origin="generated",
                     domain_title=domain.get("title"),
                 ))
+        if len(questions) == before:  # no progress — further rounds won't help
+            break
+
+    questions = questions[:total]
+    if len(questions) < total:
+        logger.info(
+            "exam for module %s came up short: %d of %d questions",
+            payload.module_id, len(questions), total,
+        )
 
     if not questions:
         raise HTTPException(
@@ -420,7 +532,7 @@ async def generate_exam(
     for i, q in enumerate(questions):
         q.index = i
 
-    duration = max(5, len(questions) * 2)  # ~2 minutes per question
+    duration = exam_profile.exam_duration_minutes(len(questions), module)
     exam_row = client.table("practice_exams").insert({
         "module_id": payload.module_id,
         "user_id": user.id,

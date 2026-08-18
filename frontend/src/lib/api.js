@@ -171,9 +171,24 @@ export const api = {
   studioMedia: (id, signal) => apiFetch(`/modules/${id}/studio`, { signal }),
   discover: (id, query) =>
     apiFetch(`/modules/${id}/discover`, { method: 'POST', body: { query } }),
+  // Tell the backend a discovered link is dead/walled/off-topic. It stops
+  // coming back, and a host reported repeatedly is dropped wholesale.
+  reportDeadLink: (id, url, reason = 'dead') =>
+    apiFetch(`/modules/${id}/discover/report`, {
+      method: 'POST',
+      body: { url, reason },
+    }),
+  unreportDeadLink: (id, url) =>
+    apiFetch(`/modules/${id}/discover/report?url=${encodeURIComponent(url)}`, {
+      method: 'DELETE',
+    }),
   createModule: (body = {}) => apiFetch('/modules', { method: 'POST', body }),
   renameModule: (id, title) =>
     apiFetch(`/modules/${id}`, { method: 'PATCH', body: { title } }),
+  // The real exam's shape — practice sets size themselves from it.
+  // body: { exam_question_count?, exam_duration_minutes? }
+  setExamProfile: (id, body) =>
+    apiFetch(`/modules/${id}`, { method: 'PATCH', body }),
   deleteModule: (id) => apiFetch(`/modules/${id}`, { method: 'DELETE' }),
 
   // Sources & processing pipeline
@@ -240,7 +255,10 @@ export const api = {
   submitExam: (examId, answers) =>
     apiFetch(`/practice-exam/${examId}/submit`, { method: 'POST', body: { answers } }),
 
-  // Practice Exam Mode (spec 6.4) — domain-scoped, per-question feedback
+  // Practice Exam Mode (spec 6.4) — domain-scoped, per-question feedback.
+  // Returns { questions, target_count, generating }: the first questions come
+  // back immediately and the rest are written behind them, so poll while
+  // `generating` is true.
   practiceQuestions: (domainId, { count, regenerate } = {}, signal) => {
     const qs = new URLSearchParams()
     if (count) qs.set('count', count)

@@ -9,21 +9,41 @@ A domain-scoped study experience with immediate per-question feedback: every
 option carries its own explanation, each question a Why Card, and questions can
 be flagged into the (shared, polymorphic) review_later queue.
 
+Set length follows the exam the learner is actually sitting — see
+``app.services.exam_profile`` — rather than a fixed constant, so a 40-question
+paper is practised with 40 questions. A short cached set is topped up rather
+than thrown away.
+
+A full-length set is written in two stages: the first ``FIRST_CHUNK`` questions
+are generated in the request, and the rest are backfilled in the background so
+the learner can start straight away and the set grows underneath them.
+
 Questions are cached in ``practice_questions`` (exam_id null, domain_id set) so
-a domain generates once; per-term explanations are also written to
-``exam_concept_cache`` for reuse.
+a domain generates once. Per-option explanations are resolved at generation
+time and stored on the option (they are stripped from the pre-submission
+payload), which keeps answering a single read — see ``submit_answer``.
 """
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+    status,
+)
 from pydantic import BaseModel, Field
 
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
+from app.services import exam_profile
 from app.services.ai_service import (
+    PRACTICE_BATCH_SIZE,
     GenerationError,
     gather_domain_content,
     generate_practice_questions,
@@ -36,8 +56,40 @@ router = APIRouter(prefix="/practice", tags=["practice_mode"])
 
 LETTERS = "ABCD"
 REVIEW_ITEM_TYPE = "practice_question"
-DEFAULT_COUNT = 8
-MAX_COUNT = 20
+MAX_COUNT = exam_profile.MAX_QUESTION_COUNT
+# Terms explained per Gemini call — a 40-question set has ~160 options, which is
+# far too many for one prompt.
+EXPLAIN_BATCH_SIZE = 40
+# Questions generated before the response is sent. Enough to start a run on
+# while the rest is written in the background — a learner answering the first
+# ten takes minutes, the backfill takes far less.
+FIRST_CHUNK = 10
+
+# Domains with a backfill already running, so a poll (or a second tab) can't
+# start a duplicate. Per-process, which matches the deployment: the guard is a
+# courtesy anyway — the backfill re-reads the set before it writes, and passes
+# what already exists to the generator so it can't repeat questions.
+_backfilling: set[str] = set()
+_backfill_lock = threading.Lock()
+
+
+def _claim_backfill(domain_id: str) -> bool:
+    """Take the backfill slot for a domain, if it's free."""
+    with _backfill_lock:
+        if domain_id in _backfilling:
+            return False
+        _backfilling.add(domain_id)
+        return True
+
+
+def _release_backfill(domain_id: str) -> None:
+    with _backfill_lock:
+        _backfilling.discard(domain_id)
+
+
+def _is_backfilling(domain_id: str) -> bool:
+    with _backfill_lock:
+        return domain_id in _backfilling
 
 
 # --- Schemas ----------------------------------------------------------------
@@ -55,6 +107,18 @@ class PracticeQuestion(BaseModel):
     question_text: str
     options: list[PracticeOption] = Field(default_factory=list)
     is_flagged: bool = False
+
+
+class PracticeSet(BaseModel):
+    """A domain's practice set, which may still be filling up.
+
+    ``generating`` tells the client to keep polling: the questions already here
+    are ready to answer, and more are being written behind them.
+    """
+
+    questions: list[PracticeQuestion] = Field(default_factory=list)
+    target_count: int = 0
+    generating: bool = False
 
 
 class AnsweredOption(PracticeOption):
@@ -143,123 +207,271 @@ def _correct_letter(row: dict[str, Any]) -> str:
     return LETTERS[idx] if isinstance(idx, int) and 0 <= idx < len(LETTERS) else "A"
 
 
+def _term_key(option: dict[str, Any]) -> str:
+    return (option.get("term_key") or "").strip()
+
+
+# --- Explanations -----------------------------------------------------------
+def _cached_explanations(domain_id: str, term_keys: list[str]) -> dict[str, str]:
+    """Read the concept cache for a batch of terms."""
+    if not term_keys:
+        return {}
+    resolved: dict[str, str] = {}
+    client = _client()
+    # `in_` filters go into the query string, so chunk them rather than sending
+    # one enormous URL for a full exam's worth of terms.
+    for i in range(0, len(term_keys), EXPLAIN_BATCH_SIZE):
+        chunk = term_keys[i:i + EXPLAIN_BATCH_SIZE]
+        rows = (
+            client.table("exam_concept_cache").select("concept, payload")
+            .eq("domain_id", domain_id).in_("concept", chunk).execute()
+        ).data or []
+        for r in rows:
+            explanation = (r.get("payload") or {}).get("explanation")
+            if explanation:
+                resolved[r["concept"]] = explanation
+    return resolved
+
+
+def _cache_explanations(
+    domain_id: str, user_id: str, explanations: dict[str, str]
+) -> None:
+    """Write freshly generated explanations back to the concept cache."""
+    if not explanations:
+        return
+    payload = [
+        {"domain_id": domain_id, "user_id": user_id, "concept": k,
+         "payload": {"explanation": v}}
+        for k, v in explanations.items()
+    ]
+    try:
+        _client().table("exam_concept_cache").upsert(
+            payload, on_conflict="domain_id,concept"
+        ).execute()
+    except Exception as exc:  # noqa: BLE001 — cache write is best-effort
+        logger.warning("concept cache upsert failed: %s", exc)
+
+
 def _resolve_explanations(
     domain_id: str, user_id: str, options: list[dict[str, Any]],
-    *, subject: str, question_text: str,
+    *, subject: str, question_text: str = "",
 ) -> dict[str, str]:
     """Explanation per term_key, cache-first (spec 6.4 caching).
 
     Reads exam_concept_cache by term_key; any misses are generated by Gemini in
-    one call and written back, so each distinct term is explained exactly once,
+    batches and written back, so each distinct term is explained exactly once,
     ever. A generation failure degrades gracefully to whatever was cached.
     """
-    client = _client()
-    term_keys = [
-        (o.get("term_key") or "").strip() for o in options if (o.get("term_key") or "").strip()
-    ]
+    term_keys = list(dict.fromkeys(t for t in (_term_key(o) for o in options) if t))
     if not term_keys:
         return {}
 
-    cached_rows = (
-        client.table("exam_concept_cache").select("concept, payload")
-        .eq("domain_id", domain_id).in_("concept", term_keys).execute()
-    ).data or []
-    resolved: dict[str, str] = {
-        r["concept"]: (r.get("payload") or {}).get("explanation", "")
-        for r in cached_rows
-        if (r.get("payload") or {}).get("explanation")
-    }
+    resolved = _cached_explanations(domain_id, term_keys)
 
     missing = [
-        {"term_key": (o.get("term_key") or "").strip(), "text": (o.get("text") or "").strip()}
+        {"term_key": _term_key(o), "text": (o.get("text") or "").strip()}
         for o in options
-        if (o.get("term_key") or "").strip() and (o.get("term_key") or "").strip() not in resolved
+        if _term_key(o) and _term_key(o) not in resolved
     ]
-    if missing:
+    # De-duplicate, keeping the first sighting of each term.
+    missing = list({m["term_key"]: m for m in missing}.values())
+
+    fresh: dict[str, str] = {}
+    for i in range(0, len(missing), EXPLAIN_BATCH_SIZE):
+        chunk = missing[i:i + EXPLAIN_BATCH_SIZE]
         try:
-            fresh = generate_term_explanations(
-                missing, subject=subject, question_text=question_text
+            fresh.update(
+                generate_term_explanations(
+                    chunk, subject=subject, question_text=question_text
+                )
             )
         except GenerationError as exc:
             logger.warning("term explanation generation failed: %s", exc)
-            fresh = {}
-        if fresh:
-            resolved.update(fresh)
-            payload = [
-                {"domain_id": domain_id, "user_id": user_id, "concept": k,
-                 "payload": {"explanation": v}}
-                for k, v in fresh.items()
-            ]
-            try:
-                client.table("exam_concept_cache").upsert(
-                    payload, on_conflict="domain_id,concept"
-                ).execute()
-            except Exception as exc:  # noqa: BLE001 — cache write is best-effort
-                logger.warning("concept cache upsert failed: %s", exc)
+            break
 
+    if fresh:
+        resolved.update(fresh)
+        _cache_explanations(domain_id, user_id, fresh)
     return resolved
 
 
+def _attach_explanations(
+    domain_id: str, user_id: str, questions: list[dict[str, Any]], *, subject: str
+) -> None:
+    """Resolve every option's explanation and store it on the option, in place.
+
+    Done once at generation time so answering a question is a plain read — the
+    2-4s stall a learner used to see between "Submit" and the reveal was this
+    work happening per answer. Explanations never reach the client before
+    submission: ``_row_to_question`` maps only label/text/term_key.
+    """
+    all_options = [o for q in questions for o in q.get("options") or []]
+    explanations = _resolve_explanations(
+        domain_id, user_id, all_options, subject=subject
+    )
+    for option in all_options:
+        option["explanation"] = explanations.get(_term_key(option), "")
+
+
+# --- Generation -------------------------------------------------------------
+def _stored_questions(domain_id: str) -> list[dict[str, Any]]:
+    """The domain's cached practice set, in order."""
+    return (
+        _client().table("practice_questions").select("*")
+        .eq("domain_id", domain_id).is_("exam_id", "null")
+        .order("position").execute()
+    ).data or []
+
+
+def _backfill_set(domain: dict[str, Any], user_id: str, target: int) -> None:
+    """Finish a partly generated set after the response has gone out.
+
+    Runs in FastAPI's background thread pool. Generates in batches and writes
+    each one as it lands, so a learner polling mid-run sees the set grow rather
+    than waiting for the whole remainder. Re-reads what's stored between
+    batches, so a concurrent top-up can't cause duplicates or clashing
+    positions.
+    """
+    domain_id = domain["id"]
+    try:
+        while True:
+            existing = _stored_questions(domain_id)
+            missing = target - len(existing)
+            if missing <= 0:
+                return
+            added = _generate_into(
+                domain, user_id,
+                wanted=min(missing, PRACTICE_BATCH_SIZE), existing=existing,
+            )
+            if not added:  # the model has run dry — don't spin
+                logger.info(
+                    "practice backfill for domain %s stopped at %d of %d",
+                    domain_id, len(existing), target,
+                )
+                return
+    except HTTPException as exc:
+        # Nobody is waiting on this response; the learner keeps the questions
+        # already written and a later visit retries.
+        logger.warning("practice backfill failed for domain %s: %s", domain_id, exc.detail)
+    except Exception as exc:  # noqa: BLE001 — a background thread must not die loudly
+        logger.exception("practice backfill errored for domain %s: %s", domain_id, exc)
+    finally:
+        _release_backfill(domain_id)
+
+
+def _target_count(domain: dict[str, Any], user_id: str, requested: int | None) -> int:
+    """How many questions this domain's set should hold."""
+    return exam_profile.exam_question_count(
+        domain.get("module_id"), user_id, requested=requested
+    )
+
+
+def _generate_into(
+    domain: dict[str, Any], user_id: str, *, wanted: int, existing: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Generate ``wanted`` new questions for a domain and store them.
+
+    Returns the inserted rows. Existing prompts are passed to the generator so a
+    top-up extends the set instead of repeating it.
+    """
+    domain_id = domain["id"]
+    material = gather_domain_content(domain_id, user_id)
+    try:
+        generated = generate_practice_questions(
+            material["content"], wanted,
+            subject=material["subject"],
+            topic=domain.get("title") or "",
+            avoid=[r.get("prompt") or "" for r in existing],
+        )
+    except GenerationError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+
+    _attach_explanations(
+        domain_id, user_id, generated, subject=material["subject"]
+    )
+
+    start = max((r.get("position") or 0) for r in existing) + 1 if existing else 0
+    rows = []
+    for i, q in enumerate(generated):
+        correct_idx = next(
+            (n for n, o in enumerate(q["options"])
+             if o["label"] == q["correct_option"]), 0
+        )
+        # No user_id column on practice_questions — ownership flows through
+        # domain_id -> domains.user_id (enforced by _own_domain / _own_question).
+        rows.append({
+            "domain_id": domain_id,
+            "exam_id": None,
+            "kind": "mcq",
+            "prompt": q["question_text"],
+            "options": q["options"],
+            "correct_index": correct_idx,
+            "why_summary": q["why_summary"],
+            "position": start + i,
+            "points": 1,
+        })
+    if not rows:
+        return []
+    return (_client().table("practice_questions").insert(rows).execute()).data or []
+
+
 # --- Routes -----------------------------------------------------------------
-@router.get("/{domain_id}/questions", response_model=list[PracticeQuestion])
+@router.get("/{domain_id}/questions", response_model=PracticeSet)
 async def get_questions(
     domain_id: str,
-    count: int = Query(DEFAULT_COUNT, ge=1, le=MAX_COUNT),
+    count: int | None = Query(
+        None, ge=1, le=MAX_COUNT,
+        description="Override the set length; defaults to the module's exam length.",
+    ),
     regenerate: bool = Query(False, description="Discard the cached set and rebuild."),
+    background: BackgroundTasks = None,  # noqa: B008 — FastAPI injects this
     user: AuthUser = Depends(get_current_user),
-) -> list[PracticeQuestion]:
-    """Get-or-generate the domain's practice questions."""
+) -> PracticeSet:
+    """Get-or-generate the domain's practice questions.
+
+    The set is as long as the exam the learner is revising for. Only the first
+    ``FIRST_CHUNK`` are generated in the request — the rest are backfilled in
+    the background, so a 40-question set is startable in the time a 10-question
+    one takes. Poll while ``generating`` is true to pick up the rest. A cached
+    set that predates a longer target is topped up rather than rebuilt.
+    """
     domain = _own_domain(domain_id, user.id)
     client = _client()
+    target = _target_count(domain, user.id, count)
 
     if regenerate:
         client.table("practice_questions").delete().eq(
             "domain_id", domain_id
         ).is_("exam_id", "null").execute()
 
-    existing = (
-        client.table("practice_questions").select("*")
-        .eq("domain_id", domain_id).is_("exam_id", "null")
-        .order("position").execute()
-    ).data or []
+    existing = _stored_questions(domain_id)
 
-    if not existing:
-        material = gather_domain_content(domain_id, user.id)
-        try:
-            generated = generate_practice_questions(
-                material["content"], count,
-                subject=material["subject"],
-                topic=domain.get("title") or "",
-            )
-        except GenerationError as exc:
-            raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+    # Generate the opening chunk inline — unless a backfill is already writing
+    # this domain, in which case this is a poll and the answer is whatever has
+    # landed so far.
+    stalled = False
+    if len(existing) < target and not _is_backfilling(domain_id):
+        added = _generate_into(
+            domain, user.id,
+            wanted=min(FIRST_CHUNK, target - len(existing)), existing=existing,
+        )
+        # Nothing came back: the material is exhausted, so stop promising more
+        # rather than leaving the client polling forever.
+        stalled = not added
+        existing = sorted(existing + added, key=lambda r: r.get("position") or 0)
 
-        rows = []
-        for i, q in enumerate(generated):
-            correct_idx = next(
-                (n for n, o in enumerate(q["options"])
-                 if o["label"] == q["correct_option"]), 0
-            )
-            # No user_id column on practice_questions — ownership flows through
-            # domain_id -> domains.user_id (enforced by _own_domain / _own_question).
-            rows.append({
-                "domain_id": domain_id,
-                "exam_id": None,
-                "kind": "mcq",
-                "prompt": q["question_text"],
-                "options": q["options"],
-                "correct_index": correct_idx,
-                "why_summary": q["why_summary"],
-                "position": i,
-                "points": 1,
-            })
-        existing = (
-            client.table("practice_questions").insert(rows).execute()
-        ).data or []
-        existing.sort(key=lambda r: r.get("position") or 0)
+    # Still short of the target: finish the job after this response is sent.
+    generating = len(existing) < target and not stalled
+    if generating and background is not None and _claim_backfill(domain_id):
+        background.add_task(_backfill_set, domain, user.id, target)
 
+    existing = existing[:target]
     flagged = _flagged_ids(user.id, [r["id"] for r in existing])
-    return [_row_to_question(r, flagged=r["id"] in flagged) for r in existing]
+    return PracticeSet(
+        questions=[_row_to_question(r, flagged=r["id"] in flagged) for r in existing],
+        target_count=target,
+        generating=generating,
+    )
 
 
 @router.post("/questions/{question_id}/submit-answer", response_model=AnswerResult)
@@ -268,25 +480,27 @@ async def submit_answer(
     payload: SubmitAnswerRequest,
     user: AuthUser = Depends(get_current_user),
 ) -> AnswerResult:
-    """Reveal the answer: every option's explanation (cache-first) + Why Card.
+    """Reveal the answer: every option's explanation + the Why Card.
 
-    Explanations are resolved here rather than at generation time, so they only
-    reach the client once an answer is committed.
+    Explanations are written onto the options at generation time, so the happy
+    path here is one read and no model call — grading is instant. Questions
+    generated before that change (or whose explanations failed to generate) are
+    resolved on first answer and backfilled onto the row, so each one pays that
+    cost at most once.
     """
     q = _own_question(question_id, user.id)
     options = q.get("options") or []
-    material = gather_domain_content(q["domain_id"], user.id)
-    explanations = _resolve_explanations(
-        q["domain_id"], user.id, options,
-        subject=material["subject"], question_text=q.get("prompt") or "",
-    )
+
+    if options and not any((o.get("explanation") or "").strip() for o in options):
+        _backfill_explanations(q, user.id)
+        options = q.get("options") or []
 
     answered = [
         AnsweredOption(
             label=(o.get("label") or "").strip(),
             text=(o.get("text") or "").strip(),
-            term_key=(o.get("term_key") or "").strip(),
-            explanation=explanations.get((o.get("term_key") or "").strip(), ""),
+            term_key=_term_key(o),
+            explanation=(o.get("explanation") or "").strip(),
         )
         for o in options
     ]
@@ -300,6 +514,27 @@ async def submit_answer(
         options=answered,
         why_summary=q.get("why_summary") or "",
     )
+
+
+def _backfill_explanations(question: dict[str, Any], user_id: str) -> None:
+    """Legacy path: resolve a stored question's explanations and persist them."""
+    domain_id = question["domain_id"]
+    options = question.get("options") or []
+    material = gather_domain_content(domain_id, user_id)
+    explanations = _resolve_explanations(
+        domain_id, user_id, options,
+        subject=material["subject"], question_text=question.get("prompt") or "",
+    )
+    if not explanations:
+        return
+    for option in options:
+        option["explanation"] = explanations.get(_term_key(option), "")
+    try:
+        _client().table("practice_questions").update(
+            {"options": options}
+        ).eq("id", question["id"]).execute()
+    except Exception as exc:  # noqa: BLE001 — the answer still returns fine
+        logger.warning("explanation backfill failed for %s: %s", question["id"], exc)
 
 
 @router.get("/{domain_id}/review-later", response_model=list[PracticeQuestion])

@@ -13,13 +13,28 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+import logging
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
+from app.services import dead_links, exam_profile
 from app.services.ai_service import GenerationError, discover_resources
+from app.services.link_check import validate_resources
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/modules", tags=["modules"])
 
@@ -41,6 +56,11 @@ class ModuleUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
     color: str | None = None
+    # The real exam's shape, which every practice generator sizes itself from
+    # (see app.services.exam_profile). Null clears it, falling back to the
+    # largest imported past paper.
+    exam_question_count: int | None = Field(default=None, ge=1, le=200)
+    exam_duration_minutes: int | None = Field(default=None, ge=1, le=600)
 
 
 class Domain(BaseModel):
@@ -61,6 +81,10 @@ class Domain(BaseModel):
     # How many of this domain's practice questions are flagged for review — the
     # count badge on the Review Later entry point (spec 6.4 / Prompt 11).
     review_later_count: int = 0
+    # An imported flashcard deck (a Quizlet export, say) rather than a domain of
+    # the exam blueprint: no weight, no lecture, but its cards are real study
+    # material, so it can be quizzed and practised like anything else.
+    is_imported_deck: bool = False
 
 
 class CourseContext(BaseModel):
@@ -89,6 +113,12 @@ class Module(BaseModel):
     subject_confidence: float | None = None
     progression_map: dict[str, Any] | None = None
     weighting_sources: list[dict[str, Any]] = Field(default_factory=list)
+    # The exam being revised for. `exam_question_count` is what the learner
+    # stated; `practice_question_count` is what practice sets will actually use
+    # (falls back to the largest imported past paper, then to a default).
+    exam_question_count: int | None = None
+    exam_duration_minutes: int | None = None
+    practice_question_count: int = exam_profile.DEFAULT_QUESTION_COUNT
     created_at: datetime
     updated_at: datetime | None = None
     source_count: int = 0
@@ -156,11 +186,18 @@ def _to_domain(d: dict[str, Any]) -> Domain:
         last_position_secs=lec.get("last_position_secs") or 0,
         lecture_duration_secs=lec.get("duration_secs"),
         review_later_count=d.get("_review_count") or 0,
+        is_imported_deck=bool(d.get("_is_deck")),
     )
 
 
 def _to_module(row: dict[str, Any], sources: int = 0, domains: int = 0,
-               domain_rows: list[dict[str, Any]] | None = None) -> Module:
+               domain_rows: list[dict[str, Any]] | None = None,
+               practice_count: int | None = None) -> Module:
+    # The dashboard lists many modules at once, so it passes no practice_count
+    # and takes the stated length (or the default) rather than paying a lookup
+    # per module; the detail route resolves the imported-paper fallback too.
+    resolved = practice_count or row.get("exam_question_count") \
+        or exam_profile.DEFAULT_QUESTION_COUNT
     return Module(
         id=row["id"],
         title=row.get("title") or "",
@@ -177,6 +214,9 @@ def _to_module(row: dict[str, Any], sources: int = 0, domains: int = 0,
         subject_confidence=row.get("subject_confidence"),
         progression_map=row.get("progression_map"),
         weighting_sources=row.get("weighting_sources") or [],
+        exam_question_count=row.get("exam_question_count"),
+        exam_duration_minutes=row.get("exam_duration_minutes"),
+        practice_question_count=resolved,
         created_at=row["created_at"],
         updated_at=row.get("updated_at"),
         source_count=sources,
@@ -361,8 +401,24 @@ async def get_module(
         for d in domain_rows:
             d["_review_count"] = review_count.get(d["id"], 0)
 
+        # An unweighted domain that owns flashcards is an imported deck. The
+        # flag drives the UI: decks offer study tiles but sit out of bulk
+        # lecture generation, and they never distort the exam blueprint.
+        card_rows = (
+            client.table("flashcards").select("domain_id")
+            .in_("domain_id", domain_ids).eq("user_id", user.id).execute()
+        ).data or []
+        with_cards = {r["domain_id"] for r in card_rows if r.get("domain_id")}
+        for d in domain_rows:
+            d["_is_deck"] = d["id"] in with_cards and not (d.get("weight_pct") or 0)
+
     sources, _ = _counts(module_id)
-    base = _to_module(row, sources, len(domain_rows), domain_rows=domain_rows)
+    base = _to_module(
+        row, sources, len(domain_rows), domain_rows=domain_rows,
+        practice_count=exam_profile.exam_question_count(
+            module_id, user.id, module_row=row
+        ),
+    )
     return ModuleDetail(**base.model_dump())
 
 
@@ -506,6 +562,9 @@ class DiscoverResource(BaseModel):
 class DiscoverResponse(BaseModel):
     answer: str = ""
     resources: list[DiscoverResource] = Field(default_factory=list)
+    # How many suggestions were dropped as dead, walled or off-topic — the Chat
+    # tab says so, rather than silently returning a short list.
+    filtered_count: int = 0
 
 
 @router.post("/{module_id}/discover", response_model=DiscoverResponse)
@@ -527,10 +586,68 @@ async def discover(
     except GenerationError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
 
+    # The model suggests generously; only links that actually load, are free to
+    # read, are on topic and haven't been reported dead reach the learner.
+    suggested = result.get("resources", [])
+    blocked = dead_links.for_user(user.id)
+    resources = await validate_resources(
+        suggested, query=payload.query,
+        reported_urls=blocked.urls, reported_hosts=blocked.hosts,
+    )
+
     return DiscoverResponse(
         answer=result.get("answer", ""),
-        resources=[DiscoverResource(**r) for r in result.get("resources", [])],
+        resources=[DiscoverResource(**r) for r in resources],
+        filtered_count=max(0, len(suggested) - len(resources)),
     )
+
+
+class ReportLinkRequest(BaseModel):
+    url: str = Field(..., min_length=8, max_length=1000)
+    reason: str = Field(
+        "dead", description="dead | paywalled | irrelevant",
+    )
+
+
+@router.post("/{module_id}/discover/report",
+             status_code=status.HTTP_204_NO_CONTENT)
+async def report_dead_link(
+    module_id: str,
+    payload: ReportLinkRequest,
+    user: AuthUser = Depends(get_current_user),
+) -> None:
+    """Flag a discovered source as dead, walled or off-topic.
+
+    The link stops appearing in this learner's searches, and a host they've
+    rejected repeatedly is dropped wholesale — the validator can prove a page is
+    broken now, but only the learner can tell it the page is useless.
+    """
+    _fetch_own(module_id, user.id)
+    if not payload.url.startswith(("http://", "https://")):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "That isn't a web link."
+        )
+    try:
+        dead_links.report(user.id, payload.url, payload.reason)
+    except Exception as exc:  # noqa: BLE001 — surface a usable message
+        logger.warning("dead-link report failed: %s", exc)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Could not save that report. If this persists, the "
+            "dead_link_reports migration may not have been applied.",
+        ) from exc
+
+
+@router.delete("/{module_id}/discover/report",
+               status_code=status.HTTP_204_NO_CONTENT)
+async def unreport_dead_link(
+    module_id: str,
+    url: str = Query(..., min_length=8, max_length=1000),
+    user: AuthUser = Depends(get_current_user),
+) -> None:
+    """Undo a report — the learner mis-tapped, or the page came back."""
+    _fetch_own(module_id, user.id)
+    dead_links.unreport(user.id, url)
 
 
 # --- Course Context (upload screen) ----------------------------------------

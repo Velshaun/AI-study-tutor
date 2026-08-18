@@ -111,7 +111,11 @@ export default function DomainList({ domains }) {
       <SectionHeader>Domains</SectionHeader>
       <div className="space-y-3">
         {domains.map((d) => {
-          const locked = d.status === 'locked'
+          // An imported deck is stored locked — it isn't part of the exam
+          // blueprint — but its cards are study material, so it still offers
+          // the study tiles (minus the lecture it will never have).
+          const isDeck = d.is_imported_deck
+          const locked = d.status === 'locked' && !isDeck
           const progress = lectureProgress(d)
           return (
             <div key={d.id} className="card space-y-3">
@@ -124,13 +128,15 @@ export default function DomainList({ domains }) {
                   <p className="text-sm font-medium text-pri">{d.title}</p>
                   <p className="text-xs text-sec">
                     {d.weight_pct ? `${Math.round(d.weight_pct)}% of exam · ` : ''}
-                    {d.status === 'completed'
-                      ? 'Completed'
-                      : progress
-                        ? 'In progress'
-                        : locked
-                          ? 'Locked'
-                          : 'Available'}
+                    {isDeck
+                      ? 'Imported deck'
+                      : d.status === 'completed'
+                        ? 'Completed'
+                        : progress
+                          ? 'In progress'
+                          : locked
+                            ? 'Locked'
+                            : 'Available'}
                   </p>
                 </div>
                 {d.status === 'completed' && (
@@ -160,7 +166,7 @@ export default function DomainList({ domains }) {
 
               {!locked && (
                 <div className="flex flex-wrap gap-2 border-t border-border pt-3">
-                  <LectureTile domain={d} progress={progress} />
+                  {!isDeck && <LectureTile domain={d} progress={progress} />}
                   <StudyTile domain={d} cfg={STUDY.flashcards} />
                   <StudyTile domain={d} cfg={STUDY.quizzes} />
                   <StudyTile domain={d} cfg={STUDY.practice} />

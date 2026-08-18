@@ -17,19 +17,45 @@ const ANSWER_HEADERS = [
   'answer', 'a', 'definition', 'back', 'meaning', 'value', 'translation', 'desc',
 ]
 
-/** Pick the delimiter that appears most on the first non-empty line. */
-function detectDelimiter(text) {
-  const line = text.split(/\r?\n/).find((l) => l.trim().length) || ''
-  let best = ','
-  let bestCount = -1
-  for (const d of [',', '\t', ';', '|']) {
-    const count = line.split(d).length - 1
-    if (count > bestCount) {
-      bestCount = count
-      best = d
+const DELIMITERS = [',', '\t', ';', '|']
+// Enough of the file to judge the delimiter without parsing megabytes four times.
+const SAMPLE_LINES = 100
+
+/**
+ * Score a candidate delimiter by how consistently it splits the sample.
+ *
+ * Counting separators on one line isn't enough: a Quizlet export is
+ * tab-separated but its definitions are full of commas, so the first line can
+ * show as many commas as tabs. Parsing with each candidate and preferring the
+ * one that gives every row the same number of columns settles it.
+ */
+function scoreDelimiter(sample, delimiter) {
+  const rows = parseRows(sample, delimiter)
+  if (!rows.length) return null
+
+  const tally = new Map()
+  for (const row of rows) tally.set(row.length, (tally.get(row.length) || 0) + 1)
+
+  let columns = 0
+  let matching = 0
+  for (const [count, n] of tally) {
+    if (n > matching || (n === matching && count > columns)) {
+      columns = count
+      matching = n
     }
   }
-  return best
+  // One column means this delimiter isn't present at all.
+  if (columns < 2) return null
+  return { delimiter, columns, consistency: matching / rows.length }
+}
+
+/** Pick the delimiter that splits the file most consistently. */
+function detectDelimiter(text) {
+  const sample = text.split(/\r?\n/).slice(0, SAMPLE_LINES).join('\n')
+  const scored = DELIMITERS.map((d) => scoreDelimiter(sample, d)).filter(Boolean)
+  if (!scored.length) return ','
+  scored.sort((a, b) => b.consistency - a.consistency || b.columns - a.columns)
+  return scored[0].delimiter
 }
 
 /** Parse the text into rows of string fields. */
@@ -52,7 +78,9 @@ function parseRows(text, delimiter) {
       } else {
         field += ch
       }
-    } else if (ch === '"') {
+    } else if (ch === '"' && field.length === 0) {
+      // Only a quote at the start of a field opens one; a quote mid-field is a
+      // literal character (an inch mark, say), which real exports are full of.
       inQuotes = true
     } else if (ch === delimiter) {
       row.push(field)

@@ -105,7 +105,11 @@ function GenerateNew({ moduleId, domains }) {
   const { preferences } = usePreferences()
   const [busy, setBusy] = useState(null)
 
-  const unlocked = (domains || []).filter((d) => d.status !== 'locked')
+  // Imported decks are studied individually; a bulk "generate everything" pass
+  // shouldn't write a lecture for someone's Quizlet export.
+  const unlocked = (domains || []).filter(
+    (d) => d.status !== 'locked' && !d.is_imported_deck,
+  )
 
   async function generate(kind) {
     if (busy || !unlocked.length) return

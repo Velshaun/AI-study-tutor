@@ -60,12 +60,43 @@ def _norm_difficulty(value: str | None) -> str:
 
 
 # --- domain content ---------------------------------------------------------
+# Cards read per domain. A large imported deck is plenty of material long
+# before this, and the whole block is still bounded by MAX_CONTENT_CHARS.
+MAX_MATERIAL_CARDS = 400
+
+
+def _flashcard_material(domain_id: str, user_id: str) -> str:
+    """A domain's flashcards, rendered as study material for the model."""
+    try:
+        rows = (
+            get_supabase().table("flashcards").select("front, back")
+            .eq("domain_id", domain_id).eq("user_id", user_id)
+            .limit(MAX_MATERIAL_CARDS).execute()
+        ).data or []
+    except Exception as exc:  # noqa: BLE001 — material is additive, never fatal
+        logger.warning("flashcard lookup failed for domain %s: %s", domain_id, exc)
+        return ""
+
+    lines = [
+        f"- {(r.get('front') or '').strip()} => {(r.get('back') or '').strip()}"
+        for r in rows
+        if (r.get("front") or "").strip() and (r.get("back") or "").strip()
+    ]
+    if not lines:
+        return ""
+    return (
+        "Flashcards for this topic (term => definition), written by the learner "
+        "or imported from their own deck:\n" + "\n".join(lines)
+    )
+
+
 def gather_domain_content(domain_id: str, user_id: str) -> dict[str, Any]:
     """Assemble what's known about a domain into text the model can study.
 
     Prefers the generated lecture transcripts (the richest, most on-topic
-    material); falls back to the domain description and the module summary so
-    generation still works before any lecture exists.
+    material); falls back to the domain description, the module summary and the
+    domain's own flashcards, so generation still works before any lecture
+    exists — and works at all for an imported deck, which never gets one.
     """
     client = get_supabase()
 
@@ -101,6 +132,14 @@ def gather_domain_content(domain_id: str, user_id: str) -> dict[str, Any]:
     if module.get("source_summary"):
         parts.append(f"Source summary: {module['source_summary']}")
     parts.extend(transcripts)
+
+    # A domain's own flashcards are study material too. This is what makes an
+    # imported deck (a Quizlet export, say) usable: it arrives as a domain with
+    # cards and no lecture, and without this there is nothing to generate from.
+    cards = _flashcard_material(domain_id, user_id)
+    if cards:
+        parts.append(cards)
+
     content = "\n\n".join(parts).strip()
 
     return {
@@ -464,27 +503,89 @@ PRACTICE_SCHEMA: dict[str, Any] = {
     "required": ["questions"],
 }
 
-MAX_PRACTICE_QUESTIONS = 20
+# A whole 40- or 50-question paper asked for in one call comes back thin and
+# repetitive, so a large set is generated in batches of this size and stitched
+# together, each batch told what the previous ones already covered.
+PRACTICE_BATCH_SIZE = 20
+# Upper bound on one practice set — matches exam_profile.MAX_QUESTION_COUNT.
+MAX_PRACTICE_QUESTIONS = 100
 
 
 def generate_practice_questions(
     domain_content: str, count: int, *,
     subject: str = "this subject", topic: str = "", difficulty: str = "medium",
+    avoid: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Practice-mode questions plus a Why Card, with term-keyed options.
 
     Returns ``[{question_text, options:[{label,text,term_key}], correct_option,
-    why_summary}]``. Per-option explanations are NOT produced here — they are
-    resolved (cache-first) from the concept cache at answer time, so a learner
-    can't peek at them before submitting.
+    why_summary}]``. Per-option explanations are NOT produced here — practice
+    mode resolves and stores them with the questions so the answer-time path
+    stays a single read.
+
+    ``count`` is the length of the set the learner is revising for (a real
+    paper, so commonly 40-50). ``avoid`` lists questions the domain already
+    holds, so a top-up doesn't repeat them.
     """
+    count = max(1, min(count or PRACTICE_BATCH_SIZE, MAX_PRACTICE_QUESTIONS))
+    written = list(avoid or [])
+    seen = {_question_key(t) for t in written}
+    out: list[dict[str, Any]] = []
+
+    while len(out) < count:
+        want = min(PRACTICE_BATCH_SIZE, count - len(out))
+        try:
+            batch = _generate_practice_batch(
+                domain_content, want, subject=subject, topic=topic,
+                difficulty=difficulty, written=written,
+            )
+        except GenerationError as exc:
+            # A partial set beats none; only a first-batch failure is fatal.
+            if not out:
+                raise
+            logger.warning(
+                "practice batch failed after %d of %d questions: %s",
+                len(out), count, exc,
+            )
+            break
+
+        fresh = [q for q in batch if _question_key(q["question_text"]) not in seen]
+        for q in fresh:
+            seen.add(_question_key(q["question_text"]))
+            written.append(q["question_text"])
+        out.extend(fresh)
+        if not fresh:  # the model has run dry — stop rather than loop
+            logger.info(
+                "practice generation converged at %d of %d questions", len(out), count
+            )
+            break
+
+    return out[:count]
+
+
+def _question_key(text: str) -> str:
+    """Loose identity for a question, so batches don't repeat one another."""
+    return " ".join((text or "").lower().split())[:160]
+
+
+def _generate_practice_batch(
+    domain_content: str, count: int, *,
+    subject: str, topic: str, difficulty: str, written: list[str],
+) -> list[dict[str, Any]]:
+    """One Gemini call for up to ``PRACTICE_BATCH_SIZE`` questions."""
     if not settings.gemini_api_key:
         raise GenerationError("GEMINI_API_KEY is not configured.")
 
     from google.genai import types
 
     difficulty = _norm_difficulty(difficulty)
-    count = max(1, min(count or 8, MAX_PRACTICE_QUESTIONS))
+    # Only the most recent titles — the whole set would crowd out the material.
+    recent = "\n".join(f"- {t}" for t in written[-40:])
+    avoid_clause = (
+        "- These questions have already been set for this learner. Cover "
+        "different ground; do not repeat or paraphrase them:\n"
+        f"{recent}\n"
+    ) if recent else ""
 
     prompt = (
         f"Write {count} multiple-choice practice questions for a learner "
@@ -500,7 +601,8 @@ def generate_practice_questions(
         "lower snake_case (letters, digits and underscores only, e.g. 'tcp_ip').\n"
         "- why_summary is a 2-3 sentence explanation of WHY the correct answer "
         "is correct — this is shown as a highlighted 'Why' card.\n"
-        "- Base everything on the material below. Plain text, British spelling, "
+        + avoid_clause
+        + "- Base everything on the material below. Plain text, British spelling, "
         "no markdown and no 'A)' prefixes inside option text.\n\n"
         f"--- DOMAIN MATERIAL ---\n{domain_content or topic or subject}"
     )
@@ -700,8 +802,9 @@ def discover_resources(
         f'A learner studying {subject} asked: "{q}".\n\n'
         "1. Search the web for FREE study resources that would help — prefer "
         "YouTube videos, free PDFs, official documentation and reputable "
-        "websites. Offer up to 6, each with its exact title and a real, working "
-        "https URL.\n"
+        "websites. Offer up to 10, each with its exact title and a real, working "
+        "https URL. Avoid anything paywalled or behind a sign-up — every link "
+        "is checked before the learner sees it, so walled ones are wasted.\n"
         "2. If the message is also a question, answer it briefly (2-3 sentences) "
         "using this course context where relevant:\n"
         f"{ctx or '(no course context)'}"
@@ -775,5 +878,7 @@ def discover_resources(
         })
     return {
         "answer": (data.get("answer") or "").strip()[:2000],
-        "resources": resources[:10],
+        # Over-supplied on purpose: link_check.validate_resources drops the dead
+        # and walled ones, and a short list here would leave nothing behind.
+        "resources": resources[:12],
     }

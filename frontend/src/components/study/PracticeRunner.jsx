@@ -28,6 +28,11 @@ import ErrorBanner from '../ErrorBanner'
 export default function PracticeRunner({
   questions,
   mode = 'practice',
+  // `total` is the set's eventual length and `awaitingMore` says the server is
+  // still writing it — a full-length set streams in while the learner answers,
+  // so the run must not finish early just because it has caught up.
+  total,
+  awaitingMore = false,
   onSubmit,
   onFlag,
   onGotIt,
@@ -39,8 +44,14 @@ export default function PracticeRunner({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
 
+  const count = Math.max(total || 0, questions.length)
   const q = questions[index]
-  if (!q) return null
+  // The learner has answered everything written so far. `index` is allowed to
+  // sit one past the end while the server writes more: the next question
+  // renders itself the moment it lands, with no effect to synchronise.
+  const caughtUp = !q && index > 0
+
+  if (!q && !caughtUp) return null
 
   async function submit() {
     if (selected == null || submitting) return
@@ -60,7 +71,9 @@ export default function PracticeRunner({
     setSelected(null)
     setRevealed(null)
     setError(null)
-    if (index < questions.length - 1) setIndex((i) => i + 1)
+    // Stepping past the last written question is fine while the set is still
+    // being written — the run parks on a waiting card until the next lands.
+    if (index < questions.length - 1 || awaitingMore) setIndex((i) => i + 1)
     else onComplete?.()
   }
 
@@ -75,7 +88,7 @@ export default function PracticeRunner({
 
   // After the reveal, options come from the server payload (they carry the
   // explanations); before it, from the question itself.
-  const options = revealed?.options?.length ? revealed.options : q.options
+  const options = revealed?.options?.length ? revealed.options : q?.options || []
 
   return (
     <div className="space-y-5">
@@ -83,9 +96,14 @@ export default function PracticeRunner({
       <div className="space-y-1.5">
         <div className="flex justify-between text-xs text-sec">
           <span>
-            Question {index + 1} of {questions.length}
+            Question {Math.min(index + 1, count)} of {count}
+            {awaitingMore && questions.length < count && (
+              <span className="ml-1.5 text-accent2">
+                · {questions.length} ready
+              </span>
+            )}
           </span>
-          {q.is_flagged && mode === 'practice' && (
+          {q?.is_flagged && mode === 'practice' && (
             <span className="inline-flex items-center gap-1 text-warning">
               <Flag size={11} aria-hidden="true" /> Flagged
             </span>
@@ -94,12 +112,13 @@ export default function PracticeRunner({
         <div className="h-1.5 overflow-hidden rounded-full bg-surface2">
           <div
             className="h-full rounded-full bg-accent transition-[width] duration-300"
-            style={{ width: `${((index + (revealed ? 1 : 0)) / questions.length) * 100}%` }}
+            style={{ width: `${((index + (revealed ? 1 : 0)) / count) * 100}%` }}
           />
         </div>
       </div>
 
       <AnimatePresence mode="wait">
+        {q && (
         <motion.div
           key={index}
           initial={{ opacity: 0, x: 20 }}
@@ -138,12 +157,47 @@ export default function PracticeRunner({
             </motion.div>
           )}
         </motion.div>
+        )}
       </AnimatePresence>
 
       <ErrorBanner message={error} onDismiss={() => setError(null)} />
 
       {/* Actions */}
-      {!revealed ? (
+      {caughtUp ? (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="space-y-3 rounded-xl border border-border bg-surface px-4 py-4 text-center"
+        >
+          {awaitingMore ? (
+            <>
+              <p className="flex items-center justify-center gap-2 text-sm text-pri">
+                <Loader2
+                  size={16}
+                  className="animate-spin text-accent"
+                  aria-hidden="true"
+                />
+                Writing the next questions…
+              </p>
+              <p className="text-xs text-sec">
+                You&rsquo;ve answered every question written so far —{' '}
+                {questions.length} of {count}. The next one appears here as soon
+                as it lands.
+              </p>
+            </>
+          ) : (
+            <p className="text-sm text-pri">
+              That&rsquo;s every question in this set.
+            </p>
+          )}
+          <button
+            onClick={() => onComplete?.()}
+            className={`mx-auto min-h-11 ${awaitingMore ? 'btn-secondary' : 'btn-primary'}`}
+          >
+            {awaitingMore ? 'Finish here instead' : 'Finish'}
+          </button>
+        </motion.div>
+      ) : !revealed ? (
         <button
           onClick={submit}
           disabled={selected == null || submitting}

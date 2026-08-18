@@ -12,11 +12,14 @@ import { path } from '../routes'
 /**
  * Practice Exam Mode — spec 6.4.
  *
- * Domain-scoped, get-or-generate: the first visit builds a question set (slow —
- * an AI call, so it gets a proper working state), later visits reuse the cached
- * set. The run itself lives in PracticeRunner; this page owns loading, the
- * flag/got-it mutations, and the completion screen.
+ * Domain-scoped, get-or-generate. The first visit builds the set, but only its
+ * opening questions block the response: the server keeps writing the rest while
+ * the learner answers, and this page polls until the set reaches the exam's
+ * length. Later visits reuse the cached set outright. The run itself lives in
+ * PracticeRunner; this page owns loading, the flag/got-it mutations, and the
+ * completion screen.
  */
+const POLL_MS = 4000
 export default function PracticeMode() {
   const { domainId } = useParams()
   const navigate = useNavigate()
@@ -30,6 +33,11 @@ export default function PracticeMode() {
     queryKey: ['practice-questions', domainId],
     queryFn: ({ signal }) => api.practiceQuestions(domainId, {}, signal),
     retry: false,
+    // The set arrives in two parts: enough questions to start with, then the
+    // rest behind them. Poll while the server says it's still writing, so the
+    // run grows underneath the learner instead of making them wait for it.
+    refetchInterval: (query) => (query.state.data?.generating ? POLL_MS : false),
+    refetchIntervalInBackground: false,
   })
 
   const flag = useMutation({
@@ -40,7 +48,9 @@ export default function PracticeMode() {
     mutationFn: (qid) => api.gotItQuestion(qid),
   })
 
-  const questions = Array.isArray(data) ? data : []
+  const questions = Array.isArray(data?.questions) ? data.questions : []
+  const target = data?.target_count || questions.length
+  const generating = !!data?.generating
   const isAuth = error instanceof ApiError && error.isAuth
 
   function handleFlag(qid) {
@@ -100,6 +110,8 @@ export default function PracticeMode() {
       ) : (
         <PracticeRunner
           questions={questions}
+          total={target}
+          awaitingMore={generating}
           mode="practice"
           onSubmit={(q, chosen) => api.submitAnswer(q.id, chosen)}
           onFlag={handleFlag}
@@ -118,7 +130,9 @@ function GeneratingState() {
       <div className="space-y-1">
         <p className="text-sm font-medium text-pri">Building your practice set…</p>
         <p className="text-xs text-sec">
-          Writing questions with per-option explanations. This takes a moment.
+          Writing a full-length set — as many questions as your real exam — with
+          an explanation for every option. This takes a minute, then it&rsquo;s
+          cached.
         </p>
       </div>
     </div>
