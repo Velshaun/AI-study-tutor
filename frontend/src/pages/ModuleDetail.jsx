@@ -20,6 +20,7 @@ import AddSourceSheet from '../components/module/AddSourceSheet'
 import ChatTab from '../components/module/ChatTab'
 import ClassroomTab from '../components/module/ClassroomTab'
 import CourseContextCard from '../components/module/CourseContextCard'
+import CsvFlashcardImportModal from '../components/module/CsvFlashcardImportModal'
 import ImportedExamsCard from '../components/module/ImportedExamsCard'
 import SourcesTab from '../components/module/SourcesTab'
 import PageTitle from '../components/PageTitle'
@@ -47,6 +48,7 @@ export default function ModuleDetail() {
   const queryClient = useQueryClient()
   const [tab, setTab] = useState('sources') // 'sources' | 'chat' | 'classroom'
   const [showAdd, setShowAdd] = useState(false)
+  const [showCsv, setShowCsv] = useState(false)
 
   const rename = useMutation({
     mutationFn: (title) => api.renameModule(id, title),
@@ -168,7 +170,20 @@ export default function ModuleDetail() {
         onAddSource={() => setShowAdd(true)}
       />
 
-      <AddSourceSheet open={showAdd} moduleId={id} onClose={() => setShowAdd(false)} />
+      <AddSourceSheet
+        open={showAdd}
+        moduleId={id}
+        onClose={() => setShowAdd(false)}
+        onImportCsv={() => {
+          setShowAdd(false)
+          setShowCsv(true)
+        }}
+      />
+      <CsvFlashcardImportModal
+        open={showCsv}
+        moduleId={id}
+        onClose={() => setShowCsv(false)}
+      />
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { Loader2, Upload } from 'lucide-react'
+import { ChevronRight, FileSpreadsheet, Loader2, Upload } from 'lucide-react'
 import { useRef, useState } from 'react'
 
 import Modal from '../Modal'
@@ -8,8 +8,11 @@ import { UPLOAD_ACCEPT, useAddSourceToModule } from '../../hooks/useModuleUpload
  * The "Add a source" bottom sheet for an existing module. Drops or picks files,
  * attaches them to *this* module and re-runs the pipeline — so a new source
  * augments the module rather than creating a duplicate.
+ *
+ * A CSV flashcard import is offered alongside file upload: it doesn't run the
+ * ingestion pipeline, so `onImportCsv` hands off to the dedicated import flow.
  */
-export default function AddSourceSheet({ open, moduleId, onClose }) {
+export default function AddSourceSheet({ open, moduleId, onClose, onImportCsv }) {
   const input = useRef(null)
   const depth = useRef(0)
   const [dragging, setDragging] = useState(false)
@@ -22,6 +25,7 @@ export default function AddSourceSheet({ open, moduleId, onClose }) {
 
   return (
     <Modal open={open} title="Add a source" onClose={onClose}>
+      <div className="space-y-3">
       <button
         type="button"
         onClick={() => input.current?.click()}
@@ -73,6 +77,26 @@ export default function AddSourceSheet({ open, moduleId, onClose }) {
           <span className="text-xs text-sec">PDF, audio (MP3, WAV, M4A) or text</span>
         )}
       </button>
+
+      {/* CSV flashcard import — bypasses the ingestion pipeline. */}
+      <button
+        type="button"
+        onClick={onImportCsv}
+        className="flex w-full items-center gap-3 rounded-xl border border-border
+                   bg-surface px-4 py-3 text-left transition-colors hover:border-accent/50"
+      >
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-accent/10 text-accent2">
+          <FileSpreadsheet size={18} aria-hidden="true" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-medium text-pri">CSV (Flashcards)</span>
+          <span className="block text-xs text-sec">
+            Import a Quizlet or two-column CSV as a deck
+          </span>
+        </span>
+        <ChevronRight size={16} className="shrink-0 text-sec" aria-hidden="true" />
+      </button>
+      </div>
       <input
         ref={input}
         type="file"

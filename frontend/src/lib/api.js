@@ -271,6 +271,12 @@ export const api = {
     apiFetch(`/flashcards/${domainId}`, { signal }),
   generateFlashcards: (body) =>
     apiFetch('/flashcards/generate', { method: 'POST', body }),
+  // Import a deck from parsed CSV rows. body: { name, cards: [{front, back}] }
+  importFlashcards: (moduleId, body) =>
+    apiFetch('/flashcards/import', {
+      method: 'POST',
+      body: { module_id: moduleId, ...body },
+    }),
   favouriteFlashcard: (id) =>
     apiFetch(`/flashcards/${id}/favourite`, { method: 'PATCH' }),
   deleteFlashcard: (id) => apiFetch(`/flashcards/${id}`, { method: 'DELETE' }),
