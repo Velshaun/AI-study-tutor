@@ -13,6 +13,7 @@ import { useRef, useState } from 'react'
 
 import { useConfirm } from '../../hooks/useConfirm'
 import { api } from '../../lib/api'
+import { UPLOAD_ACCEPT, rejectionMessage, sortPicked } from '../../lib/uploads'
 import ErrorBanner from '../ErrorBanner'
 
 /**
@@ -24,7 +25,7 @@ import ErrorBanner from '../ErrorBanner'
  * audio…" spinner while parsing, then a "Transcript ready" preview.
  */
 
-const ACCEPT = '.pdf,.txt,.md,.mp3,.wav,.m4a,.mp4,.ogg,.webm,.flac,.mpga'
+
 const AUDIO_EXT = /\.(mp3|wav|m4a|mp4|ogg|webm|flac|mpga|mpeg)$/i
 
 function isAudio(name = '', type = '') {
@@ -115,8 +116,15 @@ export default function SourcesCard({ moduleId, sources, moduleStatus }) {
 
   function pick(files) {
     setError(null)
-    const list = Array.from(files || [])
-    if (list.length) upload.mutate(list)
+    const { accepted, csv, rejected } = sortPicked(files)
+    if (rejected.length) setError(rejectionMessage(rejected))
+    if (csv.length) {
+      setError(
+        'CSV files are imported as flashcard decks, not summarised as sources — ' +
+          'use the CSV import in "Add a source".',
+      )
+    }
+    if (accepted.length) upload.mutate(accepted)
   }
 
   // --- Drag & drop (desktop). Dropped files go through the same `pick` handler
@@ -200,7 +208,7 @@ export default function SourcesCard({ moduleId, sources, moduleStatus }) {
         ref={fileInput}
         type="file"
         multiple
-        accept={ACCEPT}
+        accept={UPLOAD_ACCEPT}
         onChange={(e) => pick(e.target.files)}
         className="hidden"
       />

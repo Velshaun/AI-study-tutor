@@ -1,11 +1,12 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '../lib/api'
+import { UPLOAD_ACCEPT, rejectionMessage, sortPicked } from '../lib/uploads'
 import { useToast } from './useToast'
 
-/** File types accepted by the source upload (PDF, audio, text). */
-export const UPLOAD_ACCEPT =
-  '.pdf,.txt,.md,.mp3,.wav,.m4a,.mp4,.ogg,.webm,.flac,.mpga'
+// Re-exported so the many pickers that already import it from here keep
+// working; the list itself lives in lib/uploads with the routing rules.
+export { UPLOAD_ACCEPT }
 
 /**
  * The one upload flow, shared by every entry point (dashboard zone, sidebar
@@ -20,8 +21,10 @@ export function useModuleUpload() {
 
   return useMutation({
     mutationFn: async (files) => {
-      const list = Array.from(files || [])
-      if (!list.length) return null
+      const { accepted, rejected } = sortPicked(files)
+      if (rejected.length) throw new Error(rejectionMessage(rejected))
+      if (!accepted.length) return null
+      const list = accepted
       const module = await api.createModule()
       await api.uploadSources(module.id, list)
       await api.processModule(module.id)
@@ -47,9 +50,10 @@ export function useAddSourceToModule(moduleId) {
 
   return useMutation({
     mutationFn: async (files) => {
-      const list = Array.from(files || [])
-      if (!list.length) return
-      await api.uploadSources(moduleId, list)
+      const { accepted, rejected } = sortPicked(files)
+      if (rejected.length) throw new Error(rejectionMessage(rejected))
+      if (!accepted.length) return
+      await api.uploadSources(moduleId, accepted)
       await api.processModule(moduleId)
     },
     onSuccess: () => {

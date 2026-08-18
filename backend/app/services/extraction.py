@@ -14,13 +14,18 @@ one source failed and carry on with the rest of the batch.
 
 from __future__ import annotations
 
+import hashlib
 import io
+import logging
+import mimetypes
 import re
 from html.parser import HTMLParser
 
 import httpx
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Whisper's upload ceiling. Larger files need chunking, which we don't do yet.
 WHISPER_MAX_BYTES = 25 * 1024 * 1024
@@ -29,9 +34,24 @@ WHISPER_MAX_BYTES = 25 * 1024 * 1024
 # imports these to classify uploads.
 PDF_EXTS = {".pdf"}
 # Formats Whisper accepts (§4.3a names mp3/wav/m4a explicitly).
-AUDIO_EXTS = {".mp3", ".mp4", ".m4a", ".wav", ".webm", ".mpga", ".mpeg", ".ogg", ".flac"}
+AUDIO_EXTS = {".mp3", ".m4a", ".wav", ".mpga", ".mpeg", ".ogg", ".flac"}
 TEXT_EXTS = {".txt", ".md", ".markdown", ".rst", ".csv"}
-SUPPORTED_EXTS = PDF_EXTS | AUDIO_EXTS | TEXT_EXTS
+# Photos of notes, textbook pages and whiteboards — read with Gemini vision.
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".gif", ".bmp"}
+# Screen recordings. These carry their content on screen rather than in the
+# audio, so they are sampled as frames and read, with any narration transcribed
+# alongside. Container formats that can hold either (mp4, webm) land here: the
+# video extractor falls back to transcription when there is nothing to see.
+VIDEO_EXTS = {".mp4", ".mov", ".webm", ".m4v", ".avi", ".mkv"}
+SUPPORTED_EXTS = PDF_EXTS | AUDIO_EXTS | TEXT_EXTS | IMAGE_EXTS | VIDEO_EXTS
+
+# Vision sampling. A screen recording repeats itself for seconds at a time, so
+# a handful of well-spaced frames carries almost all of its text.
+VIDEO_MAX_FRAMES = 12
+VIDEO_MIN_FRAME_GAP_SECS = 2.0
+# Frames are downscaled before they go to the model: text stays legible far
+# below native resolution, and the request stays small.
+FRAME_MAX_EDGE = 1280
 
 YOUTUBE_PATTERNS = (
     r"(?:v=|/embed/|/shorts/|/live/|youtu\.be/)([A-Za-z0-9_-]{11})",
@@ -251,6 +271,187 @@ def extract_audio(data: bytes, filename: str = "audio.mp3") -> str:
     return text
 
 
+# --- images -----------------------------------------------------------------
+OCR_PROMPT = (
+    "Transcribe every piece of text visible in this image, in reading order.\n\n"
+    "- This is study material: a photo of handwritten notes, a textbook page, a "
+    "whiteboard, a slide or a screenshot.\n"
+    "- Preserve headings, bullet points, numbering and the order things appear "
+    "in. Keep code, commands and symbols exactly as written.\n"
+    "- Where the image is a diagram or table, describe its structure in plain "
+    "text so the content is usable.\n"
+    "- Transcribe only what is there. Do not summarise, correct or invent.\n"
+    "- If there is no legible text, reply with exactly: NO_TEXT"
+)
+
+# Frames arrive as a batch, so the instruction has to be about the set rather
+# than "this image" — asked the single-image way, the model transcribes the
+# first frame and stops.
+VIDEO_OCR_PROMPT = (
+    "These are still frames sampled in order from a screen recording of study "
+    "material. Transcribe the text from ALL of them, in order, as one set of "
+    "notes.\n\n"
+    "- Cover every distinct screen or slide. Where consecutive frames show the "
+    "same thing, transcribe it once rather than repeating it.\n"
+    "- Preserve headings, bullet points, numbering and order. Keep code, "
+    "commands and symbols exactly as written.\n"
+    "- Describe diagrams and tables structurally, in plain text.\n"
+    "- Transcribe only what is on screen. Do not summarise or invent.\n"
+    "- If no frame has legible text, reply with exactly: NO_TEXT"
+)
+
+# What the model tells us when a photo has nothing readable in it.
+NO_TEXT_MARKER = "NO_TEXT"
+
+
+def _vision_mime(filename: str, fallback: str = "image/jpeg") -> str:
+    guessed = mimetypes.guess_type(filename or "")[0]
+    return guessed if (guessed or "").startswith("image/") else fallback
+
+
+def _read_images(
+    parts: list[tuple[bytes, str]], *, label: str, prompt: str = OCR_PROMPT,
+) -> str:
+    """Send image bytes to Gemini vision and return the transcribed text."""
+    if not settings.gemini_api_key:
+        raise ExtractionError(
+            "Reading images needs GEMINI_API_KEY to be configured."
+        )
+    if not parts:
+        raise ExtractionError("There was nothing to read in that file.")
+
+    from google.genai import types
+
+    from app.services.domains import _generate, quota_hint
+
+    contents = [
+        types.Part.from_bytes(data=data, mime_type=mime) for data, mime in parts
+    ]
+    contents.append(prompt)
+
+    try:
+        response = _generate(
+            label,
+            model=settings.gemini_model,
+            contents=contents,
+            config=types.GenerateContentConfig(temperature=0.0),
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise ExtractionError(
+            quota_hint(exc) or f"Could not read that image: {exc}"
+        ) from exc
+
+    text = normalise(response.text or "")
+    if not text or text.strip().upper().startswith(NO_TEXT_MARKER):
+        return ""
+    return text
+
+
+def extract_image(data: bytes, filename: str = "image.jpg") -> str:
+    """Read the text out of a photo of notes, a slide or a screenshot."""
+    text = _read_images([(data, _vision_mime(filename))], label="ocr-image")
+    if not text:
+        raise ExtractionError(
+            "No readable text was found in that image. A sharper, better-lit "
+            "photo usually fixes it."
+        )
+    return text
+
+
+# --- video ------------------------------------------------------------------
+def _sample_frames(data: bytes) -> list[tuple[bytes, str]]:
+    """Grab well-spaced, visually distinct frames from a video.
+
+    Screen recordings hold still for long stretches, so frames are taken at
+    intervals and near-identical ones are dropped — twelve good frames beat a
+    thousand of the same slide.
+    """
+    try:
+        import av
+    except ImportError as exc:  # pragma: no cover - dependency is pinned
+        raise ExtractionError(
+            "Reading video needs the 'av' package to be installed."
+        ) from exc
+
+    frames: list[tuple[bytes, str]] = []
+    last_at = None
+    last_digest = None
+
+    try:
+        with av.open(io.BytesIO(data)) as container:
+            streams = [s for s in container.streams if s.type == "video"]
+            if not streams:
+                return []
+            stream = streams[0]
+            stream.thread_type = "AUTO"
+
+            for frame in container.decode(stream):
+                at = float(frame.time or 0)
+                if last_at is not None and at - last_at < VIDEO_MIN_FRAME_GAP_SECS:
+                    continue
+
+                image = frame.to_image()
+                image.thumbnail((FRAME_MAX_EDGE, FRAME_MAX_EDGE))
+                buffer = io.BytesIO()
+                image.convert("RGB").save(buffer, format="JPEG", quality=80)
+                payload = buffer.getvalue()
+
+                # Skip a frame that looks like the one before it — a still
+                # screen shouldn't spend the budget.
+                digest = hashlib.blake2b(payload, digest_size=8).hexdigest()
+                if digest == last_digest:
+                    continue
+
+                last_at, last_digest = at, digest
+                frames.append((payload, "image/jpeg"))
+                if len(frames) >= VIDEO_MAX_FRAMES:
+                    break
+    except ExtractionError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — a corrupt upload isn't a crash
+        logger.warning("Could not decode video frames: %s", exc)
+        return []
+
+    return frames
+
+
+def extract_video(data: bytes, filename: str = "video.mp4") -> str:
+    """Read a screen recording: what's on screen, plus anything said over it.
+
+    A screen recording carries its substance visually, so frames are sampled and
+    transcribed. Narration is transcribed too where there's an audio track and
+    the file is inside Whisper's limit, and both are returned together — a
+    lecture capture is worth more with its commentary than without.
+    """
+    frames = _sample_frames(data)
+    on_screen = ""
+    if frames:
+        on_screen = _read_images(
+            frames, label="ocr-video", prompt=VIDEO_OCR_PROMPT,
+        )
+
+    spoken = ""
+    if len(data) <= WHISPER_MAX_BYTES:
+        try:
+            spoken = extract_audio(data, filename)
+        except ExtractionError as exc:
+            # Silent screen recordings are the norm, not an error.
+            logger.info("No usable audio in %s: %s", filename, exc)
+
+    parts = []
+    if on_screen:
+        parts.append(f"On screen:\n{on_screen}")
+    if spoken:
+        parts.append(f"Narration:\n{spoken}")
+
+    if not parts:
+        raise ExtractionError(
+            "Nothing readable was found in that video — no on-screen text and "
+            "no speech. A screen recording with visible text works best."
+        )
+    return "\n\n".join(parts)
+
+
 def extract_source(
     *,
     source_type: str,
@@ -265,6 +466,10 @@ def extract_source(
         return extract_text_file(_require(data, "text file"))
     if source_type == "audio":
         return extract_audio(_require(data, "audio"), filename)
+    if source_type == "image":
+        return extract_image(_require(data, "image"), filename)
+    if source_type == "video":
+        return extract_video(_require(data, "video"), filename)
     if source_type == "youtube":
         return extract_youtube(_require(url, "YouTube URL"))
     if source_type == "web":

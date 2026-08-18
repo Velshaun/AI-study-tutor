@@ -4,7 +4,9 @@ import { useRef, useState } from 'react'
 
 import EmptyState from '../EmptyState'
 import { useConfirm } from '../../hooks/useConfirm'
-import { UPLOAD_ACCEPT, useAddSourceToModule } from '../../hooks/useModuleUpload'
+import { useAddSourceToModule } from '../../hooks/useModuleUpload'
+import { useToast } from '../../hooks/useToast'
+import { UPLOAD_ACCEPT, rejectionMessage, sortPicked } from '../../lib/uploads'
 import { api } from '../../lib/api'
 
 const AUDIO_EXT = /\.(mp3|wav|m4a|mp4|ogg|webm|flac|mpga|mpeg)$/i
@@ -94,10 +96,15 @@ function DesktopDropzone({ moduleId }) {
   const depth = useRef(0)
   const [dragging, setDragging] = useState(false)
   const upload = useAddSourceToModule(moduleId)
+  const toast = useToast()
 
   function pick(files) {
-    const list = Array.from(files || [])
-    if (list.length) upload.mutate(list)
+    const { accepted, rejected } = sortPicked(files)
+    // CSVs land in `accepted` here on purpose: this dropzone belongs to the
+    // sources list, and a CSV of notes is perfectly good study text. The
+    // flashcard importer is a separate, explicit choice.
+    if (rejected.length) toast.error(rejectionMessage(rejected))
+    if (accepted.length) upload.mutate(accepted)
   }
 
   return (

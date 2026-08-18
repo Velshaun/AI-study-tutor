@@ -1,102 +1,197 @@
-import { ChevronRight, FileSpreadsheet, Loader2, Upload } from 'lucide-react'
+import {
+  Camera,
+  ChevronRight,
+  FileSpreadsheet,
+  FolderOpen,
+  Images,
+  Loader2,
+  MonitorPlay,
+  Upload,
+} from 'lucide-react'
 import { useRef, useState } from 'react'
 
 import Modal from '../Modal'
-import { UPLOAD_ACCEPT, useAddSourceToModule } from '../../hooks/useModuleUpload'
+import { useAddSourceToModule } from '../../hooks/useModuleUpload'
+import {
+  DOCUMENT_ACCEPT,
+  IMAGE_ACCEPT,
+  LIBRARY_ACCEPT,
+  SUPPORTED_SUMMARY,
+  UPLOAD_ACCEPT,
+  VIDEO_ACCEPT,
+  rejectionMessage,
+  sortPicked,
+} from '../../lib/uploads'
 
 /**
- * The "Add a source" bottom sheet for an existing module. Drops or picks files,
+ * The "Add a source" bottom sheet for an existing module. Picks or drops files,
  * attaches them to *this* module and re-runs the pipeline — so a new source
  * augments the module rather than creating a duplicate.
  *
- * A CSV flashcard import is offered alongside file upload: it doesn't run the
- * ingestion pipeline, so `onImportCsv` hands off to the dedicated import flow.
+ * A phone's file picker is driven entirely by the `accept` list, and one
+ * combined list makes it guess: it opens whichever app it thinks fits, which is
+ * why photos of notes were unreachable behind a video-only picker. So the
+ * routes are explicit — library, files, camera, screen recording — each with
+ * the accept (and `capture`) that opens the right thing. Desktop keeps the
+ * drag-and-drop zone, which takes everything.
+ *
+ * CSVs never run the ingestion pipeline: picked anywhere here, they are handed
+ * to the flashcard importer instead.
  */
 export default function AddSourceSheet({ open, moduleId, onClose, onImportCsv }) {
+  // One input, retargeted per route. The `accept` list (and `capture`) is what
+  // decides which app a phone opens, and setting it at click time keeps that
+  // decision in the handler rather than spraying inputs across the markup.
   const input = useRef(null)
   const depth = useRef(0)
   const [dragging, setDragging] = useState(false)
+  const [error, setError] = useState(null)
   const upload = useAddSourceToModule(moduleId)
 
   function pick(files) {
-    const list = Array.from(files || [])
-    if (list.length) upload.mutate(list, { onSuccess: onClose })
+    setError(null)
+    const { accepted, csv, rejected } = sortPicked(files)
+
+    if (rejected.length) setError(rejectionMessage(rejected))
+
+    // A CSV is a flashcard deck, not study material to summarise, so it goes
+    // to the importer rather than the pipeline. The importer asks for the file
+    // itself — it has to show the column mapping before anything is written.
+    if (csv.length && !accepted.length) {
+      onImportCsv?.()
+      return
+    }
+    if (csv.length) {
+      setError(
+        'CSV files are imported as flashcard decks — add them on their own, ' +
+          'using "CSV (Flashcards)".',
+      )
+    }
+    if (accepted.length) upload.mutate(accepted, { onSuccess: onClose })
   }
+
+  function openPicker({ accept, capture }) {
+    const el = input.current
+    if (!el) return
+    el.accept = accept
+    // A camera capture is one shot; everything else can be a multi-select.
+    el.multiple = !capture
+    if (capture) el.setAttribute('capture', capture)
+    else el.removeAttribute('capture')
+    el.value = ''
+    el.click()
+  }
+
+  const routes = [
+    {
+      accept: LIBRARY_ACCEPT,
+      Icon: Images,
+      title: 'Choose from library',
+      hint: 'Photos and videos on this device',
+    },
+    {
+      accept: DOCUMENT_ACCEPT,
+      Icon: FolderOpen,
+      title: 'Browse files',
+      hint: 'PDFs, documents, audio and CSVs',
+    },
+    {
+      accept: IMAGE_ACCEPT,
+      capture: 'environment',
+      Icon: Camera,
+      title: 'Take photo',
+      hint: 'Snap notes, a page or a whiteboard',
+    },
+    {
+      accept: VIDEO_ACCEPT,
+      Icon: MonitorPlay,
+      title: 'Add a screen recording',
+      hint: 'We read the text off each screen',
+    },
+  ]
 
   return (
     <Modal open={open} title="Add a source" onClose={onClose}>
       <div className="space-y-3">
-      <button
-        type="button"
-        onClick={() => input.current?.click()}
-        onDragEnter={(e) => {
-          e.preventDefault()
-          if (![...(e.dataTransfer?.types || [])].includes('Files')) return
-          depth.current += 1
-          setDragging(true)
-        }}
-        onDragOver={(e) => {
-          e.preventDefault()
-          if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
-        }}
-        onDragLeave={() => {
-          depth.current = Math.max(0, depth.current - 1)
-          if (depth.current === 0) setDragging(false)
-        }}
-        onDrop={(e) => {
-          e.preventDefault()
-          depth.current = 0
-          setDragging(false)
-          pick(e.dataTransfer.files)
-        }}
-        disabled={upload.isPending}
-        className={[
-          'flex w-full flex-col items-center gap-2 rounded-xl border-2 px-4 py-8 text-center transition-colors',
-          dragging
-            ? 'border-solid border-accent bg-accent/10'
-            : 'border-dashed border-border hover:border-accent/50',
-        ].join(' ')}
-      >
-        {upload.isPending ? (
-          <Loader2 size={22} className="animate-spin text-accent" aria-hidden="true" />
-        ) : (
-          <Upload
-            size={22}
-            className={dragging ? 'text-accent2' : 'text-sec'}
-            aria-hidden="true"
-          />
-        )}
-        <span className={`text-sm ${dragging ? 'font-medium text-accent2' : 'text-pri'}`}>
-          {upload.isPending
-            ? 'Uploading…'
-            : dragging
-              ? 'Drop to add'
-              : 'Drag & drop or click to add'}
-        </span>
-        {!dragging && !upload.isPending && (
-          <span className="text-xs text-sec">PDF, audio (MP3, WAV, M4A) or text</span>
-        )}
-      </button>
-
-      {/* CSV flashcard import — bypasses the ingestion pipeline. */}
-      <button
-        type="button"
-        onClick={onImportCsv}
-        className="flex w-full items-center gap-3 rounded-xl border border-border
-                   bg-surface px-4 py-3 text-left transition-colors hover:border-accent/50"
-      >
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-accent/10 text-accent2">
-          <FileSpreadsheet size={18} aria-hidden="true" />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block text-sm font-medium text-pri">CSV (Flashcards)</span>
-          <span className="block text-xs text-sec">
-            Import a Quizlet or two-column CSV as a deck
+        {/* Desktop dropzone. On a phone this is just another way in. */}
+        <button
+          type="button"
+          onClick={() => openPicker({ accept: UPLOAD_ACCEPT })}
+          onDragEnter={(e) => {
+            e.preventDefault()
+            if (![...(e.dataTransfer?.types || [])].includes('Files')) return
+            depth.current += 1
+            setDragging(true)
+          }}
+          onDragOver={(e) => {
+            e.preventDefault()
+            if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+          }}
+          onDragLeave={() => {
+            depth.current = Math.max(0, depth.current - 1)
+            if (depth.current === 0) setDragging(false)
+          }}
+          onDrop={(e) => {
+            e.preventDefault()
+            depth.current = 0
+            setDragging(false)
+            pick(e.dataTransfer.files)
+          }}
+          disabled={upload.isPending}
+          className={[
+            'flex w-full flex-col items-center gap-2 rounded-xl border-2 px-4 py-6 text-center transition-colors',
+            dragging
+              ? 'border-solid border-accent bg-accent/10'
+              : 'border-dashed border-border hover:border-accent/50',
+          ].join(' ')}
+        >
+          {upload.isPending ? (
+            <Loader2 size={22} className="animate-spin text-accent" aria-hidden="true" />
+          ) : (
+            <Upload
+              size={22}
+              className={dragging ? 'text-accent2' : 'text-sec'}
+              aria-hidden="true"
+            />
+          )}
+          <span className={`text-sm ${dragging ? 'font-medium text-accent2' : 'text-pri'}`}>
+            {upload.isPending
+              ? 'Uploading…'
+              : dragging
+                ? 'Drop to add'
+                : 'Drag & drop or click to add'}
           </span>
-        </span>
-        <ChevronRight size={16} className="shrink-0 text-sec" aria-hidden="true" />
-      </button>
+          {!dragging && !upload.isPending && (
+            <span className="text-xs text-sec">{SUPPORTED_SUMMARY}</span>
+          )}
+        </button>
+
+        {routes.map(({ accept, capture, Icon, title, hint }) => (
+          <SourceRoute
+            key={title}
+            Icon={Icon}
+            title={title}
+            hint={hint}
+            disabled={upload.isPending}
+            onClick={() => openPicker({ accept, capture })}
+          />
+        ))}
+
+        {/* CSV flashcard import — bypasses the ingestion pipeline. */}
+        <SourceRoute
+          Icon={FileSpreadsheet}
+          title="CSV (Flashcards)"
+          hint="Import a Quizlet or two-column CSV as a deck"
+          onClick={() => onImportCsv?.()}
+        />
+
+        {error && (
+          <p className="rounded-xl border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">
+            {error}
+          </p>
+        )}
       </div>
+
       <input
         ref={input}
         type="file"
@@ -109,5 +204,27 @@ export default function AddSourceSheet({ open, moduleId, onClose, onImportCsv })
         }}
       />
     </Modal>
+  )
+}
+
+function SourceRoute({ Icon, title, hint, disabled, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="flex w-full items-center gap-3 rounded-xl border border-border
+                 bg-surface px-4 py-3 text-left transition-colors
+                 hover:border-accent/50 disabled:opacity-60"
+    >
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-accent/10 text-accent2">
+        <Icon size={18} aria-hidden="true" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-medium text-pri">{title}</span>
+        <span className="block text-xs text-sec">{hint}</span>
+      </span>
+      <ChevronRight size={16} className="shrink-0 text-sec" aria-hidden="true" />
+    </button>
   )
 }

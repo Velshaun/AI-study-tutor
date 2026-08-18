@@ -23,9 +23,11 @@ from app.database import get_supabase
 # inside the background pipeline.
 from app.services.extraction import (  # noqa: F401 - re-exported for callers
     AUDIO_EXTS,
+    IMAGE_EXTS,
     PDF_EXTS,
     SUPPORTED_EXTS,
     TEXT_EXTS,
+    VIDEO_EXTS,
 )
 
 
@@ -47,13 +49,27 @@ def safe_filename(name: str) -> str:
 
 
 def detect_source_type(filename: str, content_type: str | None = None) -> str:
-    """Classify an upload into the parser that should handle it."""
+    """Classify an upload into the parser that should handle it.
+
+    The extension decides first and the browser's content type is the fallback,
+    because phones are inconsistent about what they report — a photo picked on
+    iOS can arrive as ``application/octet-stream`` with a real extension, or as
+    ``image/jpeg`` with no extension at all.
+    """
     ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
-    if ext in PDF_EXTS or (content_type or "").startswith("application/pdf"):
+    mime = (content_type or "").lower()
+
+    if ext in PDF_EXTS or mime.startswith("application/pdf"):
         return "pdf"
-    if ext in AUDIO_EXTS or (content_type or "").startswith(("audio/", "video/")):
+    if ext in IMAGE_EXTS or mime.startswith("image/"):
+        return "image"
+    # Video before audio: a screen recording carries its content on screen, and
+    # the video path transcribes any narration as well, so nothing is lost.
+    if ext in VIDEO_EXTS or mime.startswith("video/"):
+        return "video"
+    if ext in AUDIO_EXTS or mime.startswith("audio/"):
         return "audio"
-    if ext in TEXT_EXTS or (content_type or "").startswith("text/"):
+    if ext in TEXT_EXTS or mime.startswith("text/"):
         return "text"
     return "unknown"
 
