@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import logging
+
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -23,6 +25,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     UploadFile,
     status,
 )
@@ -34,6 +37,8 @@ from app.routers.auth import AuthUser, get_current_user
 from app.services import storage
 from app.services.extraction import classify_url
 from app.services.pipeline import process_module
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/sources", tags=["sources"])
 
@@ -205,17 +210,63 @@ async def add_link_source(
     return _to_source(row)
 
 
+class DomainAtRisk(BaseModel):
+    domain_id: str
+    title: str
+    # {'lectures': 1, 'practice_questions': 40, ...}
+    counts: dict[str, int] = Field(default_factory=dict)
+
+
+class ReprocessImpact(BaseModel):
+    module_id: str
+    at_risk_domains: list[DomainAtRisk] = Field(default_factory=list)
+
+
 # --- Steps 2-8: run the pipeline -------------------------------------------
+@router.get("/{module_id}/reprocess-impact", response_model=ReprocessImpact)
+async def reprocess_impact(
+    module_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> ReprocessImpact:
+    """What a forced rebuild would destroy, so the learner can be asked first.
+
+    Re-processing normally preserves domains that hold generated content; this
+    reports what a `force` run would delete, for the confirmation dialog.
+    """
+    _own_module(module_id, user.id)
+    from app.services.pipeline import domains_with_content
+
+    at_risk = domains_with_content(module_id)
+    return ReprocessImpact(
+        module_id=module_id,
+        at_risk_domains=[
+            DomainAtRisk(domain_id=d["domain_id"], title=d["title"], counts=d["counts"])
+            for d in at_risk
+        ],
+    )
+
+
 @router.post("/{module_id}/process", response_model=ProcessResponse)
 async def process_sources(
     module_id: str,
     background: BackgroundTasks,
+    force: bool = Query(
+        False,
+        description=(
+            "Rebuild the domain list outright, deleting generated content "
+            "attached to domains that go away. Requires the learner to have "
+            "confirmed — see GET /reprocess-impact."
+        ),
+    ),
     user: AuthUser = Depends(get_current_user),
 ) -> ProcessResponse:
     """Kick off parsing and AI analysis; returns immediately.
 
     Poll ``GET /sources/{module_id}/status`` until status is ``ready`` or
     ``failed``.
+
+    By default this is non-destructive: domains holding lectures, flashcards,
+    quizzes or practice questions are updated in place rather than replaced.
     """
     _own_module(module_id, user.id)
 
@@ -230,7 +281,13 @@ async def process_sources(
         {"status": "processing", "status_detail": "queued", "error_message": None}
     ).eq("id", module_id).execute()
 
-    background.add_task(process_module, module_id, user.id)
+    if force:
+        logger.warning(
+            "Module %s: forced re-ingestion requested by %s — generated content "
+            "on dropped domains will be deleted.",
+            module_id, user.id,
+        )
+    background.add_task(process_module, module_id, user.id, force=force)
 
     return ProcessResponse(
         module_id=module_id,

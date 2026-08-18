@@ -76,10 +76,42 @@ export default function SourcesCard({ moduleId, sources, moduleStatus }) {
     if (ok) remove.mutate(source.id)
   }
   const process = useMutation({
-    mutationFn: () => api.processModule(moduleId),
+    mutationFn: ({ force = false } = {}) => api.processModule(moduleId, { force }),
     onSuccess: refresh,
     onError: (e) => setError(e?.message || 'Could not start processing.'),
   })
+
+  // Re-processing keeps any domain the learner has already studied, so the
+  // normal path needs no warning. A full rebuild is the only way to lose that
+  // work, so it asks first — and says exactly what would go.
+  async function rebuild() {
+    setError(null)
+    let atRisk
+    try {
+      const impact = await api.reprocessImpact(moduleId)
+      atRisk = impact?.at_risk_domains || []
+    } catch (e) {
+      setError(e?.message || 'Could not check what a rebuild would affect.')
+      return
+    }
+
+    const total = atRisk.reduce(
+      (n, d) => n + Object.values(d.counts || {}).reduce((a, b) => a + b, 0), 0,
+    )
+    const ok = await confirm({
+      title: total ? 'Rebuild and delete your study content?' : 'Rebuild study plan?',
+      message: total
+        ? `This rebuilds the domain list from your sources and permanently deletes ` +
+          `${total} generated item${total === 1 ? '' : 's'} across ` +
+          `${atRisk.length} domain${atRisk.length === 1 ? '' : 's'}: ` +
+          `${atRisk.map((d) => d.title).join(', ')}. ` +
+          `Re-processing normally keeps all of it — only rebuild if the plan itself is wrong.`
+        : 'This rebuilds the domain list from your sources. Nothing has been generated yet, so nothing will be lost.',
+      confirmLabel: total ? 'Delete and rebuild' : 'Rebuild',
+      danger: !!total,
+    })
+    if (ok) process.mutate({ force: true })
+  }
 
   function pick(files) {
     setError(null)
@@ -215,20 +247,33 @@ export default function SourcesCard({ moduleId, sources, moduleStatus }) {
       )}
 
       {/* Process */}
-      <button
-        onClick={() => process.mutate()}
-        disabled={!canProcess}
-        className="btn-primary w-full"
-      >
-        {processing ? (
-          <>
-            <Loader2 size={16} className="animate-spin" aria-hidden="true" />
-            Building your study plan…
-          </>
-        ) : (
-          'Generate study plan'
+      <div className="space-y-2">
+        <button
+          onClick={() => process.mutate()}
+          disabled={!canProcess}
+          className="btn-primary w-full"
+        >
+          {processing ? (
+            <>
+              <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+              Building your study plan…
+            </>
+          ) : (
+            'Generate study plan'
+          )}
+        </button>
+        {/* Escape hatch for a plan that came out wrong. Hidden until there is
+            something to rebuild, so it never competes with the main action. */}
+        {sources.length > 0 && (
+          <button
+            onClick={rebuild}
+            disabled={!canProcess}
+            className="w-full text-xs text-sec underline-offset-2 hover:text-pri hover:underline"
+          >
+            Rebuild the plan from scratch
+          </button>
         )}
-      </button>
+      </div>
     </div>
   )
 }

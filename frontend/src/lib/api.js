@@ -204,8 +204,16 @@ export const api = {
   addLink: (moduleId, url) =>
     apiFetch('/sources/link', { method: 'POST', body: { module_id: moduleId, url } }),
   deleteSource: (fileId) => apiFetch(`/sources/file/${fileId}`, { method: 'DELETE' }),
-  processModule: (moduleId) =>
-    apiFetch(`/sources/${moduleId}/process`, { method: 'POST' }),
+  // Non-destructive by default: domains holding lectures, flashcards, quizzes
+  // or practice questions are updated in place rather than replaced. `force`
+  // rebuilds the blueprint outright and deletes that content — only pass it
+  // after the learner has confirmed against `reprocessImpact`.
+  processModule: (moduleId, { force = false } = {}) =>
+    apiFetch(`/sources/${moduleId}/process${force ? '?force=true' : ''}`, {
+      method: 'POST',
+    }),
+  reprocessImpact: (moduleId, signal) =>
+    apiFetch(`/sources/${moduleId}/reprocess-impact`, { signal }),
 
   // Course context (PUT accepts either pasted text or an uploaded file)
   courseContext: (moduleId, signal) =>

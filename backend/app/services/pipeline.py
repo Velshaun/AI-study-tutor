@@ -101,16 +101,165 @@ def parse_pending_sources(module_id: str) -> tuple[list[str], list[str]]:
 
 
 # --- step 7 -----------------------------------------------------------------
-def write_domains(module_id: str, user_id: str, domains: list[dict[str, Any]]) -> int:
-    """Replace the module's AI-derived domains with a fresh set.
+# Everything a learner accumulates against a domain. Deleting the domain row
+# cascades all of it away, which is why re-ingestion has to tread carefully.
+GENERATED_TABLES = ("lectures", "flashcards", "quizzes", "practice_questions")
 
-    User-authored domains (``source <> 'ai'``) are left alone so a re-run of the
-    pipeline never destroys someone's manual edits.
+
+def _generated_content(domain_ids: list[str]) -> dict[str, dict[str, int]]:
+    """How much generated study content hangs off each domain.
+
+    One batched query per table rather than per domain — a module with twenty
+    domains shouldn't cost eighty round trips to answer "is anything here?".
+    """
+    if not domain_ids:
+        return {}
+    client = get_supabase()
+    counts: dict[str, dict[str, int]] = {d: {} for d in domain_ids}
+    for table in GENERATED_TABLES:
+        try:
+            rows = (
+                client.table(table).select("domain_id")
+                .in_("domain_id", domain_ids).execute()
+            ).data or []
+        except Exception as exc:  # noqa: BLE001 — never block ingestion on this
+            logger.warning("Could not count %s while guarding domains: %s", table, exc)
+            continue
+        for row in rows:
+            domain = row.get("domain_id")
+            if domain in counts:
+                counts[domain][table] = counts[domain].get(table, 0) + 1
+    return {d: c for d, c in counts.items() if c}
+
+
+def domains_with_content(module_id: str) -> list[dict[str, Any]]:
+    """The module's AI domains that hold generated content, and how much.
+
+    Powers the confirmation dialog: a learner asked to approve a rebuild should
+    see exactly what it would destroy.
+    """
+    rows = (
+        get_supabase().table("domains").select("id, title")
+        .eq("module_id", module_id).eq("source", "ai").execute()
+    ).data or []
+    counts = _generated_content([r["id"] for r in rows])
+    return [
+        {"domain_id": r["id"], "title": r.get("title") or "", "counts": counts[r["id"]]}
+        for r in rows
+        if r["id"] in counts
+    ]
+
+
+def _describe(counts: dict[str, int]) -> str:
+    """'3 lectures, 40 practice_questions' — for the warning log."""
+    return ", ".join(f"{n} {table}" for table, n in sorted(counts.items()) if n)
+
+
+def _match_key(title: str) -> str:
+    """Loose identity for a domain, so a re-run recognises its own work."""
+    return " ".join((title or "").lower().split())
+
+
+def write_domains(
+    module_id: str, user_id: str, domains: list[dict[str, Any]],
+    *, force: bool = False,
+) -> dict[str, Any]:
+    """Reconcile the module's AI-derived domains with a freshly extracted set.
+
+    Domains cascade: deleting one takes its lectures, flashcards, quizzes and
+    practice questions with it. Re-running ingestion after uploading one extra
+    source used to do exactly that — silently, and for the whole module.
+
+    So a domain that holds generated content is never deleted here. If the fresh
+    blueprint still contains it (matched on title), its metadata is updated in
+    place and the content stays attached. If the blueprint has dropped it, it is
+    kept anyway and logged, because losing a learner's study material is far
+    worse than carrying a stale domain they can delete themselves.
+
+    Empty domains — no generated content — are replaced as before.
+
+    ``force=True`` is the explicit "rebuild everything" path: it deletes even
+    domains holding content, and logs exactly what it destroyed. Callers are
+    expected to have confirmed with the learner first.
+
+    User-authored domains (``source <> 'ai'``) are untouched either way.
     """
     client = get_supabase()
-    client.table("domains").delete().eq("module_id", module_id).eq(
-        "source", "ai"
-    ).execute()
+
+    existing = (
+        client.table("domains").select("id, title, order_index")
+        .eq("module_id", module_id).eq("source", "ai").execute()
+    ).data or []
+    with_content = _generated_content([d["id"] for d in existing])
+
+    fresh_by_key = {_match_key(d["title"]): d for d in domains}
+    matched_keys: set[str] = set()
+    updated = preserved = 0
+    protected: list[str] = []
+
+    deletable: list[str] = []
+    to_update: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    to_preserve: list[dict[str, Any]] = []
+
+    for row in existing:
+        key = _match_key(row.get("title"))
+        counts = with_content.get(row["id"])
+
+        if counts and not force:
+            fresh = fresh_by_key.get(key)
+            if fresh:
+                # Same domain, refreshed blueprint: update in place so the
+                # learner's questions and lectures stay attached to it.
+                to_update.append((row, fresh))
+                matched_keys.add(key)
+                updated += 1
+            else:
+                # Dropped from the new blueprint but not from the learner's
+                # study history. Keep it, and say so loudly.
+                to_preserve.append(row)
+                preserved += 1
+                logger.warning(
+                    "Ingestion guard: keeping domain %s (%r) in module %s — the new "
+                    "blueprint dropped it, but it holds %s that a cascade delete "
+                    "would have destroyed. Re-run with force=true to remove it.",
+                    row["id"], row.get("title"), module_id, _describe(counts),
+                )
+            protected.append(row.get("title") or row["id"])
+            continue
+
+        if counts and force:
+            logger.warning(
+                "Ingestion guard OVERRIDDEN: deleting domain %s (%r) in module %s "
+                "and its %s, at the learner's explicit request.",
+                row["id"], row.get("title"), module_id, _describe(counts),
+            )
+        deletable.append(row["id"])
+
+    # `order_index` is uniquely indexed per module, so every surviving domain
+    # has to vacate its slot before the incoming blueprint claims it. Park them
+    # above everything currently in use, then place them properly at the end.
+    survivors = [row for row, _ in to_update] + to_preserve
+    if survivors:
+        occupied = [
+            r.get("order_index") or 0
+            for r in (client.table("domains").select("order_index")
+                      .eq("module_id", module_id).execute().data or [])
+        ]
+        park = max([*occupied, len(domains)]) + 1
+        for offset, row in enumerate(survivors):
+            client.table("domains").update(
+                {"order_index": park + offset}
+            ).eq("id", row["id"]).execute()
+
+    if deletable:
+        client.table("domains").delete().in_("id", deletable).execute()
+
+    for row, fresh in to_update:
+        client.table("domains").update({
+            "description": fresh.get("description") or "",
+            "order_index": fresh["order_index"],
+            "weight_pct": fresh["weight_pct"],
+        }).eq("id", row["id"]).execute()
 
     rows = [
         {
@@ -125,16 +274,56 @@ def write_domains(module_id: str, user_id: str, domains: list[dict[str, Any]]) -
             "source": "ai",
         }
         for domain in domains
+        if _match_key(domain["title"]) not in matched_keys
     ]
-    if not rows:
-        return 0
-    inserted = client.table("domains").insert(rows).execute()
-    return len(inserted.data or rows)
+    created = 0
+    if rows:
+        inserted = client.table("domains").insert(rows).execute()
+        created = len(inserted.data or rows)
+
+    # Preserved domains sit after the blueprint: they're no longer part of it,
+    # but the learner's work still lives there.
+    if to_preserve:
+        tail = max(
+            [d["order_index"] for d in domains]
+            + [
+                r.get("order_index") or 0
+                for r in (client.table("domains").select("order_index")
+                          .eq("module_id", module_id).eq("source", "user").execute().data
+                          or [])
+            ]
+        )
+        for offset, row in enumerate(to_preserve, start=1):
+            client.table("domains").update(
+                {"order_index": tail + offset}
+            ).eq("id", row["id"]).execute()
+
+    if protected:
+        logger.info(
+            "Module %s: %d domain(s) with generated content survived ingestion (%s)",
+            module_id, len(protected), ", ".join(protected[:6]),
+        )
+
+    return {
+        "domain_count": created + updated + preserved,
+        "created": created,
+        "updated": updated,
+        "preserved": preserved,
+        "deleted": len(deletable),
+        "protected_domains": protected,
+    }
 
 
 # --- steps 2-8 --------------------------------------------------------------
-def process_module(module_id: str, user_id: str) -> dict[str, Any]:
-    """Run the full pipeline for one module. Safe to call in the background."""
+def process_module(
+    module_id: str, user_id: str, *, force: bool = False,
+) -> dict[str, Any]:
+    """Run the full pipeline for one module. Safe to call in the background.
+
+    ``force`` rebuilds the domain list outright, destroying generated content
+    attached to domains that go away. Only pass it when the learner has
+    explicitly confirmed — see ``write_domains``.
+    """
     logger.info("Pipeline starting for module %s", module_id)
     try:
         set_module_status(module_id, "processing", detail="parsing")
@@ -177,7 +366,8 @@ def process_module(module_id: str, user_id: str) -> dict[str, Any]:
         result, sources = extract_domains(combined, user_context)
 
         # step 7
-        domain_count = write_domains(module_id, user_id, result["domains"])
+        written = write_domains(module_id, user_id, result["domains"], force=force)
+        domain_count = written["domain_count"]
 
         # step 8
         extra: dict[str, Any] = {
@@ -188,6 +378,12 @@ def process_module(module_id: str, user_id: str) -> dict[str, Any]:
             "weighting_sources": sources,
             "processed_at": _now_iso(),
         }
+        if written["preserved"]:
+            logger.warning(
+                "Module %s: ingestion preserved %d domain(s) whose study content "
+                "would otherwise have been cascade-deleted: %s",
+                module_id, written["preserved"], ", ".join(written["protected_domains"]),
+            )
         # Auto-name the module from the detected subject — but only when it has
         # no title yet, so a name the learner set by hand is never clobbered.
         if not current_title:
@@ -201,13 +397,19 @@ def process_module(module_id: str, user_id: str) -> dict[str, Any]:
 
         set_module_status(module_id, "ready", detail="complete", extra=extra)
         logger.info(
-            "Pipeline complete for module %s: %s (%d domains)",
-            module_id, result.get("subject"), domain_count,
+            "Pipeline complete for module %s: %s (%d domains: %d new, %d updated, "
+            "%d preserved, %d replaced)",
+            module_id, result.get("subject"), domain_count, written["created"],
+            written["updated"], written["preserved"], written["deleted"],
         )
         return {
             "status": "ready",
             "subject": result.get("subject"),
             "domain_count": domain_count,
+            "domains_created": written["created"],
+            "domains_updated": written["updated"],
+            "domains_preserved": written["preserved"],
+            "protected_domains": written["protected_domains"],
             "weights_are_official": result.get("weights_are_official"),
             "sources": sources,
             "parse_errors": errors,
