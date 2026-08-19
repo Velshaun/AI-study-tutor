@@ -72,6 +72,38 @@ class ModuleStats(BaseModel):
     listened_seconds: int = 0
 
 
+class DomainReadiness(BaseModel):
+    """How ready one domain is, and what that judgement is made of."""
+
+    domain_id: str
+    title: str
+    weight_pct: float = 0.0
+    # 0-100, or None when nothing has been attempted here yet — a dash is
+    # honest where a zero would read as "you scored nothing".
+    score: float | None = None
+    quiz_average: float | None = None
+    quizzes_taken: int = 0
+    lecture_progress_pct: float = 0.0
+    practice_answered: int = 0
+    practice_total: int = 0
+    flagged_for_review: int = 0
+    # 'strong' | 'developing' | 'weak' | 'untouched'
+    status: str = "untouched"
+
+
+class ReadinessResponse(BaseModel):
+    """Exam readiness for a module: the whole, and the parts."""
+
+    # Weighted by domain share of the exam, so a shaky 32% domain hurts more
+    # than a shaky 4% one. None until something has been attempted.
+    overall: float | None = None
+    # Share of the exam's weight sitting in domains never touched.
+    untouched_weight_pct: float = 0.0
+    domains: list[DomainReadiness] = Field(default_factory=list)
+    # Weakest first, so the answer to "what do I do next" is at the top.
+    focus: list[str] = Field(default_factory=list)
+
+
 # --- Helpers ----------------------------------------------------------------
 def _client():
     try:
@@ -205,6 +237,173 @@ def _resume_card(user_id: str) -> ResumeCard | None:
         progress_pct=round(min(100.0, position / duration * 100), 1) if duration else 0.0,
         tutor_voice=lecture.get("tutor_voice"),
         last_played_at=lecture.get("last_played_at"),
+    )
+
+
+def _readiness_status(score: float | None) -> str:
+    if score is None:
+        return "untouched"
+    if score >= 75:
+        return "strong"
+    if score >= 50:
+        return "developing"
+    return "weak"
+
+
+@router.get("/readiness/{module_id}", response_model=ReadinessResponse)
+async def readiness(
+    module_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> ReadinessResponse:
+    """How ready this learner is for the exam, domain by domain.
+
+    Built from what the app already records — quiz scores, lecture progress,
+    practice answered and what's still flagged for review — rather than a new
+    kind of test. A domain's score leans on quiz results where they exist,
+    because a score is evidence in a way that "listened to the lecture" isn't.
+    """
+    client = _client()
+    owned = (
+        client.table("modules").select("id")
+        .eq("id", module_id).eq("user_id", user.id).limit(1).execute()
+    ).data
+    if not owned:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Module not found.")
+
+    domains = (
+        client.table("domains").select("id, title, weight_pct, order_index")
+        .eq("module_id", module_id).eq("user_id", user.id)
+        .order("order_index").execute()
+    ).data or []
+    if not domains:
+        return ReadinessResponse()
+
+    domain_ids = [d["id"] for d in domains]
+
+    quiz_rows = (
+        client.table("quizzes").select("domain_id, score")
+        .in_("domain_id", domain_ids).eq("user_id", user.id).execute()
+    ).data or []
+    lecture_rows = (
+        client.table("lectures")
+        .select("domain_id, last_position_secs, duration_secs, completed_at")
+        .in_("domain_id", domain_ids).eq("user_id", user.id).execute()
+    ).data or []
+    practice_rows = (
+        client.table("practice_questions").select("id, domain_id")
+        .in_("domain_id", domain_ids).is_("exam_id", "null").execute()
+    ).data or []
+    attempt_rows = (
+        client.table("study_attempts").select("item_id, position")
+        .eq("user_id", user.id).eq("item_type", "practice").execute()
+    ).data or []
+    flag_rows = (
+        client.table("review_later").select("item_id")
+        .eq("user_id", user.id).eq("item_type", "practice_question").execute()
+    ).data or []
+
+    flagged_ids = {r["item_id"] for r in flag_rows}
+    answered_of = {r["item_id"]: r.get("position") or 0 for r in attempt_rows}
+
+    practice_total: dict[str, int] = {}
+    flagged_count: dict[str, int] = {}
+    for row in practice_rows:
+        dom = row.get("domain_id")
+        if not dom:
+            continue
+        practice_total[dom] = practice_total.get(dom, 0) + 1
+        if row["id"] in flagged_ids:
+            flagged_count[dom] = flagged_count.get(dom, 0) + 1
+
+    scores: dict[str, list[float]] = {}
+    for row in quiz_rows:
+        if row.get("score") is not None and row.get("domain_id"):
+            scores.setdefault(row["domain_id"], []).append(float(row["score"]))
+
+    listened: dict[str, float] = {}
+    for row in lecture_rows:
+        dom = row.get("domain_id")
+        if not dom:
+            continue
+        if row.get("completed_at"):
+            listened[dom] = 100.0
+            continue
+        duration = row.get("duration_secs") or 0
+        position = row.get("last_position_secs") or 0
+        if duration:
+            listened[dom] = max(
+                listened.get(dom, 0.0), min(100.0, position / duration * 100),
+            )
+
+    out: list[DomainReadiness] = []
+    for domain in domains:
+        did = domain["id"]
+        quiz_scores = scores.get(did, [])
+        quiz_average = round(sum(quiz_scores) / len(quiz_scores), 1) if quiz_scores else None
+        total = practice_total.get(did, 0)
+        answered = min(answered_of.get(did, 0), total)
+        progress = round(listened.get(did, 0.0), 1)
+
+        # A score is evidence; listening and answering are effort. Effort counts
+        # for something on its own, but never as much as a result.
+        parts: list[tuple[float, float]] = []
+        if quiz_average is not None:
+            parts.append((quiz_average, 0.6))
+        # Only count practice the learner has actually done: a set generated
+        # and never opened is untouched, not failed.
+        if answered:
+            parts.append((answered / total * 100, 0.25))
+        if progress:
+            parts.append((progress, 0.15))
+
+        score = None
+        if parts:
+            weight = sum(w for _, w in parts)
+            score = round(sum(v * w for v, w in parts) / weight, 1)
+            # Questions the learner themselves flagged as shaky pull it down.
+            flagged = flagged_count.get(did, 0)
+            if flagged and total:
+                score = round(max(0.0, score - min(20.0, flagged / total * 100)), 1)
+
+        out.append(DomainReadiness(
+            domain_id=did,
+            title=domain.get("title") or "",
+            weight_pct=float(domain.get("weight_pct") or 0),
+            score=score,
+            quiz_average=quiz_average,
+            quizzes_taken=len(quiz_scores),
+            lecture_progress_pct=progress,
+            practice_answered=answered,
+            practice_total=total,
+            flagged_for_review=flagged_count.get(did, 0),
+            status=_readiness_status(score),
+        ))
+
+    scored = [d for d in out if d.score is not None]
+    weight = sum(d.weight_pct for d in scored)
+    overall = (
+        round(sum(d.score * d.weight_pct for d in scored) / weight, 1)
+        if weight else (
+            round(sum(d.score for d in scored) / len(scored), 1) if scored else None
+        )
+    )
+
+    # What to do next: the weakest domains, heaviest first — an untouched 32%
+    # of the paper is the most valuable hour a learner has.
+    focus = [
+        d.title for d in sorted(
+            (d for d in out if d.status in ("untouched", "weak")),
+            key=lambda d: (-d.weight_pct, d.score if d.score is not None else -1),
+        )
+    ][:3]
+
+    return ReadinessResponse(
+        overall=overall,
+        untouched_weight_pct=round(
+            sum(d.weight_pct for d in out if d.status == "untouched"), 1,
+        ),
+        domains=out,
+        focus=focus,
     )
 
 

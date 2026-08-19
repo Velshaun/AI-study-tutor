@@ -14,6 +14,7 @@ import { useNavigate } from 'react-router-dom'
 
 import GeneratePreferencesModal from './GeneratePreferencesModal'
 import ModuleKpis from './ModuleKpis'
+import ReadinessCard from './ReadinessCard'
 import SwipeToDelete from '../study/SwipeToDelete'
 import { useConfirm } from '../../hooks/useConfirm'
 import { useGeneration } from '../../hooks/useGeneration'
@@ -113,6 +114,7 @@ export default function ClassroomTab({ moduleId, domains, examCount = 40 }) {
   return (
     <div className="space-y-8">
       <ModuleKpis moduleId={moduleId} />
+      <ReadinessCard moduleId={moduleId} />
       <GenerateNew moduleId={moduleId} domains={domains} examCount={examCount} />
       <GeneratedMedia moduleId={moduleId} />
     </div>

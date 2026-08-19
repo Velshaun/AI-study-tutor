@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import dead_links, exam_catalog, exam_profile
+from app.services import dead_links, exam_catalog, exam_profile, tutor
 from app.services.ai_service import GenerationError, discover_resources
 from app.services.link_check import validate_resources
 
@@ -722,6 +722,164 @@ async def discover(
         resources=[DiscoverResource(**r) for r in resources],
         filtered_count=max(0, len(suggested) - len(resources)),
     )
+
+
+# --- Tutor -----------------------------------------------------------------
+class TutorMessage(BaseModel):
+    """One turn of the module conversation.
+
+    `kind` says what the tutor did — answered, assessed the material, or
+    searched — and `payload` carries the structured part of that answer so a
+    past turn re-renders as it first appeared.
+    """
+
+    id: str
+    role: str
+    content: str = ""
+    kind: str = "question"
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime | None = None
+
+
+class TutorAskRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=1000)
+    # Set by the "Assess my material" action, which skips the classifier: the
+    # learner has already said what they want.
+    force_assessment: bool = False
+
+
+class TutorReply(BaseModel):
+    messages: list[TutorMessage] = Field(default_factory=list)
+
+
+def _to_tutor_message(row: dict[str, Any]) -> TutorMessage:
+    return TutorMessage(
+        id=row["id"],
+        role=row.get("role") or "assistant",
+        content=row.get("content") or "",
+        kind=row.get("kind") or "question",
+        payload=row.get("payload") or {},
+        created_at=row.get("created_at"),
+    )
+
+
+def _save_tutor_message(
+    module_id: str, user_id: str, *, role: str, content: str,
+    kind: str = "question", payload: dict[str, Any] | None = None,
+) -> TutorMessage:
+    row = (
+        _client().table("tutor_messages").insert({
+            "module_id": module_id,
+            "user_id": user_id,
+            "role": role,
+            "content": content[:8000],
+            "kind": kind,
+            "payload": payload or {},
+        }).execute()
+    ).data
+    return _to_tutor_message(row[0])
+
+
+@router.get("/{module_id}/tutor", response_model=list[TutorMessage])
+async def tutor_history(
+    module_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> list[TutorMessage]:
+    """The conversation so far, oldest first."""
+    _fetch_own(module_id, user.id)
+    rows = (
+        _client().table("tutor_messages").select("*")
+        .eq("module_id", module_id).eq("user_id", user.id)
+        .order("created_at").execute()
+    ).data or []
+    return [_to_tutor_message(r) for r in rows]
+
+
+@router.delete("/{module_id}/tutor", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_tutor_history(
+    module_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> None:
+    """Start the conversation over."""
+    _fetch_own(module_id, user.id)
+    _client().table("tutor_messages").delete().eq("module_id", module_id).eq(
+        "user_id", user.id
+    ).execute()
+
+
+@router.post("/{module_id}/tutor", response_model=TutorReply)
+async def ask_tutor(
+    module_id: str,
+    payload: TutorAskRequest,
+    user: AuthUser = Depends(get_current_user),
+) -> TutorReply:
+    """Ask the module tutor something, and keep the exchange.
+
+    Three things can come back, decided by what was asked: an answer grounded in
+    the module's own material, an assessment of whether the uploaded sources
+    cover the exam, or a search for free study resources. All three are stored,
+    so the conversation survives leaving the tab.
+    """
+    module = _fetch_own(module_id, user.id)
+    question = payload.question.strip()
+
+    history = [
+        {"role": r.get("role"), "content": r.get("content") or ""}
+        for r in (
+            _client().table("tutor_messages").select("role, content")
+            .eq("module_id", module_id).eq("user_id", user.id)
+            .order("created_at", desc=True).limit(tutor.HISTORY_TURNS).execute()
+        ).data or []
+    ][::-1]
+
+    asked = _save_tutor_message(module_id, user.id, role="user", content=question)
+
+    intent = "assessment" if payload.force_assessment else None
+    answer = ""
+    if intent is None:
+        try:
+            decided = tutor.answer_question(module_id, user.id, question, history)
+            intent, answer = decided["intent"], decided["answer"]
+        except tutor.TutorError as exc:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+
+    if intent == "assessment":
+        try:
+            assessment = tutor.assess_material(module_id, user.id)
+        except tutor.TutorError as exc:
+            replied = _save_tutor_message(
+                module_id, user.id, role="assistant", content=str(exc),
+            )
+            return TutorReply(messages=[asked, replied])
+        replied = _save_tutor_message(
+            module_id, user.id, role="assistant",
+            content=assessment["verdict"], kind="assessment", payload=assessment,
+        )
+        return TutorReply(messages=[asked, replied])
+
+    if intent == "resources":
+        subject = module.get("detected_subject") or module.get("title") or "this subject"
+        context = module.get("source_summary") or module.get("course_context") or ""
+        try:
+            found = discover_resources(question, subject=subject, context=context)
+        except GenerationError as exc:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+        blocked = dead_links.for_user(user.id)
+        resources = await validate_resources(
+            found.get("resources", []), query=question,
+            reported_urls=blocked.urls, reported_hosts=blocked.hosts,
+        )
+        replied = _save_tutor_message(
+            module_id, user.id, role="assistant",
+            content=found.get("answer", ""), kind="resources",
+            payload={"resources": resources},
+        )
+        return TutorReply(messages=[asked, replied])
+
+    replied = _save_tutor_message(
+        module_id, user.id, role="assistant", content=answer,
+    )
+    return TutorReply(messages=[asked, replied])
 
 
 class ReportLinkRequest(BaseModel):

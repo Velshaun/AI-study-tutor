@@ -1,13 +1,16 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   BookOpen,
   Check,
+  ClipboardCheck,
   FileText,
   Globe,
   Loader2,
   Plus,
   Search,
+  Send,
   ThumbsDown,
+  Trash2,
   Video,
 } from 'lucide-react'
 import { useRef, useState } from 'react'
@@ -16,12 +19,18 @@ import { useToast } from '../../hooks/useToast'
 import { api } from '../../lib/api'
 
 /**
- * Chat tab — a module-scoped source-discovery tool (not a general chatbot).
+ * Chat tab — the module's tutor.
  *
- * A query searches the web for free study material (videos, PDFs, docs, sites),
- * returned as cards you can add straight into the module's sources; a short
- * answer grounded in the module's own material follows. Everything is AI-
- * generated, hence the standing disclaimer under the input.
+ * It knows what the learner uploaded and what the exam covers, so it can answer
+ * from their own material, find free study resources, and — the thing it exists
+ * for — say whether what they've uploaded is actually enough to pass, domain by
+ * domain and weighted by what the paper asks.
+ *
+ * The conversation persists server-side. It used to live in React state, which
+ * meant switching tab threw it away; a tutor that forgets what you just asked
+ * isn't one.
+ *
+ * Everything is AI-generated, hence the standing disclaimer under the input.
  */
 
 const TYPE_ICON = {
@@ -31,15 +40,48 @@ const TYPE_ICON = {
   website: Globe,
 }
 
+const COVERAGE = {
+  well_covered: { label: 'Well covered', tone: 'text-success', bar: 'bg-success' },
+  partial: { label: 'Partial', tone: 'text-warning', bar: 'bg-warning' },
+  missing: { label: 'Missing', tone: 'text-warning', bar: 'bg-warning' },
+}
+
+const READINESS_COPY = {
+  ready: 'Your material covers this exam.',
+  mostly_ready: 'Close — a few gaps worth filling.',
+  significant_gaps: 'There are real gaps to fill.',
+}
+
+const ASSESS_PROMPT = 'Is the material I uploaded sufficient for this exam?'
+
 export default function ChatTab({ moduleId }) {
   const queryClient = useQueryClient()
   const toast = useToast()
-  const seq = useRef(0)
   const [input, setInput] = useState('')
-  const [messages, setMessages] = useState([])
-  const [busy, setBusy] = useState(false)
   const [added, setAdded] = useState(() => new Set())
   const [reported, setReported] = useState(() => new Set())
+  const endRef = useRef(null)
+
+  const { data: history, isPending } = useQuery({
+    queryKey: ['tutor', moduleId],
+    queryFn: ({ signal }) => api.tutorHistory(moduleId, signal),
+  })
+  const messages = Array.isArray(history) ? history : []
+
+  const ask = useMutation({
+    mutationFn: ({ question, forceAssessment }) =>
+      api.askTutor(moduleId, question, { forceAssessment }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tutor', moduleId] })
+      endRef.current?.scrollIntoView({ behavior: 'smooth' })
+    },
+    onError: (e) => toast.error(e?.message || 'The tutor could not answer.'),
+  })
+
+  const clear = useMutation({
+    mutationFn: () => api.clearTutor(moduleId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tutor', moduleId] }),
+  })
 
   const add = useMutation({
     mutationFn: async (url) => {
@@ -55,9 +97,6 @@ export default function ChatTab({ moduleId }) {
     onError: (e) => toast.error(e?.message || 'Could not add that source.'),
   })
 
-  // The validator can prove a link is broken now; only the learner can say it
-  // was useless. A reported link (and, after a few, its whole host) stops
-  // coming back in this learner's searches.
   const report = useMutation({
     mutationFn: (url) => api.reportDeadLink(moduleId, url),
     onSuccess: (_data, url) => {
@@ -67,145 +106,215 @@ export default function ChatTab({ moduleId }) {
     onError: (e) => toast.error(e?.message || 'Could not report that link.'),
   })
 
-  async function submit(e) {
+  function submit(e) {
     e.preventDefault()
-    const q = input.trim()
-    if (!q || busy) return
+    const question = input.trim()
+    if (!question || ask.isPending) return
     setInput('')
-    seq.current += 1
-    setMessages((m) => [...m, { id: seq.current, role: 'user', text: q }])
-    setBusy(true)
-    try {
-      const res = await api.discover(moduleId, q)
-      seq.current += 1
-      setMessages((m) => [
-        ...m,
-        {
-          id: seq.current,
-          role: 'assistant',
-          answer: res.answer,
-          resources: res.resources,
-          filtered: res.filtered_count || 0,
-        },
-      ])
-    } catch (err) {
-      seq.current += 1
-      setMessages((m) => [
-        ...m,
-        { id: seq.current, role: 'assistant', error: err?.message || 'Search failed.' },
-      ])
-    } finally {
-      setBusy(false)
-    }
+    ask.mutate({ question })
   }
 
   return (
     <div className="space-y-4">
-      <form onSubmit={submit} className="space-y-2">
-        <div className="flex gap-2">
-          <div className="relative flex-1">
-            <Search
-              size={16}
-              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sec"
-              aria-hidden="true"
-            />
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Search for free study material..."
-              className="input pl-9"
-            />
-          </div>
-          <button type="submit" disabled={!input.trim() || busy} className="btn-primary px-4">
-            {busy ? (
-              <Loader2 size={16} className="animate-spin" aria-hidden="true" />
-            ) : (
-              <Search size={16} aria-hidden="true" />
-            )}
+      {/* Assess — the question this tab exists to answer, one tap away. */}
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => ask.mutate({ question: ASSESS_PROMPT, forceAssessment: true })}
+          disabled={ask.isPending}
+          className="btn-secondary flex-1"
+        >
+          <ClipboardCheck size={16} aria-hidden="true" />
+          Assess my material
+        </button>
+        {messages.length > 0 && (
+          <button
+            onClick={() => clear.mutate()}
+            aria-label="Clear conversation"
+            className="btn-ghost size-10 shrink-0 rounded-full p-0"
+          >
+            <Trash2 size={16} aria-hidden="true" />
           </button>
-        </div>
-        <p className="text-xs text-sec">Results are AI-generated. Always verify sources.</p>
-      </form>
+        )}
+      </div>
 
-      {messages.length === 0 && !busy && (
+      {isPending ? (
+        <div className="space-y-2">
+          <div className="skeleton h-16 rounded-2xl" />
+          <div className="skeleton h-16 rounded-2xl" />
+        </div>
+      ) : messages.length === 0 ? (
         <div className="card flex flex-col items-center gap-3 py-10 text-center">
           <Search size={24} className="text-sec" aria-hidden="true" />
           <p className="mx-auto max-w-xs text-sm text-sec">
-            Search for videos, free PDFs, docs and websites on any topic — add the
-            good ones straight to this module’s sources.
+            Ask about anything in this module, or whether what you&rsquo;ve
+            uploaded is enough for the exam. I can find free study material too.
           </p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {messages.map((m) =>
+            m.role === 'user' ? (
+              <div
+                key={m.id}
+                className="ml-auto max-w-[85%] rounded-2xl rounded-br-sm bg-surface2 px-4 py-2.5 text-sm text-pri"
+              >
+                {m.content}
+              </div>
+            ) : (
+              <div key={m.id} className="space-y-3">
+                {m.kind === 'assessment' ? (
+                  <Assessment assessment={m.payload} />
+                ) : m.kind === 'resources' ? (
+                  <>
+                    {(m.payload?.resources || [])
+                      .filter((r) => !reported.has(r.url))
+                      .map((r, i) => (
+                        <ResourceCard
+                          key={`${m.id}-${i}`}
+                          resource={r}
+                          added={added.has(r.url)}
+                          pending={add.isPending && add.variables === r.url}
+                          reporting={report.isPending && report.variables === r.url}
+                          onAdd={() => add.mutate(r.url)}
+                          onReport={() => report.mutate(r.url)}
+                        />
+                      ))}
+                    {m.content && <Bubble>{m.content}</Bubble>}
+                    {!m.content && !(m.payload?.resources || []).length && (
+                      <p className="text-sm text-sec">
+                        Nothing freely accessible came back — try rephrasing.
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <Bubble>{m.content}</Bubble>
+                )}
+              </div>
+            ),
+          )}
+          <div ref={endRef} />
         </div>
       )}
 
-      <div className="space-y-4">
-        {messages.map((m) =>
-          m.role === 'user' ? (
-            <div
-              key={m.id}
-              className="ml-auto max-w-[85%] rounded-2xl rounded-br-sm bg-surface2 px-4 py-2.5 text-sm text-pri"
-            >
-              {m.text}
-            </div>
-          ) : (
-            <div key={m.id} className="space-y-3">
-              {m.error ? (
-                <p className="rounded-2xl border border-warning/40 bg-surface px-4 py-3 text-sm text-warning">
-                  {m.error}
-                </p>
-              ) : (
-                <>
-                  {m.resources?.some((r) => !reported.has(r.url)) && (
-                    <div className="space-y-2">
-                      {m.resources
-                        .filter((r) => !reported.has(r.url))
-                        .map((r, i) => (
-                          <ResourceCard
-                            key={`${m.id}-${i}`}
-                            resource={r}
-                            added={added.has(r.url)}
-                            pending={add.isPending && add.variables === r.url}
-                            reporting={report.isPending && report.variables === r.url}
-                            onAdd={() => add.mutate(r.url)}
-                            onReport={() => report.mutate(r.url)}
-                          />
-                        ))}
-                    </div>
-                  )}
-                  {m.answer && (
-                    <div className="rounded-2xl rounded-bl-sm border border-accent/25 bg-surface px-4 py-3">
-                      <p className="text-sm leading-relaxed text-pri">{m.answer}</p>
-                    </div>
-                  )}
-                  {/* Every suggestion is link-checked server-side, so say what
-                      was thrown away rather than just showing a short list. */}
-                  {m.filtered > 0 && (m.resources?.length > 0 || m.answer) && (
-                    <p className="text-xs text-sec">
-                      {m.filtered} broken, paywalled or off-topic{' '}
-                      {m.filtered === 1 ? 'link' : 'links'} filtered out.
-                    </p>
-                  )}
-                  {!m.answer && !m.resources?.length && (
-                    <p className="text-sm text-sec">
-                      {m.filtered > 0
-                        ? `No freely accessible resources found — ${m.filtered} suggestion${
-                            m.filtered === 1 ? ' was' : 's were'
-                          } broken, paywalled or off-topic. Try rephrasing.`
-                        : 'No free resources found — try rephrasing.'}
-                    </p>
-                  )}
-                </>
-              )}
-            </div>
-          ),
-        )}
+      {ask.isPending && (
+        <div className="flex items-center gap-2.5 rounded-2xl bg-surface px-4 py-3">
+          <Loader2 size={16} className="animate-spin text-accent" aria-hidden="true" />
+          <span className="text-sm text-sec">Thinking…</span>
+        </div>
+      )}
 
-        {busy && (
-          <div className="flex items-center gap-2.5 rounded-2xl bg-surface px-4 py-3">
-            <Loader2 size={16} className="animate-spin text-accent" aria-hidden="true" />
-            <p className="text-sm text-sec">Searching the web…</p>
-          </div>
-        )}
+      <form onSubmit={submit} className="space-y-2">
+        <div className="flex gap-2">
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Ask your tutor anything…"
+            className="input flex-1"
+          />
+          <button
+            type="submit"
+            disabled={!input.trim() || ask.isPending}
+            className="btn-primary px-4"
+          >
+            <Send size={16} aria-hidden="true" />
+          </button>
+        </div>
+        <p className="text-xs text-sec">
+          Answers are AI-generated from your sources. Always verify.
+        </p>
+      </form>
+    </div>
+  )
+}
+
+function Bubble({ children }) {
+  return (
+    <div className="rounded-2xl rounded-bl-sm border border-accent/25 bg-surface px-4 py-3">
+      <p className="whitespace-pre-wrap text-sm leading-relaxed text-pri">{children}</p>
+    </div>
+  )
+}
+
+/** The material assessment: the verdict, then the evidence behind it. */
+export function Assessment({ assessment }) {
+  const domains = assessment?.domains || []
+  const covered = assessment?.covered_pct ?? 0
+
+  return (
+    <div className="card space-y-4">
+      <div className="space-y-1">
+        <div className="flex items-baseline justify-between gap-3">
+          <p className="text-sm font-semibold text-pri">
+            {READINESS_COPY[assessment?.readiness] || 'Material assessment'}
+          </p>
+          <p className="shrink-0 text-sm font-semibold tabular-nums text-accent2">
+            {Math.round(covered)}%
+          </p>
+        </div>
+        <div className="h-1.5 overflow-hidden rounded-full bg-surface2">
+          <div
+            className="h-full rounded-full bg-accent transition-[width] duration-500"
+            style={{ width: `${Math.min(100, covered)}%` }}
+          />
+        </div>
+        <p className="text-xs text-sec">
+          of the exam&rsquo;s weight covered by your {assessment?.source_count || 0}{' '}
+          source{assessment?.source_count === 1 ? '' : 's'}
+        </p>
       </div>
+
+      {assessment?.verdict && (
+        <p className="text-sm leading-relaxed text-pri">{assessment.verdict}</p>
+      )}
+
+      {domains.length > 0 && (
+        <div className="space-y-2">
+          {domains.map((d) => {
+            const tone = COVERAGE[d.coverage] || COVERAGE.partial
+            return (
+              <div key={d.title} className="space-y-0.5">
+                <div className="flex items-baseline justify-between gap-2">
+                  <p className="min-w-0 flex-1 truncate text-sm text-pri">{d.title}</p>
+                  <p className={`shrink-0 text-xs font-medium ${tone.tone}`}>
+                    {tone.label}
+                    {d.weight_pct ? ` · ${Math.round(d.weight_pct)}%` : ''}
+                  </p>
+                </div>
+                <p className="text-xs leading-relaxed text-sec">{d.note}</p>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {assessment?.gaps?.length > 0 && (
+        <Section label="Gaps">
+          {assessment.gaps.map((g) => (
+            <li key={g} className="text-sm text-pri">
+              {g}
+            </li>
+          ))}
+        </Section>
+      )}
+
+      {assessment?.recommendations?.length > 0 && (
+        <Section label="What to do next">
+          {assessment.recommendations.map((r) => (
+            <li key={r} className="text-sm text-pri">
+              {r}
+            </li>
+          ))}
+        </Section>
+      )}
+    </div>
+  )
+}
+
+function Section({ label, children }) {
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs font-semibold uppercase tracking-wider text-sec">{label}</p>
+      <ul className="list-disc space-y-1 pl-5 marker:text-accent2">{children}</ul>
     </div>
   )
 }
@@ -224,12 +333,7 @@ function ResourceCard({ resource, added, pending, reporting, onAdd, onReport }) 
       <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-accent/10 text-accent2">
         <Icon size={18} aria-hidden="true" />
       </span>
-      <a
-        href={resource.url}
-        target="_blank"
-        rel="noreferrer"
-        className="min-w-0 flex-1"
-      >
+      <a href={resource.url} target="_blank" rel="noreferrer" className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-pri">{resource.title}</p>
         <p className="truncate text-xs text-sec">{host}</p>
       </a>

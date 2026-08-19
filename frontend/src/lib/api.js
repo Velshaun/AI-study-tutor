@@ -171,6 +171,21 @@ export const api = {
   studioMedia: (id, signal) => apiFetch(`/modules/${id}/studio`, { signal }),
   discover: (id, query) =>
     apiFetch(`/modules/${id}/discover`, { method: 'POST', body: { query } }),
+  // The module tutor: a conversation that persists, can judge whether the
+  // uploaded material covers the exam, and can search for study resources.
+  tutorHistory: (moduleId, signal) =>
+    apiFetch(`/modules/${moduleId}/tutor`, { signal }),
+  askTutor: (moduleId, question, { forceAssessment = false } = {}) =>
+    apiFetch(`/modules/${moduleId}/tutor`, {
+      method: 'POST',
+      body: { question, force_assessment: forceAssessment },
+    }),
+  clearTutor: (moduleId) =>
+    apiFetch(`/modules/${moduleId}/tutor`, { method: 'DELETE' }),
+  // Per-domain exam readiness, weighted by each domain's share of the paper.
+  readiness: (moduleId, signal) =>
+    apiFetch(`/stats/readiness/${moduleId}`, { signal }),
+
   // Tell the backend a discovered link is dead/walled/off-topic. It stops
   // coming back, and a host reported repeatedly is dropped wholesale.
   reportDeadLink: (id, url, reason = 'dead') =>
