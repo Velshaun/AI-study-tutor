@@ -27,9 +27,14 @@ logger = logging.getLogger(__name__)
 
 DIFFICULTIES = ("easy", "medium", "hard")
 
-# Bounds so a caller can't ask for 500 cards in one generation.
-MAX_FLASHCARDS = 30
-MAX_QUIZ_QUESTIONS = 20
+# One model call comes back thin and repetitive past this, so a larger ask is
+# generated in batches of this size and stitched together.
+FLASHCARD_BATCH_SIZE = 30
+QUIZ_BATCH_SIZE = 20
+# Ceilings for a single set. The deck slider goes to 500 across a module, which
+# is split across its domains before it reaches here.
+MAX_FLASHCARDS = 500
+MAX_QUIZ_QUESTIONS = 100
 
 # How much domain material to feed the model.
 MAX_CONTENT_CHARS = 24000
@@ -179,14 +184,48 @@ def generate_flashcards(
     domain_content: str, difficulty: str, count: int, *, subject: str = "this subject",
     topic: str = "", context: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
-    """Return ``[{front, back}]`` for a domain."""
+    """Return ``[{front, back}]`` for a domain.
+
+    A large deck is written in batches, each told what the previous ones already
+    covered, so a hundred cards aren't a hundred rephrasings of the same ten.
+    """
+    count = max(1, min(count or 10, MAX_FLASHCARDS))
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    while len(out) < count:
+        want = min(FLASHCARD_BATCH_SIZE, count - len(out))
+        try:
+            batch = _generate_flashcard_batch(
+                domain_content, difficulty, want, subject=subject, topic=topic,
+                written=[c["front"] for c in out],
+            )
+        except GenerationError:
+            if not out:
+                raise
+            break
+        fresh = [c for c in batch if _question_key(c["front"]) not in seen]
+        for card in fresh:
+            seen.add(_question_key(card["front"]))
+        out.extend(fresh)
+        if not fresh:  # the model has run dry — stop rather than loop
+            break
+
+    return out[:count]
+
+
+def _generate_flashcard_batch(
+    domain_content: str, difficulty: str, count: int, *, subject: str,
+    topic: str, written: list[str],
+) -> list[dict[str, str]]:
+    """One Gemini call for up to ``FLASHCARD_BATCH_SIZE`` cards."""
     if not settings.gemini_api_key:
         raise GenerationError("GEMINI_API_KEY is not configured.")
 
     from google.genai import types
 
     difficulty = _norm_difficulty(difficulty)
-    count = max(1, min(count or 10, MAX_FLASHCARDS))
+    already = "\n".join(f"- {t}" for t in written[-40:])
 
     prompt = (
         f"Create {count} study flashcards for a learner revising {subject}"
@@ -200,6 +239,10 @@ def generate_flashcards(
         "contradict it. You may add widely-known context where it helps.\n"
         "- Plain text only: no markdown, numbering or 'Front:'/'Back:' labels.\n"
         "- British spelling.\n"
+        + (
+            "- These cards already exist for this learner — cover different "
+            f"ground, do not repeat them:\n{already}\n" if already else ""
+        )
         + TERM_PROMPT_RULES
         + "\n"
         f"--- DOMAIN MATERIAL ---\n{domain_content or topic or subject}"
@@ -290,7 +333,7 @@ def generate_quiz(
     from google.genai import types
 
     difficulty = _norm_difficulty(difficulty)
-    question_count = max(1, min(question_count or 5, MAX_QUIZ_QUESTIONS))
+    question_count = max(1, min(question_count or 5, QUIZ_BATCH_SIZE))
 
     prompt = (
         f"Write a {question_count}-question multiple-choice quiz for a learner "

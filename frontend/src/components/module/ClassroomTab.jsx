@@ -12,156 +12,184 @@ import {
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import GeneratePreferencesModal from './GeneratePreferencesModal'
 import ModuleKpis from './ModuleKpis'
-import { usePreferences } from '../../hooks/usePreferences'
-import { useToast } from '../../hooks/useToast'
+import { useGeneration } from '../../hooks/useGeneration'
 import { api } from '../../lib/api'
 import { formatClock } from '../../lib/format'
 import { path } from '../../routes'
 
 /**
- * Classroom tab — per-module KPIs, a "Generate new" panel, and everything
- * already generated for the module (grouped by type, each labelled with its
- * domain).
+ * Classroom tab — per-module KPIs, one "Generate" panel, and everything already
+ * generated for the module (grouped by type, each labelled with its domain).
  *
- * Generate buttons build the content type across the module's domains in the
- * background: the button shows a "Generating…" state, the learner stays put, and
- * a toast lands when it's ready. Nothing navigates away.
+ * Generating is a single flow, and the only one: tap a media type, set the few
+ * preferences that matter for it, and the modal closes straight away. The work
+ * runs in the GenerationProvider — mounted above every route — so leaving the
+ * module, or the tab, doesn't stop it. The tile keeps showing "Generating…"
+ * whenever the learner comes back, and a toast offers to take them to the
+ * finished content.
  */
+
+/**
+ * A count asked for across the module, split over its domains.
+ *
+ * Whole numbers, at least one each, and the remainder goes to the earlier
+ * domains — so "50 cards across 3 domains" is 17/17/16 rather than 16.67.
+ */
+function share(total, index, domainCount) {
+  const base = Math.floor(total / domainCount)
+  const remainder = total % domainCount
+  return Math.max(1, base + (index < remainder ? 1 : 0))
+}
 
 const GENERATORS = {
   lecture: {
     Icon: Headphones,
     label: 'Lecture',
-    ready: 'Lectures ready',
-    error: 'Couldn’t build the lectures',
-    async ensure(domain, prefs) {
-      if (domain.lecture_id) return false
-      await api.generateLecture({
-        domain_id: domain.id,
-        voice: prefs.tutor_voice,
-        length: prefs.lecture_length,
-      })
-      return true
+    async run(domains, values) {
+      let first = null
+      for (const domain of domains) {
+        if (domain.lecture_id) {
+          first = first || domain.lecture_id
+          continue
+        }
+        const lecture = await api.generateLecture({
+          domain_id: domain.id,
+          voice: values.voice,
+          length: values.length,
+        })
+        first = first || lecture?.id
+      }
+      return first ? path('lecture', { id: first }) : null
     },
   },
   flashcards: {
     Icon: Layers,
     label: 'Flashcards',
-    ready: 'Flashcards ready',
-    error: 'Couldn’t build the flashcards',
-    async ensure(domain, prefs) {
-      const cards = await api.flashcards(domain.id)
-      if (Array.isArray(cards) && cards.length) return false
-      await api.generateFlashcards({
-        domain_id: domain.id,
-        difficulty: prefs.flashcard_difficulty,
-        count: 10,
-      })
-      return true
+    async run(domains, values) {
+      for (const [i, domain] of domains.entries()) {
+        await api.generateFlashcards({
+          domain_id: domain.id,
+          count: share(values.count, i, domains.length),
+        })
+      }
+      return domains[0] ? path('flashcards', { domainId: domains[0].id }) : null
     },
   },
   quiz: {
     Icon: HelpCircle,
     label: 'Quiz',
-    ready: 'Quizzes ready',
-    error: 'Couldn’t build the quizzes',
-    async ensure(domain, prefs) {
-      const quizzes = await api.quizzes(domain.id)
-      if (Array.isArray(quizzes) && quizzes.length) return false
-      await api.generateQuiz({
-        domain_id: domain.id,
-        difficulty: prefs.quiz_difficulty,
-        question_count: 10,
-      })
-      return true
+    async run(domains, values) {
+      for (const [i, domain] of domains.entries()) {
+        await api.generateQuiz({
+          domain_id: domain.id,
+          difficulty: values.difficulty,
+          question_count: share(values.count, i, domains.length),
+        })
+      }
+      return domains[0] ? path('quizzes', { domainId: domains[0].id }) : null
     },
   },
   practice: {
     Icon: ClipboardList,
     label: 'Practice Exam',
-    ready: 'Practice exams ready',
-    error: 'Couldn’t build the practice exams',
-    async ensure(domain) {
-      await api.practiceQuestions(domain.id) // get-or-generate
-      return true
+    async run(domains, values) {
+      // Every domain gets the full length: a practice exam is sat per domain,
+      // and each should be as long as the real paper.
+      for (const domain of domains) {
+        await api.practiceQuestions(domain.id, { count: values.count })
+      }
+      return domains[0] ? path('practiceMode', { domainId: domains[0].id }) : null
     },
   },
 }
 
-export default function ClassroomTab({ moduleId, domains }) {
+export default function ClassroomTab({ moduleId, domains, examCount = 40 }) {
   return (
     <div className="space-y-8">
       <ModuleKpis moduleId={moduleId} />
-      <GenerateNew moduleId={moduleId} domains={domains} />
+      <GenerateNew moduleId={moduleId} domains={domains} examCount={examCount} />
       <GeneratedMedia moduleId={moduleId} />
     </div>
   )
 }
 
-function GenerateNew({ moduleId, domains }) {
+function GenerateNew({ moduleId, domains, examCount }) {
   const queryClient = useQueryClient()
-  const toast = useToast()
-  const { preferences } = usePreferences()
-  const [busy, setBusy] = useState(null)
+  const generation = useGeneration()
+  const [asking, setAsking] = useState(null)
 
-  // Imported decks are studied individually; a bulk "generate everything" pass
-  // shouldn't write a lecture for someone's Quizlet export.
+  // Imported decks are studied individually; a bulk generate shouldn't write a
+  // lecture for someone's Quizlet export.
   const unlocked = (domains || []).filter(
     (d) => d.status !== 'locked' && !d.is_imported_deck,
   )
 
-  async function generate(kind) {
-    if (busy || !unlocked.length) return
+  function generate(kind, values) {
     const cfg = GENERATORS[kind]
-    setBusy(kind)
-    try {
-      const results = await Promise.allSettled(
-        unlocked.map((d) => cfg.ensure(d, preferences)),
-      )
-      queryClient.invalidateQueries({ queryKey: ['studio', moduleId] })
-      queryClient.invalidateQueries({ queryKey: ['module', moduleId] })
-      queryClient.invalidateQueries({ queryKey: ['module-stats', moduleId] })
-
-      const built = results.filter((r) => r.status === 'fulfilled' && r.value).length
-      const failed = results.filter((r) => r.status === 'rejected').length
-      if (built > 0) toast.success(cfg.ready)
-      else if (failed > 0) toast.error(cfg.error)
-      else toast.info('Already generated for every domain')
-    } catch (e) {
-      toast.error(e?.message || cfg.error)
-    } finally {
-      setBusy(null)
-    }
+    setAsking(null)
+    generation.start({
+      moduleId,
+      kind,
+      label: cfg.label,
+      run: async () => {
+        const destination = await cfg.run(unlocked, values)
+        queryClient.invalidateQueries({ queryKey: ['studio', moduleId] })
+        queryClient.invalidateQueries({ queryKey: ['module', moduleId] })
+        queryClient.invalidateQueries({ queryKey: ['module-stats', moduleId] })
+        return destination
+      },
+    })
   }
 
   return (
     <section className="space-y-3">
-      <Heading Icon={Sparkles}>Generate new</Heading>
+      <Heading Icon={Sparkles}>Generate</Heading>
       <div className="space-y-2">
-        {Object.entries(GENERATORS).map(([kind, cfg]) => (
-          <button
-            key={kind}
-            onClick={() => generate(kind)}
-            disabled={Boolean(busy) || unlocked.length === 0}
-            className="flex w-full items-center gap-3 rounded-2xl border border-border bg-surface
-                       px-4 py-3.5 text-left transition-colors hover:border-accent/50
-                       disabled:opacity-60"
-          >
-            <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-accent/10 text-accent2">
-              {busy === kind ? (
-                <Loader2 size={18} className="animate-spin" aria-hidden="true" />
-              ) : (
-                <cfg.Icon size={18} aria-hidden="true" />
+        {Object.entries(GENERATORS).map(([kind, cfg]) => {
+          const running = generation.isGenerating(moduleId, kind)
+          return (
+            <button
+              key={kind}
+              onClick={() => setAsking(kind)}
+              disabled={running || unlocked.length === 0}
+              className="flex w-full items-center gap-3 rounded-2xl border border-border bg-surface
+                         px-4 py-3.5 text-left transition-colors hover:border-accent/50
+                         disabled:opacity-60"
+            >
+              <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-accent/10 text-accent2">
+                {running ? (
+                  <Loader2 size={18} className="animate-spin" aria-hidden="true" />
+                ) : (
+                  <cfg.Icon size={18} aria-hidden="true" />
+                )}
+              </span>
+              <span className="flex-1 text-sm font-medium text-pri">
+                {cfg.label}
+                {running && (
+                  <span className="ml-2 text-xs font-normal text-accent2">
+                    Generating…
+                  </span>
+                )}
+              </span>
+              {!running && (
+                <ChevronRight size={16} className="text-sec" aria-hidden="true" />
               )}
-            </span>
-            <span className="flex-1 text-sm font-medium text-pri">
-              {busy === kind ? `Building ${cfg.label.toLowerCase()}…` : cfg.label}
-            </span>
-            {!busy && <ChevronRight size={16} className="text-sec" aria-hidden="true" />}
-          </button>
-        ))}
+            </button>
+          )
+        })}
       </div>
+
+      <GeneratePreferencesModal
+        open={Boolean(asking)}
+        kind={asking}
+        label={asking ? GENERATORS[asking].label : ''}
+        domainCount={unlocked.length || 1}
+        recommendedExamCount={examCount}
+        onClose={() => setAsking(null)}
+        onGenerate={(values) => generate(asking, values)}
+      />
     </section>
   )
 }

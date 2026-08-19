@@ -1,6 +1,8 @@
 import { Suspense } from 'react'
 import { Outlet, ScrollRestoration } from 'react-router-dom'
 
+import { GenerationProvider } from '../context/GenerationProvider'
+
 /** Shown while a lazily-loaded route chunk arrives. Mirrors the placeholder
  *  shape so the layout doesn't jump when the real screen mounts. */
 function RouteFallback() {
@@ -28,9 +30,11 @@ export default function RootLayout() {
   return (
     <>
       <ScrollRestoration />
-      <Suspense fallback={<RouteFallback />}>
-        <Outlet />
-      </Suspense>
+      <GenerationProvider>
+        <Suspense fallback={<RouteFallback />}>
+          <Outlet />
+        </Suspense>
+      </GenerationProvider>
     </>
   )
 }

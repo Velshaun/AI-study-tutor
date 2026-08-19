@@ -41,7 +41,7 @@ class GenerateRequest(BaseModel):
     difficulty: str | None = Field(
         None, description="easy | medium | hard. Defaults to your saved preference."
     )
-    question_count: int = Field(5, ge=1, le=20)
+    question_count: int = Field(5, ge=1, le=100)
 
 
 class Question(BaseModel):

@@ -45,7 +45,9 @@ class GenerateRequest(BaseModel):
     difficulty: str | None = Field(
         None, description="easy | medium | hard. Defaults to your saved preference."
     )
-    count: int = Field(10, ge=1, le=30)
+    # The deck slider offers up to 500 across a module; the caller splits
+    # that across domains, and generation batches internally.
+    count: int = Field(10, ge=1, le=500)
 
 
 class Flashcard(BaseModel):

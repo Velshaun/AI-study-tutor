@@ -151,7 +151,11 @@ export default function ModuleDetail() {
         <ChatTab moduleId={id} />
       ) : ready ? (
         <div className="space-y-6">
-          <ClassroomTab moduleId={id} domains={domains} />
+          <ClassroomTab
+            moduleId={id}
+            domains={domains}
+            examCount={module.practice_question_count || 40}
+          />
           <ImportedExamsCard moduleId={id} />
         </div>
       ) : (
