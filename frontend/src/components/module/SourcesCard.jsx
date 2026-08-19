@@ -1,19 +1,21 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  AudioLines,
-  FileText,
-  Globe,
   Link as LinkIcon,
   Loader2,
   Trash2,
   Upload,
-  Video,
 } from 'lucide-react'
 import { useRef, useState } from 'react'
 
 import { useConfirm } from '../../hooks/useConfirm'
 import { api } from '../../lib/api'
-import { UPLOAD_ACCEPT, rejectionMessage, sortPicked } from '../../lib/uploads'
+import {
+  UPLOAD_ACCEPT,
+  isTranscribed,
+  rejectionMessage,
+  sortPicked,
+} from '../../lib/uploads'
+import SourceIcon from './SourceIcon'
 import ErrorBanner from '../ErrorBanner'
 
 /**
@@ -26,11 +28,6 @@ import ErrorBanner from '../ErrorBanner'
  */
 
 
-const AUDIO_EXT = /\.(mp3|wav|m4a|mp4|ogg|webm|flac|mpga|mpeg)$/i
-
-function isAudio(name = '', type = '') {
-  return AUDIO_EXT.test(name) || type.startsWith('audio/') || type.startsWith('video/')
-}
 
 export default function SourcesCard({ moduleId, sources, moduleStatus }) {
   const queryClient = useQueryClient()
@@ -287,24 +284,12 @@ export default function SourcesCard({ moduleId, sources, moduleStatus }) {
 }
 
 function SourceRow({ source, onDelete }) {
-  const audio = isAudio(source.filename, '')
-  const kind = source.source_type
-
-  const Icon =
-    kind === 'youtube'
-      ? Video
-      : kind === 'web'
-        ? Globe
-        : audio || kind === 'audio'
-          ? AudioLines
-          : FileText
-
   return (
     <li className="flex items-center gap-3 rounded-xl border border-border bg-surface2/50 px-3 py-2.5">
-      <Icon size={18} className="shrink-0 text-sec" aria-hidden="true" />
+      <SourceIcon source={source} size={18} className="shrink-0 text-sec" aria-hidden="true" />
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm text-pri">{source.filename}</p>
-        <SourceStatus source={source} isAudio={audio || kind === 'audio'} />
+        <SourceStatus source={source} isAudio={isTranscribed(source)} />
       </div>
       <button
         onClick={onDelete}

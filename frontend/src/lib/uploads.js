@@ -16,12 +16,23 @@ const KINDS = {
   pdf: { exts: ['pdf'], mimes: ['application/pdf'], label: 'PDF' },
   image: {
     exts: ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'gif', 'bmp'],
-    mimes: ['image/*'],
+    // Concrete types as well as the wildcard: some Android pickers ignore
+    // `image/*` but honour a named type, and some iOS versions do the reverse.
+    // Listing both is what makes photos selectable everywhere.
+    mimes: [
+      'image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif',
+      'image/gif', 'image/bmp', 'image/*',
+    ],
     label: 'photo',
   },
   video: {
     exts: ['mp4', 'mov', 'webm', 'm4v', 'avi', 'mkv'],
-    mimes: ['video/*'],
+    // `video/mov` isn't a registered type — QuickTime reports
+    // `video/quicktime` — so both spellings are listed.
+    mimes: [
+      'video/mp4', 'video/quicktime', 'video/mov', 'video/webm', 'video/x-m4v',
+      'video/*',
+    ],
     label: 'video',
   },
   audio: {
@@ -49,9 +60,11 @@ export const UPLOAD_ACCEPT = [
   ...Object.values(KINDS).flatMap((k) => k.mimes),
 ].join(',')
 
+const mimesFor = (kind) => KINDS[kind].mimes
+
 /** Photos and videos together — the phone's library picker. */
 export const LIBRARY_ACCEPT = [
-  ...dotted('image'), ...dotted('video'), 'image/*', 'video/*',
+  ...dotted('image'), ...dotted('video'), ...mimesFor('image'), ...mimesFor('video'),
 ].join(',')
 
 /** Documents only, for a file browser that shouldn't show the camera roll. */
@@ -60,8 +73,8 @@ export const DOCUMENT_ACCEPT = [
   'application/pdf', 'text/csv', 'text/plain', 'audio/*',
 ].join(',')
 
-export const IMAGE_ACCEPT = [...dotted('image'), 'image/*'].join(',')
-export const VIDEO_ACCEPT = [...dotted('video'), 'video/*'].join(',')
+export const IMAGE_ACCEPT = [...dotted('image'), ...mimesFor('image')].join(',')
+export const VIDEO_ACCEPT = [...dotted('video'), ...mimesFor('video')].join(',')
 
 /** Human list for the hint under a dropzone. */
 export const SUPPORTED_SUMMARY =
@@ -118,5 +131,17 @@ export function rejectionMessage(rejected) {
     `We can't read ${subject} yet. Try a PDF, a photo of your notes ` +
     `(JPG, PNG, HEIC), a screen recording (MP4, MOV), audio (MP3, M4A, WAV), ` +
     `a CSV, or a text file.`
+  )
+}
+
+/**
+ * Is this source transcribed rather than parsed? Audio and screen recordings
+ * both are, so the status line says "Transcribing…" for either.
+ */
+export function isTranscribed(source) {
+  const kind = classifyFile({ name: source?.filename || '' })
+  return (
+    ['audio', 'video'].includes(source?.source_type) ||
+    ['audio', 'video'].includes(kind)
   )
 }

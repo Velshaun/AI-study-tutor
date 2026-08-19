@@ -1,24 +1,21 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { AudioLines, FileText, Globe, Loader2, Trash2, Upload, Video } from 'lucide-react'
+import { FileText, Loader2, Trash2, Upload } from 'lucide-react'
 import { useRef, useState } from 'react'
 
 import EmptyState from '../EmptyState'
 import { useConfirm } from '../../hooks/useConfirm'
 import { useAddSourceToModule } from '../../hooks/useModuleUpload'
 import { useToast } from '../../hooks/useToast'
-import { UPLOAD_ACCEPT, rejectionMessage, sortPicked } from '../../lib/uploads'
+import {
+  UPLOAD_ACCEPT,
+  isTranscribed,
+  rejectionMessage,
+  sortPicked,
+} from '../../lib/uploads'
+import SourceIcon from './SourceIcon'
 import { api } from '../../lib/api'
 
-const AUDIO_EXT = /\.(mp3|wav|m4a|mp4|ogg|webm|flac|mpga|mpeg)$/i
 
-function iconFor(source) {
-  const kind = source.source_type
-  const audio = AUDIO_EXT.test(source.filename || '') || kind === 'audio'
-  if (kind === 'youtube') return Video
-  if (kind === 'web') return Globe
-  if (audio) return AudioLines
-  return FileText
-}
 
 /**
  * Sources tab — every uploaded source for the module, each with a type icon and
@@ -61,14 +58,13 @@ export default function SourcesTab({ moduleId, sources }) {
       ) : (
         <ul className="space-y-2">
           {sources.map((s) => {
-            const Icon = iconFor(s)
             return (
               <li
                 key={s.id}
                 className="flex items-center gap-3 rounded-xl border border-border bg-surface px-3 py-3"
               >
                 <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-surface2 text-sec">
-                  <Icon size={17} aria-hidden="true" />
+                  <SourceIcon source={s} size={17} aria-hidden="true" />
                 </span>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm text-pri">{s.filename}</p>
@@ -172,7 +168,7 @@ function DesktopDropzone({ moduleId }) {
 
 function SourceStatus({ source }) {
   const status = source.status
-  const audio = AUDIO_EXT.test(source.filename || '') || source.source_type === 'audio'
+  const audio = isTranscribed(source)
 
   if (status === 'parsing' || status === 'pending') {
     return (

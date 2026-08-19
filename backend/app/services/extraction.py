@@ -3,6 +3,8 @@
 Turns each source type into plain text:
 
     pdf      -> pypdf
+    image    -> Gemini vision (photos of notes, textbook pages, whiteboards)
+    video    -> sampled frames through Gemini vision, plus Whisper for narration
     youtube  -> youtube-transcript-api
     web      -> httpx + a tag-stripping HTML parser (stdlib, no bs4 dependency)
     audio    -> OpenAI Whisper
@@ -273,9 +275,8 @@ def extract_audio(data: bytes, filename: str = "audio.mp3") -> str:
 
 # --- images -----------------------------------------------------------------
 OCR_PROMPT = (
-    "Transcribe every piece of text visible in this image, in reading order.\n\n"
-    "- This is study material: a photo of handwritten notes, a textbook page, a "
-    "whiteboard, a slide or a screenshot.\n"
+    "Extract all text from this image exactly as written. This may be a photo "
+    "of notes, a textbook page, or a whiteboard. Work in reading order.\n\n"
     "- Preserve headings, bullet points, numbering and the order things appear "
     "in. Keep code, commands and symbols exactly as written.\n"
     "- Where the image is a diagram or table, describe its structure in plain "
