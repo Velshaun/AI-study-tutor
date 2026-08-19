@@ -1,11 +1,11 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  CheckCircle2,
   ChevronRight,
   ClipboardList,
-  Headphones,
-  HelpCircle,
   Layers,
   Loader2,
+  Mic,
   Play,
   Sparkles,
 } from 'lucide-react'
@@ -45,7 +45,7 @@ function share(total, index, domainCount) {
 
 const GENERATORS = {
   lecture: {
-    Icon: Headphones,
+    Icon: Mic,
     label: 'Lecture',
     async run(domains, values) {
       let first = null
@@ -78,7 +78,7 @@ const GENERATORS = {
     },
   },
   quiz: {
-    Icon: HelpCircle,
+    Icon: CheckCircle2,
     label: 'Quiz',
     async run(domains, values) {
       for (const [i, domain] of domains.entries()) {
@@ -233,24 +233,30 @@ function GeneratedMedia({ moduleId }) {
             {lectures.map((l) => (
               <MediaRow
                 key={l.id}
-                Icon={Headphones}
-                title="Lecture"
-                domain={l.domain_title}
-                meta={l.duration_secs ? formatClock(l.duration_secs) : 'Audio'}
+                Icon={Mic}
+                title={l.title}
+                subtitle={scope([
+                  l.domain_title,
+                  l.duration_secs ? formatClock(l.duration_secs) : 'Audio',
+                  when(l.created_at),
+                ])}
                 onOpen={() => navigate(path('lecture', { id: l.id }))}
                 action="play"
               />
             ))}
           </Group>
 
-          <Group label="Flashcards" show={flashcards.length > 0}>
+          <Group label="Flashcard Decks" show={flashcards.length > 0}>
             {flashcards.map((f) => (
               <MediaRow
                 key={f.domain_id}
                 Icon={Layers}
-                title="Flashcard deck"
-                domain={f.domain_title}
-                meta={`${f.count} card${f.count === 1 ? '' : 's'}`}
+                title={f.title || `${f.domain_title || 'Deck'} — ${f.count} cards`}
+                subtitle={scope([
+                  f.domain_title,
+                  `${f.count} card${f.count === 1 ? '' : 's'}`,
+                  when(f.created_at),
+                ])}
                 onOpen={() => navigate(path('flashcards', { domainId: f.domain_id }))}
               />
             ))}
@@ -260,16 +266,15 @@ function GeneratedMedia({ moduleId }) {
             {quizzes.map((q) => (
               <MediaRow
                 key={q.id}
-                Icon={HelpCircle}
+                Icon={CheckCircle2}
                 title={q.title}
-                domain={q.domain_title}
-                meta={
-                  `${q.question_count} question${q.question_count === 1 ? '' : 's'}` +
-                  (q.score != null ? ` · ${Math.round(q.score)}%` : '')
-                }
-                onOpen={() =>
-                  navigate(path('quizzes', { domainId: q.domain_id }))
-                }
+                subtitle={scope([
+                  q.domain_title,
+                  `${q.question_count} question${q.question_count === 1 ? '' : 's'}`,
+                  q.score != null ? `${Math.round(q.score)}%` : null,
+                  when(q.created_at),
+                ])}
+                onOpen={() => navigate(path('quizzes', { domainId: q.domain_id }))}
               />
             ))}
           </Group>
@@ -279,9 +284,12 @@ function GeneratedMedia({ moduleId }) {
               <MediaRow
                 key={p.domain_id}
                 Icon={ClipboardList}
-                title="Practice exam"
-                domain={p.domain_title}
-                meta={`${p.count} question${p.count === 1 ? '' : 's'}`}
+                title={p.title || `${p.domain_title || 'Practice'} — ${p.count} questions`}
+                subtitle={scope([
+                  p.domain_title,
+                  `${p.count} question${p.count === 1 ? '' : 's'}`,
+                  when(p.created_at),
+                ])}
                 onOpen={() => navigate(path('practiceMode', { domainId: p.domain_id }))}
               />
             ))}
@@ -304,7 +312,24 @@ function Group({ label, show, children }) {
   )
 }
 
-function MediaRow({ Icon, title, domain, meta, onOpen, action = 'open' }) {
+/** "Covers X · 40 questions · Generated today" — skipping anything unknown. */
+function scope(parts) {
+  return parts.filter(Boolean).join(' · ')
+}
+
+/** How long ago something was generated, in words a glance can take in. */
+function when(iso) {
+  if (!iso) return null
+  const then = new Date(iso)
+  if (Number.isNaN(then.getTime())) return null
+  const days = Math.floor((Date.now() - then.getTime()) / 86400000)
+  if (days <= 0) return 'Generated today'
+  if (days === 1) return 'Generated yesterday'
+  if (days < 7) return `Generated ${days} days ago`
+  return `Generated ${then.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`
+}
+
+function MediaRow({ Icon, title, subtitle, onOpen, action = 'open' }) {
   return (
     <button
       onClick={onOpen}
@@ -315,10 +340,7 @@ function MediaRow({ Icon, title, domain, meta, onOpen, action = 'open' }) {
       </span>
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-pri">{title}</p>
-        <p className="truncate text-xs text-sec">
-          {domain ? `${domain} · ` : ''}
-          {meta}
-        </p>
+        <p className="truncate text-xs text-sec">{subtitle}</p>
       </div>
       {action === 'play' ? (
         <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-accent text-white">

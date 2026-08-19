@@ -28,6 +28,7 @@ import ErrorBanner from '../components/ErrorBanner'
 import { useConfirm } from '../hooks/useConfirm'
 import { useToast } from '../hooks/useToast'
 import { ApiError, api } from '../lib/api'
+import { removeModuleFromCaches } from '../lib/modules'
 import { ROUTES } from '../routes'
 
 /**
@@ -257,16 +258,42 @@ function TabButton({ active, onClick, Icon, label }) {
 function ModuleMenu({ module, onDeleted }) {
   const confirm = useConfirm()
   const toast = useToast()
+  const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
   const [showShare, setShowShare] = useState(false)
 
+  // Deleting a module also clears its storage objects, which takes the server
+  // several seconds. Waiting for that leaves the card sitting on the dashboard
+  // as though nothing happened, so the card goes now and comes back only if the
+  // server actually refuses.
   const del = useMutation({
     mutationFn: () => api.deleteModule(module.id),
-    onSuccess: () => {
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: ['modules'] })
+      await queryClient.cancelQueries({ queryKey: ['dashboard'] })
+      const previous = {
+        modules: queryClient.getQueryData(['modules']),
+        dashboard: queryClient.getQueryData(['dashboard']),
+      }
+      removeModuleFromCaches(queryClient, module.id)
       toast.success('Module deleted')
       onDeleted()
+      return previous
     },
-    onError: (e) => toast.error(e?.message || 'Could not delete module'),
+    onError: (_e, _vars, previous) => {
+      // Put it back exactly as it was, and say so plainly.
+      if (previous?.modules !== undefined) {
+        queryClient.setQueryData(['modules'], previous.modules)
+      }
+      if (previous?.dashboard !== undefined) {
+        queryClient.setQueryData(['dashboard'], previous.dashboard)
+      }
+      toast.error('Could not delete module. Please try again.')
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['modules'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+    },
   })
 
   const filename = (module.title || 'module').toLowerCase().replace(/[^a-z0-9]+/g, '-')

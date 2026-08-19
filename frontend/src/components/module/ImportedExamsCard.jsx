@@ -1,14 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   FileUp,
-  GraduationCap,
   Loader2,
   Star,
   Trash2,
   Upload,
 } from 'lucide-react'
 import { useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 
 import Modal from '../Modal'
 import { useConfirm } from '../../hooks/useConfirm'
@@ -25,7 +23,6 @@ import ErrorBanner from '../ErrorBanner'
  */
 export default function ImportedExamsCard({ moduleId }) {
   const queryClient = useQueryClient()
-  const navigate = useNavigate()
   const confirm = useConfirm()
   const toast = useToast()
   const [showImport, setShowImport] = useState(false)
@@ -65,27 +62,17 @@ export default function ImportedExamsCard({ moduleId }) {
   return (
     <div className="card space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-base font-semibold text-pri">Practice exams</h2>
-        <button onClick={() => setShowImport(true)} className="btn-secondary">
+        <div className="min-w-0">
+          <h2 className="text-base font-semibold text-pri">Import practice exam</h2>
+          <p className="text-xs text-sec">
+            A past paper you already have. Generating one is in Generate above.
+          </p>
+        </div>
+        <button onClick={() => setShowImport(true)} className="btn-secondary shrink-0">
           <FileUp size={15} aria-hidden="true" />
           Import
         </button>
       </div>
-
-      {/* Take a weighted exam */}
-      <button
-        onClick={() => navigate(`/practice/${moduleId}`)}
-        className="flex w-full items-center gap-3 rounded-xl bg-accent/10 px-4 py-3 text-left
-                   transition-colors hover:bg-accent/15"
-      >
-        <GraduationCap size={18} className="text-accent2" aria-hidden="true" />
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-pri">Take a practice exam</p>
-          <p className="text-xs text-sec">
-            Weighted by domain{sets.length > 0 ? ', mixes in your imported questions' : ''}
-          </p>
-        </div>
-      </button>
 
       {/* Imported sets */}
       {sets.length > 0 && (

@@ -317,8 +317,15 @@ QUIZ_SCHEMA: dict[str, Any] = {
                              "option_explanations", "terms"],
             },
         },
+        "title": {
+            "type": "string",
+            "description": (
+                "A short descriptive name for this quiz, naming what it covers "
+                "— e.g. 'File System Commands Deep Dive'. Not a generic label."
+            ),
+        },
     },
-    "required": ["questions"],
+    "required": ["questions", "title"],
 }
 
 
@@ -408,6 +415,12 @@ def generate_quiz(
         })
     if not questions:
         raise GenerationError("No usable quiz questions were produced.")
+
+    # The model names what it wrote, so a learner picking between three quizzes
+    # sees what each covers rather than "Quiz — medium".
+    title = (data.get("title") or "").strip()[:120]
+    for question in questions:
+        question["quiz_title"] = title
     return questions
 
 

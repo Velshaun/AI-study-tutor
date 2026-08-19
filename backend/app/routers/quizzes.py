@@ -178,7 +178,10 @@ async def generate(
         "domain_id": payload.domain_id,
         "module_id": domain.get("module_id"),
         "user_id": user.id,
-        "title": f"{domain.get('title') or 'Quiz'} — {difficulty}",
+        # The model names the quiz after what it actually covers; the domain
+        # and difficulty are the fallback when it doesn't.
+        "title": (questions[0].get("quiz_title") or "").strip()
+        or f"{domain.get('title') or 'Quiz'} — {difficulty}",
         "difficulty": difficulty,
         "question_count": len(questions),
         "questions": questions,

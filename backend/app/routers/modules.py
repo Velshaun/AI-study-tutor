@@ -496,17 +496,23 @@ async def touch_module(
 # --- Studio media (everything generated for a module) ----------------------
 class StudioLecture(BaseModel):
     id: str
+    # What the lecture is actually about, written when it was generated.
+    # Falls back to the domain's own title for anything made before that.
+    title: str = "Lecture"
     domain_title: str | None = None
     duration_secs: int | None = None
     status: str | None = None
+    created_at: datetime | None = None
 
 
 class StudioSet(BaseModel):
     """A per-domain deck/set (flashcards, practice questions)."""
 
     domain_id: str
+    title: str = ""
     domain_title: str | None = None
     count: int = 0
+    created_at: datetime | None = None
 
 
 class StudioQuiz(BaseModel):
@@ -516,6 +522,7 @@ class StudioQuiz(BaseModel):
     title: str = "Quiz"
     question_count: int = 0
     score: float | None = None
+    created_at: datetime | None = None
 
 
 class StudioMedia(BaseModel):
@@ -544,20 +551,27 @@ async def studio_media(
     domain_ids = list(title_of.keys())
 
     lecture_rows = (
-        client.table("lectures").select("id, domain_id, duration_secs, status")
+        client.table("lectures")
+        .select("id, domain_id, title, duration_secs, status, created_at")
         .eq("module_id", module_id).eq("user_id", user.id).execute()
     ).data or []
     lectures = [
         StudioLecture(
-            id=l["id"], domain_title=title_of.get(l.get("domain_id")),
+            id=l["id"],
+            title=(l.get("title") or "").strip()
+            or title_of.get(l.get("domain_id"))
+            or "Lecture",
+            domain_title=title_of.get(l.get("domain_id")),
             duration_secs=l.get("duration_secs"), status=l.get("status"),
+            created_at=l.get("created_at"),
         )
         for l in lecture_rows
         if l.get("status") == "ready"
     ]
 
     quiz_rows = (
-        client.table("quizzes").select("id, domain_id, title, question_count, score")
+        client.table("quizzes")
+        .select("id, domain_id, title, question_count, score, created_at")
         .eq("module_id", module_id).eq("user_id", user.id).execute()
     ).data or []
     quizzes = [
@@ -566,31 +580,51 @@ async def studio_media(
             domain_title=title_of.get(q.get("domain_id")),
             title=q.get("title") or "Quiz",
             question_count=q.get("question_count") or 0, score=q.get("score"),
+            created_at=q.get("created_at"),
         )
         for q in quiz_rows
     ]
 
-    def _by_domain(rows: list[dict[str, Any]]) -> list[StudioSet]:
+    def _by_domain(rows: list[dict[str, Any]], noun: str) -> list[StudioSet]:
+        """Group a per-domain set, naming it after what it covers.
+
+        Decks and practice sets have no row of their own to hang a generated
+        title on, so the name is built from the domain and the size — "Core CLI
+        Commands — 50 cards" — which is what the learner is choosing between.
+        """
         counts: dict[str, int] = {}
+        newest: dict[str, Any] = {}
         for r in rows:
             dom = r.get("domain_id")
-            if dom:
-                counts[dom] = counts.get(dom, 0) + 1
+            if not dom:
+                continue
+            counts[dom] = counts.get(dom, 0) + 1
+            stamp = r.get("created_at")
+            if stamp and (dom not in newest or str(stamp) > str(newest[dom])):
+                newest[dom] = stamp
         return [
-            StudioSet(domain_id=d, domain_title=title_of.get(d), count=n)
+            StudioSet(
+                domain_id=d,
+                title=f"{title_of.get(d) or 'Set'} — {n} {noun}{'' if n == 1 else 's'}",
+                domain_title=title_of.get(d),
+                count=n,
+                created_at=newest.get(d),
+            )
             for d, n in counts.items()
         ]
 
     flashcards = _by_domain(
-        (client.table("flashcards").select("domain_id")
-         .eq("module_id", module_id).eq("user_id", user.id).execute()).data or []
+        (client.table("flashcards").select("domain_id, created_at")
+         .eq("module_id", module_id).eq("user_id", user.id).execute()).data or [],
+        "card",
     )
 
     practice: list[StudioSet] = []
     if domain_ids:
         practice = _by_domain(
-            (client.table("practice_questions").select("domain_id")
-             .in_("domain_id", domain_ids).is_("exam_id", "null").execute()).data or []
+            (client.table("practice_questions").select("domain_id, created_at")
+             .in_("domain_id", domain_ids).is_("exam_id", "null").execute()).data or [],
+            "question",
         )
 
     return StudioMedia(

@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import exam_profile, schema_features
+from app.services import exam_catalog, exam_profile, schema_features
 from app.services.ai_service import (
     MAX_QUIZ_QUESTIONS,
     GenerationError,
@@ -387,6 +387,20 @@ def _deck_domain_ids(domains: list[dict[str, Any]], user_id: str) -> set[str]:
     return {r["domain_id"] for r in rows if r.get("domain_id")}
 
 
+def _exam_title(module: dict[str, Any], question_count: int) -> str:
+    """A name that says what this exam simulates.
+
+    "Full Exam Simulation — CompTIA Security+" when it's the real length of a
+    recognised paper, otherwise the module and the length, because a shorter run
+    isn't a simulation of anything.
+    """
+    known = exam_catalog.find(module.get("title"), module.get("detected_subject"))
+    label = known.label if known else (module.get("title") or "Practice")
+    if known and question_count >= known.question_count:
+        return f"Full Exam Simulation — {label}"[:200]
+    return f"{label} — {question_count}-question practice"[:200]
+
+
 def _question_key(text: str) -> str:
     """Loose identity for a question, so a top-up round can't repeat one."""
     return " ".join((text or "").lower().split())[:160]
@@ -555,7 +569,7 @@ async def generate_exam(
     exam_row = client.table("practice_exams").insert({
         "module_id": payload.module_id,
         "user_id": user.id,
-        "title": f"{module.get('title') or 'Practice'} exam",
+        "title": _exam_title(module, len(questions)),
         "duration_minutes": duration,
         "total_points": len(questions),
     }).execute().data[0]
