@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from 'framer-motion'
+import { motion } from 'framer-motion'
 import { Check, RotateCcw, Star, Trash2, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
@@ -15,7 +15,7 @@ import TermText from './TermText'
  * closes the run with a "study again" reset.
  *
  * The flip is a 3D rotateY; the whole card is the drag target. `direction`
- * carries the swipe so the exit animation flies the card off the matching side.
+ * carries the swipe, so the next card arrives from the side the last one left.
  *
  * Key terms on either face are tappable for a definition, with acronyms
  * expanded inline the first time they appear. Tapping a term must not flip the
@@ -63,12 +63,12 @@ export default function FlashcardDeck({
       // Reaching the end finishes the run, so it stops being resumable.
       completed: position >= cards.length,
     })
-    // Let the exit animation play, then move on.
-    setTimeout(() => {
-      setFlipped(false)
-      setIndex((i) => i + 1)
-      setDirection(0)
-    }, 180)
+    // Straight to the next card. This used to wait 180ms for an exit animation
+    // to play; nothing plays out any more, and a step that waits on an
+    // animation having finished is a step that doesn't happen when the
+    // animation doesn't run.
+    setFlipped(false)
+    setIndex((i) => i + 1)
   }
 
   function onDragEnd(_event, info) {
@@ -126,23 +126,30 @@ export default function FlashcardDeck({
 
       {/* Card */}
       <div className="relative h-72" style={{ perspective: '1200px' }}>
-        <AnimatePresence custom={direction}>
+        {/* Two elements rather than one: the keyed wrapper handles arriving,
+            the inner one handles being dragged.
+
+            The card used to leave through `AnimatePresence`, and an exiting
+            child that never unmounts is not a cosmetic problem here — this is
+            `absolute inset-0` and draggable, so a stuck one sits over the next
+            card and swallows every swipe and tap, the same way an un-unmounted
+            modal backdrop did. The entrance is CSS and comes from the direction
+            of travel, so the deck still reads as advancing; if the animation
+            never runs, the card is simply there. */}
+        <div
+          key={current.id}
+          className="step-in absolute inset-0"
+          style={{ '--step-from': direction < 0 ? '-1.5rem' : '1.5rem' }}
+        >
           <motion.div
-            key={current.id}
-            custom={direction}
             drag="x"
             dragConstraints={{ left: 0, right: 0 }}
             dragElastic={0.6}
             onDragEnd={onDragEnd}
-            initial={{ scale: 0.96, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1, x: 0 }}
-            exit={(dir) => ({
-              x: dir > 0 ? 400 : -400,
-              opacity: 0,
-              transition: { duration: 0.18 },
-            })}
+            // Snap back to centre when a drag doesn't carry far enough to count.
+            animate={{ x: 0 }}
             onClick={() => !openTerm && setFlipped((f) => !f)}
-            className="absolute inset-0 cursor-pointer"
+            className="h-full w-full cursor-pointer"
           >
             <motion.div
               className="relative h-full w-full"
@@ -181,7 +188,7 @@ export default function FlashcardDeck({
               </Face>
             </motion.div>
           </motion.div>
-        </AnimatePresence>
+        </div>
       </div>
 
       {/* Per-card actions */}

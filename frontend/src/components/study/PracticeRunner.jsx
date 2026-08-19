@@ -1,4 +1,3 @@
-import { AnimatePresence, motion } from 'framer-motion'
 import { CheckCheck, CheckCircle, Flag, Lightbulb, Loader2, XCircle } from 'lucide-react'
 import { useState } from 'react'
 
@@ -137,16 +136,11 @@ export default function PracticeRunner({
         </div>
       </div>
 
-      <AnimatePresence mode="wait">
-        {q && (
-        <motion.div
-          key={index}
-          initial={{ opacity: 0, x: 20 }}
-          animate={{ opacity: 1, x: 0 }}
-          exit={{ opacity: 0, x: -20 }}
-          transition={{ duration: 0.2 }}
-          className="space-y-4"
-        >
+      {/* Keyed, so changing question remounts this and replays the entrance.
+          Nothing waits for an exit, so the next question is in the DOM the
+          moment `index` changes. */}
+      {q && (
+        <div key={index} className="step-in space-y-4">
           <p className="text-lg font-medium text-pri">
             <TermText
               text={q.question_text}
@@ -174,29 +168,22 @@ export default function PracticeRunner({
 
           {/* Why Card */}
           {revealed?.why_summary && (
-            <motion.div
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="rounded-xl border border-accent/60 bg-accent/10 px-4 py-3"
-            >
+            <div className="rounded-xl border border-accent/60 bg-accent/10 px-4 py-3">
               <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-accent2">
                 <Lightbulb size={13} aria-hidden="true" />
                 Why
               </p>
               <p className="text-sm leading-relaxed text-pri">{revealed.why_summary}</p>
-            </motion.div>
+            </div>
           )}
-        </motion.div>
-        )}
-      </AnimatePresence>
+        </div>
+      )}
 
       <ErrorBanner message={error} onDismiss={() => setError(null)} />
 
       {/* Actions */}
       {caughtUp ? (
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
+        <div
           className="space-y-3 rounded-xl border border-border bg-surface px-4 py-4 text-center"
         >
           {awaitingMore ? (
@@ -226,7 +213,7 @@ export default function PracticeRunner({
           >
             {awaitingMore ? 'Finish here instead' : 'Finish'}
           </button>
-        </motion.div>
+        </div>
       ) : !revealed ? (
         <button
           onClick={submit}
@@ -262,30 +249,21 @@ function Actions({ mode, isCorrect, onFlag, onGotIt, onNext }) {
   // Next, no confidence choice.
   if (mode === 'review' && !isCorrect) {
     return (
-      <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="space-y-2"
-      >
+      <div className="space-y-2">
         <p className="text-center text-xs text-sec">
           Kept in Review Later — you&rsquo;ll see this one again.
         </p>
         <button onClick={onNext} className="btn-secondary min-h-11 w-full">
           Next question
         </button>
-      </motion.div>
+      </div>
     )
   }
 
   const leftLabel = mode === 'review' ? 'Keep Reviewing' : 'Flag for Review'
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: 0.1 }}
-      className="flex gap-3"
-    >
+    <div className="flex gap-3">
       <button
         onClick={onFlag}
         className="btn inline-flex min-h-11 flex-1 items-center justify-center gap-2
@@ -302,7 +280,7 @@ function Actions({ mode, isCorrect, onFlag, onGotIt, onNext }) {
         <CheckCheck size={16} aria-hidden="true" />
         Got It
       </button>
-    </motion.div>
+    </div>
   )
 }
 

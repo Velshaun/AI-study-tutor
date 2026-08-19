@@ -147,6 +147,20 @@ question flashes every option as wrong for the length of the round trip.
 `item_id`, no FK — where the referent lives in one of several tables. That's
 `study_attempts` and `review_later`.
 
+**Nothing that has to happen may wait on an animation.** `AnimatePresence
+mode="wait"` holds the next child back until the previous one has finished
+animating out, and framer-motion drives that from `requestAnimationFrame`. In
+any environment where frames don't come — a backgrounded tab, a throttled
+loop — the exit never completes and the run never advances: the header counts
+up while the question stays put. Every stepper now uses a keyed container with
+a CSS entrance (`.step-in` in `index.css`) and no exit at all, so the next item
+is in the DOM the moment state changes.
+
+The same reasoning rules out an animated `initial={{ opacity: 0 }}` on anything
+that must be readable. A JS animation that never advances leaves the element
+invisible; a CSS animation that never runs leaves it at its natural state,
+which is correct. That is why `.step-in` has no fill-mode.
+
 **Modals mount conditionally, never through `AnimatePresence`.** An exiting
 child wasn't always unmounted, leaving an invisible `fixed inset-0` backdrop
 that swallowed every later tap and made the app look frozen. A dismissal that
@@ -214,6 +228,12 @@ Bugs the first layer could not have caught, and the later ones did:
 - `AnimatePresence` leaving an invisible tap-swallowing overlay.
 - A unique index on `(module_id, order_index)` the mocked client didn't model.
 - A multi-image OCR prompt saying "this image", so only the first frame was read.
+- `AnimatePresence mode="wait"` pinning every runner to its first question when
+  no animation frames arrive. The harness that exposed it was dismissed as an
+  artifact at first — reasonably, since the pane genuinely wasn't compositing.
+  It was both: the environment is why it showed up there, and the coupling to
+  animation completion is why it showed up at all. Removing the coupling makes
+  the same harness step cleanly, which is the proof it was load-bearing.
 - `loadChunk` reading `chunks` from state in the same tick `setChunks` was
   called, so a freshly opened lecture never got a `src`. Every visible symptom
   pointed elsewhere — the transcript scrubbed, the button flipped to "pause" —
@@ -283,12 +303,12 @@ group_shared_domains, group_domain_views, coverage_maps, exam_attempts`
   a screen recording on a phone. Labelled honestly rather than promising it.
 - **`/practice/:moduleId`** (the standalone exam setup page) is now redundant:
   the Classroom's own Practice exams section generates and lists them. Delete it.
-- **Multi-question navigation can't be verified in the browser harness.** The
-  pane doesn't composite, so `requestAnimationFrame` never fires, so
-  framer-motion's exit animation never completes and `AnimatePresence
-  mode="wait"` never mounts the next question. The header advances, the body
-  doesn't. Confirmed as an artifact by A/B against the unmodified path — but it
-  means anything about stepping between questions needs a real browser.
+- **No runner has a back control or a question navigator.** Stepping is
+  forward-only (`index + 1`), plus restart and resume-at-saved-position. Worth
+  knowing before promising to test either.
+- **Four `AnimatePresence` users remain** — MiniPlayer, VoiceInput,
+  QASessionCard, ToastProvider. None of them step; they mount and unmount
+  transient panels. They were audited during the stepper sweep, not changed.
 - **Deleting a module bumps its `updated_at`**, which affects dashboard ordering
   — inherent to the write, not a bug.
 

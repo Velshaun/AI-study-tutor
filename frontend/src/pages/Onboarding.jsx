@@ -1,4 +1,3 @@
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
   ArrowLeft,
   ArrowRight,
@@ -66,7 +65,6 @@ const TOTAL_STEPS = 7
 export default function Onboarding() {
   const navigate = useNavigate()
   const { preferences, update, save } = usePreferences()
-  const reduceMotion = useReducedMotion()
 
   const [step, setStep] = useState(1)
   const [playingVoice, setPlayingVoice] = useState(null)
@@ -82,15 +80,6 @@ export default function Onboarding() {
     markOnboarded()
     next()
   }
-
-  // Steps slide horizontally, unless the user has asked for less motion.
-  const variants = reduceMotion
-    ? { enter: { opacity: 0 }, center: { opacity: 1 }, exit: { opacity: 0 } }
-    : {
-        enter: { opacity: 0, x: 24 },
-        center: { opacity: 1, x: 0 },
-        exit: { opacity: 0, x: -24 },
-      }
 
   return (
     <div className="flex min-h-dvh flex-col bg-bg">
@@ -115,16 +104,13 @@ export default function Onboarding() {
       {/* Step body */}
       <div className="flex flex-1 items-center px-5 py-6">
         <div className="mx-auto w-full max-w-md">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={step}
-              variants={variants}
-              initial="enter"
-              animate="center"
-              exit="exit"
-              transition={{ duration: 0.22, ease: 'easeOut' }}
-            >
-              {step === 1 && <StepWelcome reduceMotion={reduceMotion} />}
+          {/* Keyed, so a step change remounts this and replays the entrance.
+              It used to step through `AnimatePresence mode="wait"`, which holds
+              the next step back until the previous one has finished animating
+              out — a wizard that can't be advanced is a worse outcome than one
+              that doesn't slide, and the slide is CSS now anyway. */}
+          <div key={step} className="step-in">
+              {step === 1 && <StepWelcome />}
               {step === 2 && <StepDashboard />}
 
               {step === 3 && (
@@ -202,8 +188,7 @@ export default function Onboarding() {
                   onFinish={() => navigate(ROUTES.dashboard, { replace: true })}
                 />
               )}
-            </motion.div>
-          </AnimatePresence>
+          </div>
         </div>
       </div>
 
@@ -262,17 +247,12 @@ function Step({ title, subtitle, children }) {
   )
 }
 
-function StepWelcome({ reduceMotion }) {
+function StepWelcome() {
   return (
     <div className="space-y-6 text-center">
-      <motion.div
-        initial={reduceMotion ? { opacity: 0 } : { scale: 0.8, opacity: 0 }}
-        animate={reduceMotion ? { opacity: 1 } : { scale: 1, opacity: 1 }}
-        transition={{ type: 'spring', stiffness: 200, damping: 16 }}
-        className="mx-auto flex size-20 items-center justify-center rounded-3xl bg-accent"
-      >
+      <div className="mx-auto flex size-20 items-center justify-center rounded-3xl bg-accent">
         <GraduationCap size={40} className="text-white" aria-hidden="true" />
-      </motion.div>
+      </div>
 
       <div className="space-y-2">
         <h1 className="text-3xl font-semibold text-pri">ConverseAI Tutor</h1>
@@ -358,14 +338,9 @@ function StepDone({ saveFailed, onSettings, onFinish }) {
       className="card space-y-5 border-accent/40 text-center"
       style={{ backgroundColor: 'var(--accent-soft)' }}
     >
-      <motion.div
-        initial={{ scale: 0.6, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        transition={{ type: 'spring', stiffness: 240, damping: 14 }}
-        className="mx-auto flex size-14 items-center justify-center rounded-full bg-accent"
-      >
+      <div className="mx-auto flex size-14 items-center justify-center rounded-full bg-accent">
         <Check size={28} className="text-white" aria-hidden="true" />
-      </motion.div>
+      </div>
 
       <div className="space-y-2">
         <h1 id="onboarding-done-title" className="text-xl font-semibold text-pri">

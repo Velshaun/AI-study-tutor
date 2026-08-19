@@ -1,4 +1,3 @@
-import { AnimatePresence, motion } from 'framer-motion'
 import { Check, Clock, RotateCcw, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
@@ -304,15 +303,10 @@ export default function QuizRunner({
         </div>
       </div>
 
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={index}
-          initial={{ opacity: 0, x: 20 }}
-          animate={{ opacity: 1, x: 0 }}
-          exit={{ opacity: 0, x: -20 }}
-          transition={{ duration: 0.2 }}
-          className="space-y-4"
-        >
+      {/* Keyed, so changing question remounts this and replays the entrance.
+          Nothing waits for an exit: the next question is in the DOM the moment
+          `index` changes. */}
+      <div key={index} className="step-in space-y-4">
           <p className="text-lg font-medium text-pri">
             <TermText
               text={q.question}
@@ -386,21 +380,18 @@ export default function QuizRunner({
             })}
           </div>
 
-          {/* The overall rationale, once answered */}
+          {/* The overall rationale, once answered. Mounted plainly: an
+              animated `initial` that never advances would leave the
+              explanation invisible, and an explanation is the point. */}
           {locked && explanation && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
-              className="rounded-xl bg-surface2 px-4 py-3"
-            >
+            <div className="rounded-xl bg-surface2 px-4 py-3">
               <p className="mb-1 text-xs font-medium uppercase tracking-wider text-accent2">
                 {chosen === correctIndex ? 'Correct' : 'Explanation'}
               </p>
               <p className="text-sm leading-relaxed text-pri">{explanation}</p>
-            </motion.div>
+            </div>
           )}
-        </motion.div>
-      </AnimatePresence>
+      </div>
 
       <button onClick={next} disabled={!locked} className="btn-primary w-full">
         {index < questions.length - 1 ? 'Next question' : 'Finish & score'}

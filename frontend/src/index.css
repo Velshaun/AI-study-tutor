@@ -170,6 +170,39 @@
     background-color: var(--color-surface2);
   }
 
+  /* Stepping between questions and cards.
+   *
+   * Two deliberate absences here, and both are about what happens when the
+   * animation does not run — a backgrounded tab, a throttled frame loop, a
+   * device that has turned motion off.
+   *
+   * There is no exit. Nothing waits for one to finish before the next question
+   * mounts, because `AnimatePresence mode="wait"` does exactly that: it defers
+   * the entrance until the exit animation completes, so a run that never gets
+   * a frame never advances. The same reasoning `Modal` and `TermSheet` already
+   * follow — a step that always works beats a slide on the way out.
+   *
+   * And there is no fill-mode. The keyframes run from a hidden, offset state to
+   * the element's natural one, so an animation that is skipped entirely leaves
+   * the question plainly visible. A JS-driven `initial={{ opacity: 0 }}` that
+   * never advances would leave it invisible instead, which is the failure this
+   * is meant to rule out.
+   */
+  @keyframes step-in {
+    from {
+      opacity: 0;
+      transform: translate3d(var(--step-from, 1.25rem), 0, 0);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  .step-in {
+    animation: step-in 200ms ease-out;
+  }
+
   /* Respect a reduced-motion preference across the whole app. */
   @media (prefers-reduced-motion: reduce) {
     html {
