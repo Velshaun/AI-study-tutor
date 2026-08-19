@@ -8,6 +8,12 @@ but never compared the two.
 An assessment is that comparison, done per domain and weighted: a thin domain
 worth 32% of the paper matters far more than a thin one worth 4%, and saying so
 is the difference between a verdict and a list.
+
+What the sources contain is no longer worked out here. `coverage` reads every
+source in full, in chunks, and keeps the result; this module reads that map and
+writes the verdict. The split matters: coverage is slow and cacheable, a verdict
+is fast and wanted on demand, and mixing them is what forced the old 60,000-
+character sample in the first place.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from typing import Any
 
 from app.config import settings
 from app.database import get_supabase
+from app.services import coverage
 from app.services.domains import _generate, quota_hint
 
 logger = logging.getLogger(__name__)
@@ -27,8 +34,10 @@ class TutorError(RuntimeError):
     """The tutor could not answer."""
 
 
-# How much of each source the model reads. Enough to judge coverage without
-# sending an entire course pack for every question.
+# How much of each source the model reads directly. This is the digest used for
+# ordinary questions, and the fallback for assessment where the coverage map is
+# unavailable — a deployment whose migration hasn't run yet. An assessment
+# proper reads the map, which has seen everything.
 PER_SOURCE_CHARS = 6000
 MAX_SOURCE_CHARS = 60000
 # Turns of conversation carried into a follow-up.
@@ -93,6 +102,19 @@ ASSESSMENT_SCHEMA: dict[str, Any] = {
         },
     },
     "required": ["verdict", "readiness", "domains", "gaps", "recommendations"],
+}
+
+# The map-based assessment asks for less, because it knows more. Per-domain
+# coverage is already settled by evidence gathered chunk by chunk, so the model
+# is not invited to restate it — and so cannot contradict it. It writes the
+# prose: the verdict, what's missing, and what to do next.
+MAP_ASSESSMENT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        key: ASSESSMENT_SCHEMA["properties"][key]
+        for key in ("verdict", "readiness", "gaps", "recommendations")
+    },
+    "required": ["verdict", "readiness", "gaps", "recommendations"],
 }
 
 
@@ -160,8 +182,207 @@ def _blueprint(domains: list[dict[str, Any]]) -> str:
     )
 
 
-def assess_material(module_id: str, user_id: str) -> dict[str, Any]:
-    """Judge how well the uploaded sources cover the exam this module is for."""
+def coverage_state(module_id: str, user_id: str) -> tuple[str, dict[str, Any] | None]:
+    """Whether a map-based assessment can be answered right now.
+
+    ``ready`` with a map, ``computing`` while one is being built, ``stale`` when
+    the sources or the blueprint have moved since the last one, or
+    ``unavailable`` where the table doesn't exist yet and the sampled fallback
+    is all there is.
+    """
+    if not coverage.available():
+        return "unavailable", None
+
+    context = module_context(module_id, user_id)
+    stored = coverage.get_map(module_id, user_id)
+    expected = coverage.fingerprint(context["sources"], context["domains"])
+    if coverage.is_fresh(stored, expected):
+        return "ready", stored
+    if stored and stored.get("status") == "computing":
+        # A read whose process died leaves a row that says it's still running.
+        # Treating that as stale is what lets the next request restart it.
+        return ("stale" if coverage.is_stalled(stored) else "computing"), stored
+    return "stale", stored
+
+
+def _map_digest(coverage_map: dict[str, Any]) -> str:
+    """The coverage map as the model sees it — evidence, not raw text."""
+    lines: list[str] = []
+    for entry in coverage_map.get("domains") or []:
+        topics = ", ".join(entry.get("topics") or []) or "nothing found"
+        sources = ", ".join(entry.get("sources") or []) or "no source"
+        lines.append(
+            f"- {entry.get('title')} "
+            f"({round(float(entry.get('weight_pct') or 0))}% of the exam) — "
+            f"{entry.get('coverage')}, taught at '{entry.get('depth')}' depth, "
+            f"found in {entry.get('chunk_hits') or 0} passage(s) of {sources}\n"
+            f"    topics present: {topics}"
+        )
+    return "\n".join(lines)
+
+
+def _analysis(coverage_map: dict[str, Any] | None) -> dict[str, Any]:
+    """How the material was read — shown to the learner, who deserves to know."""
+    if not coverage_map:
+        return {"mode": "sampled", "chars_analysed": MAX_SOURCE_CHARS}
+    return {
+        "mode": "full",
+        "chunk_count": coverage_map.get("chunk_count") or 0,
+        "chars_analysed": coverage_map.get("chars_analysed") or 0,
+        "truncated": bool(coverage_map.get("truncated")),
+        "computed_at": coverage_map.get("computed_at"),
+    }
+
+
+def _assess_from_map(
+    module: dict[str, Any], domains: list[dict[str, Any]],
+    coverage_map: dict[str, Any], source_count: int,
+) -> dict[str, Any]:
+    """Write the verdict from a coverage map built by reading everything."""
+    from google.genai import types
+
+    subject = module.get("detected_subject") or module.get("title") or "this subject"
+    prompt = (
+        f"You are a subject-matter tutor for {subject}. A learner wants to know "
+        "whether the material they have uploaded is enough to prepare for the "
+        "exam.\n\n"
+        "Every source has already been read in full and indexed against the "
+        "exam blueprint. The COVERAGE MAP below is the result: for each domain, "
+        "how well it is covered, how deeply it is taught, which files it came "
+        "from, and which topics were actually found.\n\n"
+        "- Trust the map. It comes from reading the whole pack, not a sample. "
+        "Do not second-guess a domain's coverage, and do not claim something is "
+        "missing that the map lists as present.\n"
+        "- Weight your verdict: a thin domain worth 30% of the paper is a "
+        "serious problem, a thin one worth 4% is barely worth mentioning.\n"
+        "- gaps must name the specific topics the material doesn't cover, drawn "
+        "from the missing and thinly covered domains, most important first.\n"
+        "- recommendations must be things the learner can act on: what to "
+        "upload, which topic to find material for, what to search.\n"
+        "- Be honest. Do not soften a real gap, and do not invent one.\n\n"
+        f"--- COVERAGE MAP ({source_count} source(s), "
+        f"{coverage_map.get('chars_analysed') or 0} characters read across "
+        f"{coverage_map.get('chunk_count') or 0} passages) ---\n"
+        f"{_map_digest(coverage_map)}"
+        + (
+            "\n\nNOTE: the pack was larger than could be read in one pass, so "
+            "the tail of the largest source was not indexed. Say so plainly in "
+            "the verdict."
+            if coverage_map.get("truncated") else ""
+        )
+    )
+
+    try:
+        response = _generate(
+            "tutor-assess-map",
+            model=settings.gemini_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=MAP_ASSESSMENT_SCHEMA,
+                temperature=0.2,
+            ),
+        )
+        data = json.loads(response.text)
+    except json.JSONDecodeError as exc:
+        raise TutorError(f"Model returned invalid JSON: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise TutorError(quota_hint(exc) or f"Assessment failed: {exc}") from exc
+
+    by_title = {(d.get("title") or "").lower(): d for d in domains}
+    assessed = [
+        {
+            "title": entry.get("title") or "",
+            "coverage": (
+                entry.get("coverage")
+                if entry.get("coverage") in COVERAGE_LEVELS else "partial"
+            ),
+            "depth": entry.get("depth") or "none",
+            "topics": entry.get("topics") or [],
+            "sources": entry.get("sources") or [],
+            "note": _note(entry),
+            "weight_pct": float(
+                by_title.get((entry.get("title") or "").lower(), {}).get("weight_pct")
+                or entry.get("weight_pct") or 0
+            ),
+        }
+        for entry in coverage_map.get("domains") or []
+    ]
+    return _verdict(data, assessed, source_count, _analysis(coverage_map))
+
+
+def _note(entry: dict[str, Any]) -> str:
+    """A domain's one-liner, written from evidence rather than asked for.
+
+    The map already knows what was found and where; paying a model to phrase
+    that would be paying for a chance to get it wrong.
+    """
+    topics = entry.get("topics") or []
+    sources = entry.get("sources") or []
+    hits = entry.get("chunk_hits") or 0
+    if not hits:
+        return "Nothing in your sources covers this."
+
+    where = (
+        f"{sources[0]}" if len(sources) == 1
+        else f"{len(sources)} of your sources"
+    )
+    passages = f"{hits} passage{'s' if hits != 1 else ''} of {where}"
+    depth = {
+        "thorough": "Covered in depth",
+        "overview": "Explained",
+        "mention": "Only mentioned",
+    }.get(entry.get("depth") or "", "Covered")
+    if not topics:
+        return f"{depth} across {passages}."
+
+    # Topics keep the case the material gave them: capitalising the list would
+    # turn TCP/IP into Tcp/ip, which is worse than no capital at all.
+    listed = ", ".join(topics[:4])
+    more = f", and {len(topics) - 4} more" if len(topics) > 4 else ""
+    return f"{depth} across {passages}: {listed}{more}."
+
+
+def _verdict(
+    data: dict[str, Any], assessed: list[dict[str, Any]],
+    source_count: int, analysis: dict[str, Any],
+) -> dict[str, Any]:
+    """The shared tail of both assessment paths."""
+    readiness = (data.get("readiness") or "").strip().lower()
+    if readiness not in ("ready", "mostly_ready", "significant_gaps"):
+        readiness = "mostly_ready"
+
+    return {
+        "verdict": (data.get("verdict") or "").strip()[:1200],
+        "readiness": readiness,
+        # The share of the paper the sources genuinely cover — the number the
+        # learner actually wants, and one the model shouldn't be trusted to add
+        # up itself.
+        "covered_pct": round(
+            sum(d["weight_pct"] for d in assessed if d["coverage"] == "well_covered")
+            + sum(d["weight_pct"] * 0.5 for d in assessed if d["coverage"] == "partial"),
+            1,
+        ),
+        "domains": assessed,
+        "gaps": [str(g).strip()[:300] for g in (data.get("gaps") or [])][:12],
+        "recommendations": [
+            str(r).strip()[:300] for r in (data.get("recommendations") or [])
+        ][:8],
+        "source_count": source_count,
+        "analysis": analysis,
+    }
+
+
+def assess_material(
+    module_id: str, user_id: str, *, coverage_map: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Judge how well the uploaded sources cover the exam this module is for.
+
+    Given a coverage map, the judgement rests on every character of every
+    source. Without one — a deployment where the migration hasn't run — it falls
+    back to the sampled digest, which is what this did before and is honest
+    about its limits in ``analysis.mode``.
+    """
     if not settings.gemini_api_key:
         raise TutorError("GEMINI_API_KEY is not configured.")
 
@@ -176,6 +397,9 @@ def assess_material(module_id: str, user_id: str) -> dict[str, Any]:
             "This module has no study plan yet, so there's nothing to compare "
             "your sources against. Generate the plan first."
         )
+
+    if coverage_map and (coverage_map.get("domains") or []):
+        return _assess_from_map(module, domains, coverage_map, len(sources))
 
     digest = _source_digest(sources)
     if not digest.strip():
@@ -235,28 +459,7 @@ def assess_material(module_id: str, user_id: str) -> dict[str, Any]:
             "weight_pct": float(source_domain.get("weight_pct") or 0),
         })
 
-    readiness = (data.get("readiness") or "").strip().lower()
-    if readiness not in ("ready", "mostly_ready", "significant_gaps"):
-        readiness = "mostly_ready"
-
-    return {
-        "verdict": (data.get("verdict") or "").strip()[:1200],
-        "readiness": readiness,
-        # The share of the paper the sources genuinely cover — the number the
-        # learner actually wants, and one the model shouldn't be trusted to add
-        # up itself.
-        "covered_pct": round(
-            sum(d["weight_pct"] for d in assessed if d["coverage"] == "well_covered")
-            + sum(d["weight_pct"] * 0.5 for d in assessed if d["coverage"] == "partial"),
-            1,
-        ),
-        "domains": assessed,
-        "gaps": [str(g).strip()[:300] for g in (data.get("gaps") or [])][:12],
-        "recommendations": [
-            str(r).strip()[:300] for r in (data.get("recommendations") or [])
-        ][:8],
-        "source_count": len(sources),
-    }
+    return _verdict(data, assessed, len(sources), _analysis(None))
 
 
 ANSWER_SCHEMA: dict[str, Any] = {

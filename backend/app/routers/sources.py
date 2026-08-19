@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import storage
+from app.services import coverage, storage
 from app.services.extraction import classify_url
 from app.services.pipeline import process_module
 
@@ -346,18 +346,27 @@ async def list_sources(
 @router.delete("/file/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_source_file(
     file_id: str,
+    background: BackgroundTasks,
     user: AuthUser = Depends(get_current_user),
 ) -> None:
     """Delete a source row and its stored object."""
     result = (
         _client()
         .table("user_files")
-        .select("id")
+        .select("id, module_id")
         .eq("id", file_id)
         .eq("user_id", user.id)
         .limit(1)
         .execute()
     )
-    if not (result.data or []):
+    rows = result.data or []
+    if not rows:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Source not found.")
     storage.delete_source(file_id)
+
+    # The coverage map still describes text the learner no longer has. Mark it
+    # stale first so nothing reads it in the meantime, then rebuild without it.
+    module_id = rows[0].get("module_id")
+    if module_id:
+        coverage.mark_stale(module_id, user.id)
+        background.add_task(coverage.ensure, module_id, user.id, force=True)

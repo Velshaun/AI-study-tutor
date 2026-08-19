@@ -1,0 +1,242 @@
+# ConverseAI — working notes
+
+An AI study tutor: upload course material, get lectures, flashcards, quizzes and
+practice exams generated from it, and study against the real exam's shape.
+
+**Stack.** React + Vite + Tailwind v4 (Vercel) · FastAPI (Railway) · Supabase
+(Postgres + Auth + Storage) · Gemini `gemini-2.5-flash` for generation and
+vision · OpenAI for TTS and Whisper.
+
+**Local.** `venv/Scripts/python.exe` at the repo root; run backend commands from
+`backend/`. The frontend dev server is on **port 3000**, not Vite's default —
+`npm --prefix frontend run dev`.
+
+---
+
+## The shape of it
+
+```
+backend/app/
+  routers/    HTTP surface, one per domain area
+  services/   the thinking; routers stay thin
+frontend/src/
+  pages/      routes
+  components/ module/ (module screens), study/ (runners), shared
+  lib/        pure logic — no React, so it's testable
+  context/    providers; GenerationProvider lives in RootLayout, inside the router
+supabase/migrations/   timestamped, idempotent, safe to re-run
+```
+
+### Services worth knowing
+
+| Service | Owns |
+|---|---|
+| `exam_profile` | How long a practice set or exam should be, in one place |
+| `exam_catalog` | Published specs for ~35 certifications (question count, time limit) |
+| `ai_service` | Flashcard / quiz / practice generation, batching, imported-exam parsing |
+| `terms` | The tappable-term schema fragment and its validation |
+| `tutor` | Module context, material assessment, question answering |
+| `coverage` | Chunked full reading of sources; the stored per-domain map |
+| `link_check` / `dead_links` | Validating discovered URLs; learner reports feeding back |
+| `extraction` | PDF, text, audio, **image (Gemini vision)**, **video (frames + narration)** |
+| `pipeline` | Ingestion, and the guard that stops it destroying study content |
+| `schema_features` | Probes for optional columns so the API can deploy ahead of a migration |
+
+---
+
+## Decisions that carry weight
+
+Each of these was a fork in the road. The reasoning matters more than the code.
+
+**Exam length has one source of truth.** `exam_profile.exam_question_count()`
+resolves: explicit request → `modules.exam_question_count` → `exam_catalog`'s
+published spec → largest imported past paper → default 20. Generators used to
+carry their own constants (practice mode: 8, exams: 20), which is why revising
+for a 40-question paper produced an 8-question set.
+
+**The tutor reads everything, once, and keeps what it learnt.** An assessment
+used to sample 60,000 characters — 6,000 per source, then a hard stop. The live
+A+ module holds 498,697 characters in a single file, so 88% of it was invisible,
+and a domain taught in chapter nine read as "missing". `coverage` now splits
+every source into 50,000-character chunks with 500 of overlap, judges each
+against the blueprint on its own, and aggregates the findings into one stored
+map. The verdict is then a single cheap call over evidence rather than a
+sampled read, so it costs the same for 2MB as for 20KB.
+
+**Coverage is decided by the aggregator, not the model.** A model shown one
+chunk cannot judge breadth across a pack it never saw, so the rule lives in
+code: thorough anywhere wins; overview in two or more chunks wins; overview in
+one is partial; a bare mention is never coverage however often it recurs. The
+same instinct as `covered_pct` — evidence adds up in Python.
+
+**The catalogue matches conservatively.** An exam code in the title is proof;
+a distinctive product name is good evidence (longest match wins); everything
+else stays generic. A wrong match would silently mistime someone's revision.
+
+**Explanations are written at generation time, not answer time.** Every option
+carries its own why-right/why-wrong line, stored with the question. This turned
+feedback from a 2–4s model call into a single read (**0.14s** measured). The
+pre-submission payload maps only label/text/term_key, so nothing leaks early.
+
+**Timed exams store a deadline, not remaining seconds.** Storing the remainder
+would make walking away a way to buy more time.
+
+**Imported exam PDFs become real exams.** Written to `practice_exams` /
+`practice_questions` — the same tables generated exams use — so they behave
+identically by construction rather than by matching two code paths. A PDF
+holding several papers is split into several exams.
+
+**Ingestion never cascade-deletes studied content.** Domains cascade; re-running
+the pipeline used to take every lecture, deck, quiz and practice question with
+it. A domain holding generated content is now updated in place, or preserved and
+logged if the new blueprint drops it. `?force=true` is the explicit rebuild, and
+the UI confirms against `GET /sources/{id}/reprocess-impact` first.
+`order_index` is uniquely indexed per module, so survivors vacate their slots
+before the incoming blueprint claims them.
+
+**New data rides in existing `jsonb` where that's the honest shape.** Per-option
+explanations live in `practice_questions.options` (already object-shaped for
+practice mode; both shapes are read). Quiz questions carry their terms inside
+`quizzes.questions`. Migrations were added only where there was genuinely
+nowhere to put something.
+
+**Polymorphic tables follow the `review_later` precedent** — `item_type` +
+`item_id`, no FK — where the referent lives in one of several tables. That's
+`study_attempts` and `review_later`.
+
+**Modals mount conditionally, never through `AnimatePresence`.** An exiting
+child wasn't always unmounted, leaving an invisible `fixed inset-0` backdrop
+that swallowed every later tap and made the app look frozen. A dismissal that
+always works beats a fade on the way out. This applies to `Modal.jsx` and
+`TermSheet.jsx`.
+
+**Generation outlives the screen that started it.** `GenerationProvider` sits in
+`RootLayout` (inside the router, above every route), so navigating away doesn't
+stop a job. Tiles show "Generating…" whenever the learner returns; completion
+raises a toast that offers to open the result.
+
+**Pronunciation uses the Web Speech API, not server TTS.** Instant, free,
+offline in the PWA, and no round trip for a single word.
+
+**Untouched is not weak.** Readiness shows a dash for a domain nothing has been
+attempted in. Weights: quiz score 60%, practice answered 25%, lecture progress
+15% — a score is evidence, effort is effort — and self-flagged questions pull it
+down.
+
+**Dead-link reports are per-learner.** One account can't poison another's
+results. Three distinct reports on a host drop the host.
+
+**The relevance filter is deliberately loose** — it drops only results sharing
+*nothing* with the query. An empty result list serves a learner worse than a
+loosely related one, and the dead/walled checks do the real work.
+
+**Uploads classify by extension first, MIME second** (both, everywhere) because
+phones disagree: an iOS photo arrives as `application/octet-stream` with an
+extension, or `image/jpeg` with none. Video is matched **before** audio so
+screen recordings get read, not just transcribed.
+
+---
+
+## How work gets verified here
+
+Three layers, in this order:
+
+1. **Offline suites** in the scratchpad, with a fake Supabase client. Fast,
+   deterministic, good for allocation maths and reconciliation logic.
+2. **Live tests** against the real Supabase and Gemini, using a throwaway module
+   that is deleted in a `finally` block. This is where the real bugs surfaced.
+3. **Browser harnesses** — a temporary page on an unguarded route, driven with
+   the browser tools, then removed along with its route. Signing into the real
+   app needs the owner's credentials, so this is how UI behaviour gets proven.
+
+Bugs the first layer could not have caught, and the later ones did:
+
+- A `setState` updater used for dedupe — React replays it in StrictMode, so
+  every background job was dropped before it started.
+- Swipe distance read back from state, which a quick flick outruns.
+- `AnimatePresence` leaving an invisible tap-swallowing overlay.
+- A unique index on `(module_id, order_index)` the mocked client didn't model.
+- A multi-image OCR prompt saying "this image", so only the first frame was read.
+
+---
+
+## Current state
+
+All twelve features from the August audit are shipped. Latest work, newest first:
+
+| Commit | What |
+|---|---|
+| `3c42c0d` | Tutor with material assessment; per-domain readiness |
+| `5ba0a71` | Progress saving across quizzes, exams, practice sets, decks |
+| `0e3eb23` | Import exam PDFs as real exams; swipe-to-delete on media |
+| `4de150a` | Optimistic module delete; descriptive media names |
+| `73ca551` | One Classroom generate flow, preferences modal, background jobs |
+| `4705bba`, `5d4afb1` | Image OCR and screen-recording ingestion; the full picker |
+| `2d53c99` | Ingestion cascade guard; Modal overlay fix |
+| `a5c14bf` | Tap-to-define terms with pronunciation |
+| `428738d`, `60a7f66` | Exam sizing, instant feedback, source validation, timers |
+
+### Migrations — all applied
+
+`20260817000000` exam length · `20260817010000` dead links ·
+`20260818000000` interactive terms · `20260819000000` deck titles ·
+`20260820000000` study attempts · `20260821000000` tutor messages
+
+**Not applied: `20260822000000` source coverage map.** No token to run it with.
+Until it lands, `coverage.available()` is false, the tutor falls back to the
+old 60k sample, and `analysis.mode` on every assessment says `sampled` so the
+UI admits it. Applying the migration and restarting the API is all that's
+needed — `schema_features` probes once per process.
+
+Applied through the Supabase **Management API** with a personal access token
+(`POST /v1/projects/{ref}/database/query`). The service-role key cannot run DDL,
+and `supabase db push` needs the database password, which isn't in the repo.
+**The token used previously has been rotated — a new one is needed to apply
+anything further.**
+
+Live tables (23, plus `coverage_maps` once its migration is applied): `profiles, modules, domains, lectures, qa_sessions, lecture_qa,
+flashcards, quizzes, practice_exams, practice_questions, imported_practice_questions,
+exam_concept_cache, review_later, study_attempts, tutor_messages, user_files,
+module_access, study_time, dead_link_reports, groups, group_members,
+group_shared_domains, group_domain_views`
+
+### Known gaps and loose ends
+
+- **`GET /attempts/open` has no consumer.** It's the ready-made feed for a
+  "continue where you left off" covering quizzes and exams, not just lectures.
+- **The coverage map has never run against live Gemini.** Its pure logic has an
+  offline suite (56 checks), and the fallback path is verified against the real
+  Supabase, but no chunk has actually been sent — the migration isn't applied,
+  so `available()` is false everywhere. Layer 2 is owed once a token exists.
+- **A pack over ~3M characters is still truncated** (60 chunks × 50k). It says
+  so: `truncated` rides in the map, the verdict is told to mention it, and the
+  assessment card prints which tail was left out.
+- **HEIC is accepted but untested on a real iPhone.** iOS usually converts to
+  JPEG on pick, so it rarely arrives; if it does, Gemini may reject it.
+- **"Add a screen recording" is a picker, not a recorder** — the web can't start
+  a screen recording on a phone. Labelled honestly rather than promising it.
+- **`/practice/:moduleId`** (the standalone exam setup page) still exists but its
+  only entry point was removed; it's reachable by URL only. Fold it in or delete.
+- **Deleting a module bumps its `updated_at`**, which affects dashboard ordering
+  — inherent to the write, not a bug.
+
+### Deployment
+
+Vercel builds the frontend, Railway the backend, both from `main`. Railway had a
+transient build failure in mid-August that resolved on its own; there is no
+`.python-version` or `runtime.txt`, so Railway picks its own Python and could
+move under you again — pinning it is a one-line fix if it recurs.
+
+---
+
+## Conventions
+
+- **Comments explain why, not what.** Match the density of the surrounding file.
+- **British spelling** in generated content and prompts.
+- **Errors name what does work** — "Try a PDF, a photo of your notes (JPG, PNG,
+  HEIC)…" rather than "unsupported file type".
+- **Never `git push` unasked.** Commit messages describe the problem before the
+  fix, in prose.
+- The repo lints clean; `react-hooks` rules are strict here (no `setState` in an
+  effect body, no ref access during render, no component creation during render).
+  Derive state rather than synchronising it.

@@ -17,6 +17,7 @@ import logging
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -30,7 +31,7 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import dead_links, exam_catalog, exam_profile, tutor
+from app.services import coverage, dead_links, exam_catalog, exam_profile, tutor
 from app.services.ai_service import GenerationError, discover_resources
 from app.services.link_check import validate_resources
 
@@ -746,6 +747,11 @@ class TutorAskRequest(BaseModel):
     # Set by the "Assess my material" action, which skips the classifier: the
     # learner has already said what they want.
     force_assessment: bool = False
+    # Set when finishing an assessment that was waiting on the sources being
+    # read. The placeholder becomes the answer in place, so the learner sees
+    # the one question they asked rather than the app asking it again on their
+    # behalf.
+    resume_message_id: str | None = None
 
 
 class TutorReply(BaseModel):
@@ -780,6 +786,21 @@ def _save_tutor_message(
     return _to_tutor_message(row[0])
 
 
+def _replace_tutor_message(
+    message_id: str, user_id: str, *, content: str,
+    kind: str = "question", payload: dict[str, Any] | None = None,
+) -> TutorMessage | None:
+    """Turn a placeholder into the answer it was standing in for."""
+    row = (
+        _client().table("tutor_messages").update({
+            "content": content[:8000],
+            "kind": kind,
+            "payload": payload or {},
+        }).eq("id", message_id).eq("user_id", user_id).execute()
+    ).data or []
+    return _to_tutor_message(row[0]) if row else None
+
+
 @router.get("/{module_id}/tutor", response_model=list[TutorMessage])
 async def tutor_history(
     module_id: str,
@@ -811,6 +832,7 @@ async def clear_tutor_history(
 async def ask_tutor(
     module_id: str,
     payload: TutorAskRequest,
+    background: BackgroundTasks,
     user: AuthUser = Depends(get_current_user),
 ) -> TutorReply:
     """Ask the module tutor something, and keep the exchange.
@@ -832,9 +854,29 @@ async def ask_tutor(
         ).data or []
     ][::-1]
 
-    asked = _save_tutor_message(module_id, user.id, role="user", content=question)
+    # Resuming replaces a placeholder rather than starting a new exchange, so
+    # the learner's original question stays the only one on screen.
+    resume_id = (payload.resume_message_id or "").strip() or None
+    asked = (
+        None if resume_id
+        else _save_tutor_message(module_id, user.id, role="user", content=question)
+    )
 
-    intent = "assessment" if payload.force_assessment else None
+    def reply(
+        content: str, *, kind: str = "question",
+        body: dict[str, Any] | None = None,
+    ) -> TutorReply:
+        replied = (
+            _replace_tutor_message(
+                resume_id, user.id, content=content, kind=kind, payload=body,
+            ) if resume_id else None
+        ) or _save_tutor_message(
+            module_id, user.id, role="assistant", content=content,
+            kind=kind, payload=body,
+        )
+        return TutorReply(messages=[m for m in (asked, replied) if m])
+
+    intent = "assessment" if (payload.force_assessment or resume_id) else None
     answer = ""
     if intent is None:
         try:
@@ -844,18 +886,29 @@ async def ask_tutor(
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
 
     if intent == "assessment":
-        try:
-            assessment = tutor.assess_material(module_id, user.id)
-        except tutor.TutorError as exc:
-            replied = _save_tutor_message(
-                module_id, user.id, role="assistant", content=str(exc),
+        # An assessment is only as good as the map behind it. If the map is
+        # missing or stale — a source was added or removed since the last one —
+        # the honest answer is to say it's reading, start the read, and let the
+        # tab pick the answer up when it lands. Guessing from a sample is what
+        # this feature exists to stop.
+        state, stored = tutor.coverage_state(module_id, user.id)
+        if state in ("stale", "computing"):
+            if state == "stale":
+                background.add_task(coverage.ensure, module_id, user.id, force=True)
+            return reply(
+                "Reading your sources in full…",
+                kind="assessment", body={"status": "computing"},
             )
-            return TutorReply(messages=[asked, replied])
-        replied = _save_tutor_message(
-            module_id, user.id, role="assistant",
-            content=assessment["verdict"], kind="assessment", payload=assessment,
+
+        try:
+            assessment = tutor.assess_material(
+                module_id, user.id, coverage_map=stored,
+            )
+        except tutor.TutorError as exc:
+            return reply(str(exc))
+        return reply(
+            assessment["verdict"], kind="assessment", body=assessment,
         )
-        return TutorReply(messages=[asked, replied])
 
     if intent == "resources":
         subject = module.get("detected_subject") or module.get("title") or "this subject"
@@ -869,17 +922,107 @@ async def ask_tutor(
             found.get("resources", []), query=question,
             reported_urls=blocked.urls, reported_hosts=blocked.hosts,
         )
-        replied = _save_tutor_message(
-            module_id, user.id, role="assistant",
-            content=found.get("answer", ""), kind="resources",
-            payload={"resources": resources},
+        return reply(
+            found.get("answer", ""), kind="resources",
+            body={"resources": resources},
         )
-        return TutorReply(messages=[asked, replied])
 
-    replied = _save_tutor_message(
-        module_id, user.id, role="assistant", content=answer,
+    return reply(answer)
+
+
+# --- Coverage map ----------------------------------------------------------
+class CoverageDomain(BaseModel):
+    """One exam domain, as the sources actually cover it."""
+
+    title: str = ""
+    domain_id: str | None = None
+    weight_pct: float = 0
+    coverage: str = "missing"
+    depth: str = "none"
+    topics: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
+    chunk_hits: int = 0
+
+
+class CoverageMap(BaseModel):
+    """What reading every source in full established, and how current it is.
+
+    ``stale`` is the field the tab watches: it means the sources or the
+    blueprint have moved since the map was built, so what it says is about a
+    module that no longer exists in that shape.
+    """
+
+    module_id: str
+    available: bool = True
+    status: str = "missing"
+    stale: bool = True
+    domains: list[CoverageDomain] = Field(default_factory=list)
+    chunk_count: int = 0
+    chars_analysed: int = 0
+    source_count: int = 0
+    truncated: bool = False
+    error: str | None = None
+    computed_at: datetime | None = None
+
+
+def _to_coverage(module_id: str, state: str, row: dict[str, Any] | None) -> CoverageMap:
+    if state == "unavailable":
+        return CoverageMap(module_id=module_id, available=False, status="unavailable")
+    if not row:
+        return CoverageMap(module_id=module_id, status="missing")
+    return CoverageMap(
+        module_id=module_id,
+        status=row.get("status") or "missing",
+        stale=state != "ready",
+        domains=[CoverageDomain(**d) for d in (row.get("domains") or [])],
+        chunk_count=row.get("chunk_count") or 0,
+        chars_analysed=row.get("chars_analysed") or 0,
+        source_count=row.get("source_count") or 0,
+        truncated=bool(row.get("truncated")),
+        error=row.get("error"),
+        computed_at=row.get("computed_at"),
     )
-    return TutorReply(messages=[asked, replied])
+
+
+@router.get("/{module_id}/coverage", response_model=CoverageMap)
+async def module_coverage(
+    module_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> CoverageMap:
+    """The module's coverage map — what the sources cover, domain by domain."""
+    _fetch_own(module_id, user.id)
+    try:
+        state, row = tutor.coverage_state(module_id, user.id)
+    except tutor.TutorError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return _to_coverage(module_id, state, row)
+
+
+@router.post("/{module_id}/coverage/refresh", response_model=CoverageMap)
+async def refresh_coverage(
+    module_id: str,
+    background: BackgroundTasks,
+    user: AuthUser = Depends(get_current_user),
+) -> CoverageMap:
+    """Re-read every source and rebuild the map. Returns immediately.
+
+    Poll ``GET /modules/{id}/coverage`` until ``status`` is ``ready``. Reading a
+    large pack takes as long as it takes; holding the request open for it would
+    only give the learner a spinner that can time out.
+    """
+    _fetch_own(module_id, user.id)
+    if not coverage.available():
+        raise HTTPException(
+            status.HTTP_501_NOT_IMPLEMENTED,
+            "Coverage maps aren't available on this deployment yet.",
+        )
+    background.add_task(coverage.ensure, module_id, user.id, force=True)
+    # The row on disk still describes the previous read; what's true right now
+    # is that a new one is running.
+    pending = _to_coverage(module_id, "computing", coverage.get_map(module_id, user.id))
+    pending.status = "computing"
+    pending.stale = True
+    return pending
 
 
 class ReportLinkRequest(BaseModel):

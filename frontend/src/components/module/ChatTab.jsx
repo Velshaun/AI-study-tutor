@@ -7,13 +7,14 @@ import {
   Globe,
   Loader2,
   Plus,
+  ScanSearch,
   Search,
   Send,
   ThumbsDown,
   Trash2,
   Video,
 } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { useToast } from '../../hooks/useToast'
 import { api } from '../../lib/api'
@@ -52,7 +53,17 @@ const READINESS_COPY = {
   significant_gaps: 'There are real gaps to fill.',
 }
 
+const DEPTH_COPY = {
+  thorough: 'taught in depth',
+  overview: 'explained',
+  mention: 'mentioned only',
+}
+
 const ASSESS_PROMPT = 'Is the material I uploaded sufficient for this exam?'
+
+// How often to ask whether the sources have finished being read. Reading a
+// large pack is minutes of work, so this is a check-in, not a spinner.
+const COVERAGE_POLL_MS = 4000
 
 export default function ChatTab({ moduleId }) {
   const queryClient = useQueryClient()
@@ -68,15 +79,54 @@ export default function ChatTab({ moduleId }) {
   })
   const messages = Array.isArray(history) ? history : []
 
+  // The coverage map: what every source covers, from reading all of them. An
+  // assessment waits on it, so its state is worth showing rather than hiding
+  // behind a long spinner.
+  const { data: coverage } = useQuery({
+    queryKey: ['coverage', moduleId],
+    queryFn: ({ signal }) => api.coverage(moduleId, signal),
+    refetchInterval: (query) =>
+      query.state.data?.status === 'computing' ? COVERAGE_POLL_MS : false,
+    refetchIntervalInBackground: false,
+  })
+  const analysing = coverage?.status === 'computing'
+
   const ask = useMutation({
-    mutationFn: ({ question, forceAssessment }) =>
-      api.askTutor(moduleId, question, { forceAssessment }),
+    mutationFn: ({ question, forceAssessment, resumeMessageId }) =>
+      api.askTutor(moduleId, question, { forceAssessment, resumeMessageId }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tutor', moduleId] })
+      // Asking for an assessment can start the sources being read, so the map's
+      // state has probably just changed.
+      queryClient.invalidateQueries({ queryKey: ['coverage', moduleId] })
       endRef.current?.scrollIntoView({ behavior: 'smooth' })
     },
     onError: (e) => toast.error(e?.message || 'The tutor could not answer.'),
   })
+
+  // An assessment asked for before the sources had been read leaves a placeholder
+  // saying so. When the read lands, finish what the learner already asked for —
+  // making them tap again to receive an answer they requested is a worse tab.
+  //
+  // The guard is a ref, not state: StrictMode replays state updaters, and a
+  // replayed dedupe is no dedupe at all.
+  const { mutate: askMutate } = ask
+  const last = messages[messages.length - 1]
+  const pendingAssessmentId =
+    last?.kind === 'assessment' && last?.payload?.status === 'computing'
+      ? last.id
+      : null
+  const resumed = useRef(null)
+  useEffect(() => {
+    if (!pendingAssessmentId || resumed.current === pendingAssessmentId) return
+    if (coverage?.status !== 'ready' || coverage?.stale) return
+    resumed.current = pendingAssessmentId
+    askMutate({
+      question: ASSESS_PROMPT,
+      forceAssessment: true,
+      resumeMessageId: pendingAssessmentId,
+    })
+  }, [pendingAssessmentId, coverage?.status, coverage?.stale, askMutate])
 
   const clear = useMutation({
     mutationFn: () => api.clearTutor(moduleId),
@@ -163,7 +213,11 @@ export default function ChatTab({ moduleId }) {
             ) : (
               <div key={m.id} className="space-y-3">
                 {m.kind === 'assessment' ? (
-                  <Assessment assessment={m.payload} />
+                  m.payload?.status === 'computing' ? (
+                    <Analysing coverage={coverage} />
+                  ) : (
+                    <Assessment assessment={m.payload} />
+                  )
                 ) : m.kind === 'resources' ? (
                   <>
                     {(m.payload?.resources || [])
@@ -203,6 +257,16 @@ export default function ChatTab({ moduleId }) {
         </div>
       )}
 
+      {/* Reading a large pack takes minutes, and it happens whether or not the
+          learner is looking at this tab. Saying so beats an assessment that
+          arrives late with no explanation for the wait. */}
+      {analysing && !pendingAssessmentId && (
+        <div className="flex items-center gap-2.5 rounded-2xl bg-surface px-4 py-3">
+          <Loader2 size={16} className="animate-spin text-accent" aria-hidden="true" />
+          <span className="text-sm text-sec">Analysing your sources…</span>
+        </div>
+      )}
+
       <form onSubmit={submit} className="space-y-2">
         <div className="flex gap-2">
           <input
@@ -231,6 +295,40 @@ function Bubble({ children }) {
   return (
     <div className="rounded-2xl rounded-bl-sm border border-accent/25 bg-surface px-4 py-3">
       <p className="whitespace-pre-wrap text-sm leading-relaxed text-pri">{children}</p>
+    </div>
+  )
+}
+
+/**
+ * The assessment is waiting on the sources being read.
+ *
+ * Shown instead of a bare spinner because the wait is real work with a
+ * knowable size — and because an assessment that arrived instantly is exactly
+ * the sampled guess this replaced.
+ */
+function Analysing({ coverage }) {
+  const failed = coverage?.status === 'failed'
+  return (
+    <div className="card space-y-2">
+      <div className="flex items-center gap-2.5">
+        {failed ? (
+          <ScanSearch size={16} className="text-warning" aria-hidden="true" />
+        ) : (
+          <Loader2 size={16} className="animate-spin text-accent" aria-hidden="true" />
+        )}
+        <p className="text-sm font-semibold text-pri">
+          {failed ? 'Couldn’t finish reading your sources' : 'Reading your sources'}
+        </p>
+      </div>
+      <p className="text-xs leading-relaxed text-sec">
+        {failed
+          ? coverage?.error ||
+            'Something went wrong part-way through. Try asking again.'
+          : 'Every source is being read in full and matched against the exam ' +
+            'blueprint, so the assessment covers all of it rather than a ' +
+            'sample. Your answer appears here when it’s done — you can leave ' +
+            'this tab.'}
+      </p>
     </div>
   )
 }
@@ -281,6 +379,14 @@ export function Assessment({ assessment }) {
                   </p>
                 </div>
                 <p className="text-xs leading-relaxed text-sec">{d.note}</p>
+                {/* Which files a domain came from, so a gap can be traced back
+                    to what was uploaded rather than taken on trust. */}
+                {d.sources?.length > 0 && (
+                  <p className="truncate text-xs text-sec/70">
+                    {DEPTH_COPY[d.depth] ? `${DEPTH_COPY[d.depth]} · ` : ''}
+                    {d.sources.join(', ')}
+                  </p>
+                )}
               </div>
             )
           })}
@@ -306,7 +412,41 @@ export function Assessment({ assessment }) {
           ))}
         </Section>
       )}
+
+      <Provenance analysis={assessment?.analysis} />
     </div>
+  )
+}
+
+/**
+ * How the material was read.
+ *
+ * The whole point of the coverage map is that nothing was skipped, which is
+ * invisible unless it's said. And where something *was* skipped — a pack past
+ * the reader's ceiling, or an old sampled assessment — that has to be said
+ * louder, not quieter.
+ */
+function Provenance({ analysis }) {
+  if (!analysis) return null
+  const chars = Number(analysis.chars_analysed || 0).toLocaleString()
+
+  if (analysis.mode !== 'full') {
+    return (
+      <p className="border-t border-border pt-3 text-xs text-sec">
+        Based on a {chars}-character sample of your sources.
+      </p>
+    )
+  }
+
+  return (
+    <p className="border-t border-border pt-3 text-xs text-sec">
+      Read {chars} characters across {analysis.chunk_count} passage
+      {analysis.chunk_count === 1 ? '' : 's'} of your sources.
+      {analysis.truncated
+        ? ' Your material was larger than one pass could read, so the tail of' +
+          ' the largest file wasn’t included.'
+        : ''}
+    </p>
   )
 }
 

@@ -396,6 +396,15 @@ def process_module(
             extra["course_context_source"] = "ai"
 
         set_module_status(module_id, "ready", detail="complete", extra=extra)
+
+        # The blueprint has just been redrawn and the sources reparsed, so any
+        # coverage map is now about a module that no longer exists in that
+        # shape. Rebuilding it here — while we are already off the request
+        # thread — is what keeps the tutor's assessment instant later.
+        from app.services import coverage
+
+        coverage.ensure(module_id, user_id, force=True)
+
         logger.info(
             "Pipeline complete for module %s: %s (%d domains: %d new, %d updated, "
             "%d preserved, %d replaced)",

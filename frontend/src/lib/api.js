@@ -175,13 +175,27 @@ export const api = {
   // uploaded material covers the exam, and can search for study resources.
   tutorHistory: (moduleId, signal) =>
     apiFetch(`/modules/${moduleId}/tutor`, { signal }),
-  askTutor: (moduleId, question, { forceAssessment = false } = {}) =>
+  askTutor: (
+    moduleId,
+    question,
+    { forceAssessment = false, resumeMessageId = null } = {},
+  ) =>
     apiFetch(`/modules/${moduleId}/tutor`, {
       method: 'POST',
-      body: { question, force_assessment: forceAssessment },
+      body: {
+        question,
+        force_assessment: forceAssessment,
+        resume_message_id: resumeMessageId,
+      },
     }),
   clearTutor: (moduleId) =>
     apiFetch(`/modules/${moduleId}/tutor`, { method: 'DELETE' }),
+  // What every source actually covers, domain by domain, from reading all of
+  // them rather than a sample. Built in the background; poll while computing.
+  coverage: (moduleId, signal) =>
+    apiFetch(`/modules/${moduleId}/coverage`, { signal }),
+  refreshCoverage: (moduleId) =>
+    apiFetch(`/modules/${moduleId}/coverage/refresh`, { method: 'POST' }),
   // Per-domain exam readiness, weighted by each domain's share of the paper.
   readiness: (moduleId, signal) =>
     apiFetch(`/stats/readiness/${moduleId}`, { signal }),
