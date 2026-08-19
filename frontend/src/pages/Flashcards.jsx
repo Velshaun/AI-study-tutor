@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import FlashcardDeck from '../components/study/FlashcardDeck'
+import { useAttempt } from '../hooks/useAttempt'
 import GenerateForm from '../components/study/GenerateForm'
 import PageTitle from '../components/PageTitle'
 import { useConfirm } from '../hooks/useConfirm'
@@ -18,6 +19,8 @@ import { api, ApiError } from '../lib/api'
  */
 export default function Flashcards() {
   const { domainId } = useParams()
+  // A deck is keyed by its domain — the cards have no set of their own.
+  const attempt = useAttempt('flashcards', domainId)
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const confirm = useConfirm()
@@ -107,6 +110,7 @@ export default function Flashcards() {
       ) : (
         <FlashcardDeck
           cards={cards}
+          attempt={attempt}
           onFavourite={favourite.mutate}
           onDelete={confirmDelete}
         />

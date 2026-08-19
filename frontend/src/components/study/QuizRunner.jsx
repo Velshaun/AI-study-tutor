@@ -22,6 +22,10 @@ import TermText from './TermText'
  * their expansion inline on first mention, and any term opens a definition
  * sheet. That data is generated with the question, so it costs nothing to show.
  *
+ * Progress is saved as it goes when the caller supplies `attempt`: leaving
+ * mid-run and coming back reopens the same question with the same answers, and
+ * a timed exam resumes with the clock where it was rather than reset.
+ *
  * The correct answers ship with the quiz (it's a study quiz, not a proctored
  * exam), so feedback is instant with no round-trip. The full set of answers is
  * still submitted at the end for an authoritative, recorded score.
@@ -35,24 +39,47 @@ function clock(totalSeconds) {
   return `${mins}:${String(secs).padStart(2, '0')}`
 }
 
-export default function QuizRunner({ quiz, onSubmit, onRestart }) {
+export default function QuizRunner({ quiz, onSubmit, onRestart, attempt }) {
   const questions = quiz.questions || []
   const durationMinutes = quiz.duration_minutes || 0
-  const [index, setIndex] = useState(0)
-  const [answers, setAnswers] = useState(() => questions.map(() => null))
-  const [locked, setLocked] = useState(false)
+  // Saved progress, read once when the run opens. `useState`'s initialiser is
+  // what makes this a resume rather than a jump: the run starts where the
+  // learner left off instead of starting over and correcting itself.
+  const saved = attempt?.restored
+  const [index, setIndex] = useState(() => Math.min(saved?.position ?? 0, Math.max(0, questions.length - 1)))
+  const [answers, setAnswers] = useState(() => {
+    const blank = questions.map(() => null)
+    const previous = saved?.answers || []
+    return blank.map((_, i) => (previous[i] === undefined ? null : previous[i]))
+  })
+  const [locked, setLocked] = useState(
+    () => (saved?.answers?.[saved?.position ?? 0] ?? null) != null,
+  )
   const [finished, setFinished] = useState(false)
   const [result, setResult] = useState(null)
-  const [remaining, setRemaining] = useState(durationMinutes * 60)
+  // A resumed exam keeps the clock it had; a fresh one starts at full length.
+  const [remaining, setRemaining] = useState(() => {
+    const deadline = saved?.state?.expires_at
+    if (!deadline) return durationMinutes * 60
+    const left = Math.round((new Date(deadline).getTime() - Date.now()) / 1000)
+    return Number.isFinite(left) ? Math.max(0, left) : durationMinutes * 60
+  })
   const [timedOut, setTimedOut] = useState(false)
   const [openTerm, setOpenTerm] = useState(null)
 
   // The countdown works from a fixed deadline rather than by decrementing, so a
   // backgrounded tab (where timers are throttled) still comes back honest.
-  const deadlineRef = useRef(null)
+  const deadlineRef = useRef(
+    saved?.state?.expires_at ? new Date(saved.state.expires_at).getTime() : null,
+  )
   // A mirror of `answers` that the timer can read: it fires from an interval,
   // long after the render that queued it, so it can't close over state.
-  const answersRef = useRef(questions.map(() => null))
+  const answersRef = useRef(
+    questions.map((_, i) => {
+      const previous = saved?.answers || []
+      return previous[i] === undefined ? null : previous[i]
+    }),
+  )
   const submittingRef = useRef(false)
 
   const q = questions[index]
@@ -62,6 +89,8 @@ export default function QuizRunner({ quiz, onSubmit, onRestart }) {
     if (submittingRef.current) return
     submittingRef.current = true
     if (expired) setTimedOut(true)
+    // The run is over: stop offering it as something to come back to.
+    attempt?.save?.({ position: questions.length, answers: answerList, completed: true })
     const res = await onSubmit(answerList)
     setResult(res)
     setFinished(true)
@@ -95,12 +124,26 @@ export default function QuizRunner({ quiz, onSubmit, onRestart }) {
     answersRef.current = next
     setAnswers(next)
     setLocked(true)
+    persist(index, next)
+  }
+
+  /** Save where the learner is, with the deadline a timed run has to keep. */
+  function persist(position, answerList) {
+    attempt?.save?.({
+      position,
+      answers: answerList,
+      state: deadlineRef.current
+        ? { expires_at: new Date(deadlineRef.current).toISOString() }
+        : {},
+    })
   }
 
   async function next() {
     if (index < questions.length - 1) {
-      setIndex((i) => i + 1)
-      setLocked(answers[index + 1] != null)
+      const to = index + 1
+      setIndex(to)
+      setLocked(answers[to] != null)
+      persist(to, answersRef.current)
       return
     }
     await finish(answers)
@@ -117,6 +160,8 @@ export default function QuizRunner({ quiz, onSubmit, onRestart }) {
     setRemaining(durationMinutes * 60)
     deadlineRef.current = null
     submittingRef.current = false
+    // Starting over discards the saved run rather than resuming into it.
+    attempt?.clear?.()
     onRestart?.()
   }
 

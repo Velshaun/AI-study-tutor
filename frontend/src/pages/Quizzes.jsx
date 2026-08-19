@@ -5,6 +5,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 
 import GenerateForm from '../components/study/GenerateForm'
 import QuizRunner from '../components/study/QuizRunner'
+import { useAttempt } from '../hooks/useAttempt'
 import PageTitle from '../components/PageTitle'
 import { useConfirm } from '../hooks/useConfirm'
 import { useToast } from '../hooks/useToast'
@@ -78,10 +79,7 @@ export default function Quizzes() {
         <PageTitle onBack={() => setActive(null)} backLabel="All quizzes">
           {active.title}
         </PageTitle>
-        <QuizRunner
-          quiz={active}
-          onSubmit={(answers) => submitQuiz(active, answers)}
-        />
+        <ResumableQuiz quiz={active} onSubmit={submitQuiz} />
       </div>
     )
   }
@@ -152,5 +150,23 @@ export default function Quizzes() {
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * One quiz, with its place kept.
+ *
+ * Split out because the attempt is keyed by quiz id: mounting it only once a
+ * quiz is open keeps the hook unconditional and starts a clean run per quiz.
+ */
+function ResumableQuiz({ quiz, onSubmit }) {
+  const attempt = useAttempt('quiz', quiz.id)
+  if (attempt.loading) return <div className="skeleton h-40 rounded-2xl" />
+  return (
+    <QuizRunner
+      quiz={quiz}
+      attempt={attempt}
+      onSubmit={(answers) => onSubmit(quiz, answers)}
+    />
   )
 }

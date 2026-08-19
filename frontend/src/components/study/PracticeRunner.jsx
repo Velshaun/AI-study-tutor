@@ -40,8 +40,13 @@ export default function PracticeRunner({
   onFlag,
   onGotIt,
   onComplete,
+  attempt,
 }) {
-  const [index, setIndex] = useState(0)
+  // Answers are already recorded server-side as each is submitted, so only the
+  // learner's place in the set needs keeping.
+  const [index, setIndex] = useState(() =>
+    Math.min(attempt?.restored?.position ?? 0, Math.max(0, questions.length - 1)),
+  )
   const [selected, setSelected] = useState(null) // chosen label, e.g. 'B'
   const [revealed, setRevealed] = useState(null) // AnswerResult once submitted
   const [submitting, setSubmitting] = useState(false)
@@ -77,8 +82,14 @@ export default function PracticeRunner({
     setError(null)
     // Stepping past the last written question is fine while the set is still
     // being written — the run parks on a waiting card until the next lands.
-    if (index < questions.length - 1 || awaitingMore) setIndex((i) => i + 1)
-    else onComplete?.()
+    if (index < questions.length - 1 || awaitingMore) {
+      const to = index + 1
+      setIndex(to)
+      attempt?.save?.({ position: to, completed: to >= questions.length })
+    } else {
+      attempt?.save?.({ position: questions.length, completed: true })
+      onComplete?.()
+    }
   }
 
   function flagForReview() {

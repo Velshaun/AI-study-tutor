@@ -24,11 +24,18 @@ import TermText from './TermText'
 
 const SWIPE_THRESHOLD = 100
 
-export default function FlashcardDeck({ cards, onFavourite, onDelete, onRestart }) {
-  const [index, setIndex] = useState(0)
+export default function FlashcardDeck({
+  cards, onFavourite, onDelete, onRestart, attempt,
+}) {
+  // Saved progress, read once: a deck reopened mid-way carries on rather than
+  // starting over.
+  const saved = attempt?.restored
+  const [index, setIndex] = useState(() =>
+    Math.min(saved?.position ?? 0, cards.length),
+  )
   const [flipped, setFlipped] = useState(false)
   const [direction, setDirection] = useState(0)
-  const [known, setKnown] = useState(0)
+  const [known, setKnown] = useState(() => saved?.state?.known ?? 0)
   const [openTerm, setOpenTerm] = useState(null)
 
   const current = cards[index]
@@ -49,6 +56,13 @@ export default function FlashcardDeck({ cards, onFavourite, onDelete, onRestart 
   function advance(dir, countKnown) {
     setDirection(dir)
     if (countKnown) setKnown((k) => k + 1)
+    const position = index + 1
+    attempt?.save?.({
+      position,
+      state: { known: known + (countKnown ? 1 : 0) },
+      // Reaching the end finishes the run, so it stops being resumable.
+      completed: position >= cards.length,
+    })
     // Let the exit animation play, then move on.
     setTimeout(() => {
       setFlipped(false)
@@ -66,6 +80,8 @@ export default function FlashcardDeck({ cards, onFavourite, onDelete, onRestart 
     setIndex(0)
     setFlipped(false)
     setKnown(0)
+    // Studying again starts a fresh run rather than resuming the finished one.
+    attempt?.clear?.()
     onRestart?.()
   }
 

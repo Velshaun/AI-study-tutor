@@ -5,6 +5,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 
 import PageTitle from '../components/PageTitle'
 import PracticeRunner from '../components/study/PracticeRunner'
+import { useAttempt } from '../hooks/useAttempt'
 import { useToast } from '../hooks/useToast'
 import { ApiError, api } from '../lib/api'
 import { path } from '../routes'
@@ -26,6 +27,9 @@ export default function PracticeMode() {
   const queryClient = useQueryClient()
   const toast = useToast()
 
+  // A practice set is keyed by its domain; answers are already recorded
+  // server-side, so this only keeps the learner's place.
+  const attempt = useAttempt('practice', domainId)
   const [done, setDone] = useState(false)
   const [flagged, setFlagged] = useState(0)
 
@@ -103,6 +107,7 @@ export default function PracticeMode() {
           flagged={flagged}
           onReview={() => navigate(path('reviewLater', { domainId }))}
           onAgain={() => {
+            attempt.clear()
             setDone(false)
             setFlagged(0)
           }}
@@ -110,6 +115,7 @@ export default function PracticeMode() {
       ) : (
         <PracticeRunner
           questions={questions}
+          attempt={attempt}
           total={target}
           awaitingMore={generating}
           mode="practice"

@@ -7,6 +7,7 @@ import ErrorBanner from '../components/ErrorBanner'
 import PageTitle from '../components/PageTitle'
 import QuizRunner from '../components/study/QuizRunner'
 import Toggle from '../components/Toggle'
+import { useAttempt } from '../hooks/useAttempt'
 import { useToast } from '../hooks/useToast'
 import { ApiError, api } from '../lib/api'
 
@@ -156,8 +157,8 @@ export default function PracticeExam() {
         >
           {exam.title}
         </PageTitle>
-        <QuizRunner
-          quiz={exam}
+        <ResumableExam
+          exam={exam}
           onSubmit={submitExam}
           onRestart={() => setExam(null)}
         />
@@ -399,5 +400,19 @@ function Choice({ active, onClick, children }) {
     >
       {children}
     </button>
+  )
+}
+
+/** A freshly generated exam, with its place kept if the learner steps away. */
+function ResumableExam({ exam, onSubmit, onRestart }) {
+  const attempt = useAttempt('exam', exam.id)
+  if (attempt.loading) return <div className="skeleton h-40 rounded-2xl" />
+  return (
+    <QuizRunner
+      quiz={exam}
+      attempt={attempt}
+      onSubmit={onSubmit}
+      onRestart={onRestart}
+    />
   )
 }

@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.routers import (
+    attempts,
     auth,
     export,
     favourites,
@@ -98,6 +99,7 @@ app.include_router(flashcards.router)
 app.include_router(quizzes.router)
 app.include_router(practice_exam.router)
 app.include_router(practice_mode.router)
+app.include_router(attempts.router)
 app.include_router(groups.router)
 app.include_router(favourites.router)
 app.include_router(export.router)

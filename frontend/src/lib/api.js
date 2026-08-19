@@ -260,6 +260,17 @@ export const api = {
     apiFetch(`/practice-exam/imported/${batchId}`, { method: 'DELETE' }),
   generateExam: (body) =>
     apiFetch('/practice-exam/generate', { method: 'POST', body }),
+  // Saved progress through a quiz, exam, practice set or deck. `itemType` is
+  // 'quiz' | 'exam' | 'practice' | 'flashcards'; `itemId` is the quiz/exam id
+  // or, for a set or deck, the domain's.
+  attempt: (itemType, itemId, signal) =>
+    apiFetch(`/attempts/${itemType}/${itemId}`, { signal }),
+  saveAttempt: (itemType, itemId, body) =>
+    apiFetch(`/attempts/${itemType}/${itemId}`, { method: 'PUT', body }),
+  clearAttempt: (itemType, itemId) =>
+    apiFetch(`/attempts/${itemType}/${itemId}`, { method: 'DELETE' }),
+  openAttempts: (signal) => apiFetch('/attempts/open', { signal }),
+
   // One stored exam with its questions — generated or imported, same shape.
   exam: (examId, signal) => apiFetch(`/practice-exam/${examId}`, { signal }),
   deleteExam: (examId) => apiFetch(`/practice-exam/${examId}`, { method: 'DELETE' }),

@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 
 import PageTitle from '../components/PageTitle'
 import QuizRunner from '../components/study/QuizRunner'
+import { useAttempt } from '../hooks/useAttempt'
 import { useToast } from '../hooks/useToast'
 import { ApiError, api } from '../lib/api'
 
@@ -18,6 +19,7 @@ export default function ExamRun() {
   const navigate = useNavigate()
   const toast = useToast()
 
+  const attempt = useAttempt('exam', examId)
   const { data: exam, isPending, error } = useQuery({
     queryKey: ['exam', examId],
     queryFn: ({ signal }) => api.exam(examId, signal),
@@ -29,7 +31,9 @@ export default function ExamRun() {
     return result
   }
 
-  if (isPending) {
+  // Waiting for the saved position too, so the run opens where it left off
+  // rather than at question one and then jumping.
+  if (isPending || attempt.loading) {
     return (
       <div className="space-y-4 p-1">
         <div className="skeleton h-7 w-48" />
@@ -62,7 +66,12 @@ export default function ExamRun() {
       >
         {exam.title}
       </PageTitle>
-      <QuizRunner quiz={exam} onSubmit={submit} onRestart={() => navigate(-1)} />
+      <QuizRunner
+        quiz={exam}
+        attempt={attempt}
+        onSubmit={submit}
+        onRestart={() => navigate(-1)}
+      />
     </div>
   )
 }
