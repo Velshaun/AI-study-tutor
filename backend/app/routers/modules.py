@@ -582,7 +582,11 @@ async def studio_media(
             created_at=l.get("created_at"),
         )
         for l in lecture_rows
-        if l.get("status") == "ready"
+        # A lecture still being written or narrated belongs here — the learner
+        # asked for it and wants to see it coming. The tile renders it as
+        # in-progress and refuses the tap; hiding it instead is what made
+        # "where did my lecture go?" a reasonable question.
+        if l.get("status") in ("ready", "pending", "generating_text", "generating_audio")
     ]
 
     quiz_rows = (

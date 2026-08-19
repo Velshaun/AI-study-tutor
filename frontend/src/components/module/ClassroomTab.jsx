@@ -22,6 +22,7 @@ import { usePlayer } from '../../hooks/usePlayer'
 import { useToast } from '../../hooks/useToast'
 import { api } from '../../lib/api'
 import { formatClock } from '../../lib/format'
+import * as lectures from '../../lib/lectures'
 import { path } from '../../routes'
 
 /**
@@ -48,6 +49,9 @@ function share(total, index, domainCount) {
   return Math.max(1, base + (index < remainder ? 1 : 0))
 }
 
+// How often to re-ask while a lecture is still being written or narrated.
+const GENERATING_POLL_MS = 4000
+
 const GENERATORS = {
   lecture: {
     Icon: Mic,
@@ -55,7 +59,7 @@ const GENERATORS = {
     async run(domains, values) {
       let first = null
       for (const domain of domains) {
-        if (domain.lecture_id) {
+        if (domain.lecture_id && lectures.isReady(domain.lecture_status)) {
           first = first || domain.lecture_id
           continue
         }
@@ -66,7 +70,12 @@ const GENERATORS = {
         })
         first = first || lecture?.id
       }
-      return first ? path('lecture', { id: first }) : null
+      if (!first) return null
+      // Generation answers as soon as the row exists, so the destination isn't
+      // openable yet. Wait for it, or the completion toast hands the learner a
+      // button onto an empty player.
+      const final = await lectures.waitForLecture(first)
+      return lectures.isReady(final.status) ? path('lecture', { id: first }) : null
     },
   },
   flashcards: {
@@ -209,6 +218,14 @@ function GeneratedMedia({ moduleId }) {
   const { data, isPending } = useQuery({
     queryKey: ['studio', moduleId],
     queryFn: ({ signal }) => api.studioMedia(moduleId, signal),
+    // Something being built is listed here while it builds, so the list has to
+    // keep asking until it stops being a spinner. It stops polling the moment
+    // nothing is in progress.
+    refetchInterval: (query) =>
+      (query.state.data?.lectures || []).some((l) => lectures.isGenerating(l.status))
+        ? GENERATING_POLL_MS
+        : false,
+    refetchIntervalInBackground: false,
   })
 
   /**
@@ -290,11 +307,19 @@ function GeneratedMedia({ moduleId }) {
                 <MediaRow
                   Icon={Mic}
                   title={l.title}
-                  subtitle={scope([
-                    l.domain_title,
-                    l.duration_secs ? formatClock(l.duration_secs) : 'Audio',
-                    when(l.created_at),
-                  ])}
+                  // A lecture still being built has no duration and nothing to
+                  // play, so it says what stage it's at instead — and the row
+                  // refuses the tap rather than opening an empty player.
+                  pending={lectures.isGenerating(l.status)}
+                  subtitle={
+                    lectures.isGenerating(l.status)
+                      ? scope([l.domain_title, lectures.generatingLabel(l.status)])
+                      : scope([
+                          l.domain_title,
+                          l.duration_secs ? formatClock(l.duration_secs) : 'Audio',
+                          when(l.created_at),
+                        ])
+                  }
                   onOpen={() => navigate(path('lecture', { id: l.id }))}
                   action="play"
                 />
@@ -435,20 +460,39 @@ function when(iso) {
   return `Generated ${then.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`
 }
 
-function MediaRow({ Icon, title, subtitle, onOpen, action = 'open' }) {
+/**
+ * One piece of generated media.
+ *
+ * `pending` is the whole reason this takes a flag rather than always being a
+ * link: media appears here the moment it is asked for, and something still
+ * being built must be visible without being openable.
+ */
+function MediaRow({ Icon, title, subtitle, onOpen, action = 'open', pending = false }) {
   return (
     <button
       onClick={onOpen}
-      className="card-interactive flex w-full items-center gap-3 text-left"
+      disabled={pending}
+      aria-busy={pending}
+      className={`flex w-full items-center gap-3 text-left ${
+        pending
+          ? 'card cursor-default opacity-70'
+          : 'card-interactive'
+      }`}
     >
       <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-accent/10 text-accent2">
-        <Icon size={18} aria-hidden="true" />
+        {pending ? (
+          <Loader2 size={18} className="animate-spin" aria-hidden="true" />
+        ) : (
+          <Icon size={18} aria-hidden="true" />
+        )}
       </span>
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-pri">{title}</p>
         <p className="truncate text-xs text-sec">{subtitle}</p>
       </div>
-      {action === 'play' ? (
+      {pending ? (
+        <span className="shrink-0 text-xs font-medium text-accent2">Generating…</span>
+      ) : action === 'play' ? (
         <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-accent text-white">
           <Play size={16} className="ml-0.5" aria-hidden="true" />
         </span>

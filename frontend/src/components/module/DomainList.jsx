@@ -16,6 +16,7 @@ import { Link, useNavigate } from 'react-router-dom'
 
 import { api } from '../../lib/api'
 import { domainPillClass, formatClock } from '../../lib/format'
+import * as lectures from '../../lib/lectures'
 import { usePreferences } from '../../hooks/usePreferences'
 import { useToast } from '../../hooks/useToast'
 import { path } from '../../routes'
@@ -250,9 +251,13 @@ function StudyTile({ domain, cfg }) {
 }
 
 /**
- * The lecture action. An existing lecture opens straight away (the player
+ * The lecture action. A finished lecture opens straight away (the player
  * resumes from the saved position); otherwise it builds in the background and a
  * toast announces it. Labelled "Resume" when playback is part-way through.
+ *
+ * A lecture being generated is neither: the row exists and so does its id, but
+ * there is no audio behind it. It used to open anyway — an empty player and an
+ * error — so the tile now stays put and says what stage it's at instead.
  */
 function LectureTile({ domain, progress }) {
   const navigate = useNavigate()
@@ -261,11 +266,20 @@ function LectureTile({ domain, progress }) {
   const [busy, setBusy] = useState(false)
 
   const resuming = Boolean(progress && !progress.done)
+  // `lecture_id` alone proves nothing — generation writes the row up front.
+  const ready = Boolean(domain.lecture_id) && lectures.isReady(domain.lecture_status)
+  const building = busy || lectures.isGenerating(domain.lecture_status)
+  const label = building
+    ? busy
+      ? 'Generating lecture…'
+      : lectures.generatingLabel(domain.lecture_status)
+    : resuming
+      ? 'Resume'
+      : 'Lecture'
 
   async function run() {
-    if (busy) return
-    // Existing lecture → open/resume immediately.
-    if (domain.lecture_id) {
+    if (building) return
+    if (ready) {
       navigate(path('lecture', { id: domain.lecture_id }))
       return
     }
@@ -276,11 +290,24 @@ function LectureTile({ domain, progress }) {
         voice: preferences.tutor_voice,
         length: preferences.lecture_length,
       })
-      if (lecture?.id) {
-        const open = () => navigate(path('lecture', { id: lecture.id }))
+      if (!lecture?.id) return
+      // Wait for it to actually become playable before offering to open it.
+      // The endpoint answers the moment the row exists, so announcing then
+      // handed the learner a button onto an empty player.
+      const final = await lectures.waitForLecture(lecture.id)
+      if (lectures.isReady(final.status)) {
         toast.success('Your lecture is ready', {
-          action: { label: 'Open', onClick: open },
+          action: {
+            label: 'Open',
+            onClick: () => navigate(path('lecture', { id: lecture.id })),
+          },
         })
+      } else if (final.status === lectures.FAILED) {
+        toast.error(final.error_message || 'That lecture couldn’t be built', {
+          action: { label: 'Retry', onClick: run },
+        })
+      } else {
+        toast.error('Your lecture is taking longer than expected — check back shortly')
       }
     } catch (e) {
       toast.error(e?.message || 'Couldn’t build the lecture', {
@@ -294,21 +321,24 @@ function LectureTile({ domain, progress }) {
   return (
     <button
       onClick={run}
-      disabled={busy}
+      disabled={building}
+      aria-busy={building}
       className={`${PILL} ${
-        resuming
-          ? 'bg-accent/15 text-accent2 hover:text-accent'
-          : 'bg-surface2 text-sec hover:text-pri'
+        building
+          ? 'bg-surface2 text-sec disabled:opacity-100'
+          : resuming
+            ? 'bg-accent/15 text-accent2 hover:text-accent'
+            : 'bg-surface2 text-sec hover:text-pri'
       }`}
     >
-      {busy ? (
+      {building ? (
         <Loader2 size={14} className="animate-spin text-accent" aria-hidden="true" />
       ) : resuming ? (
         <Play size={14} aria-hidden="true" />
       ) : (
         <BookOpen size={14} aria-hidden="true" />
       )}
-      {busy ? 'Generating lecture…' : resuming ? 'Resume' : 'Lecture'}
+      {label}
     </button>
   )
 }

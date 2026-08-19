@@ -377,6 +377,37 @@ async def lecture_detail(
     return lecture
 
 
+class LectureStatus(BaseModel):
+    """Just enough to know whether a lecture can be opened yet."""
+
+    id: str
+    status: str = "pending"
+    error_message: str | None = None
+    chunk_count: int = 0
+
+
+@router.get("/{lecture_id}/status", response_model=LectureStatus)
+async def lecture_status(
+    lecture_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> LectureStatus:
+    """Whether a lecture is ready, without paying for the transcript.
+
+    Generation returns a row before there is anything to play, so callers that
+    just offered someone an "Open" button need to know when that button starts
+    telling the truth. ``/detail`` would answer it too, but it ships the whole
+    transcript and signs every audio URL — a poll's worth of work, several
+    times a minute, for one word.
+    """
+    row = _own_lecture(lecture_id, user.id)
+    return LectureStatus(
+        id=row["id"],
+        status=row.get("status") or "pending",
+        error_message=row.get("error_message"),
+        chunk_count=len(row.get("audio_chunks") or []),
+    )
+
+
 @router.get("/{lecture_id}/audio", response_model=list[AudioChunk])
 async def lecture_audio(
     lecture_id: str,

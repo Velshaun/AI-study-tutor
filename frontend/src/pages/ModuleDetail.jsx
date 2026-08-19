@@ -13,7 +13,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import Modal from '../components/Modal'
 import AddSourceSheet from '../components/module/AddSourceSheet'
@@ -42,12 +42,20 @@ import { ROUTES } from '../routes'
 
 const PROCESSING = ['processing', 'parsing', 'analysing', 'queued']
 
+const TABS = ['sources', 'chat', 'classroom']
+
 export default function ModuleDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const toast = useToast()
   const queryClient = useQueryClient()
-  const [tab, setTab] = useState('sources') // 'sources' | 'chat' | 'classroom'
+  // ?tab= lets another screen land on the right tab — the lecture player sends
+  // an unopenable lecture back to Classroom, where its tile is.
+  const [search] = useSearchParams()
+  const requested = search.get('tab')
+  const [tab, setTab] = useState(() =>
+    TABS.includes(requested) ? requested : 'sources',
+  )
   const [showAdd, setShowAdd] = useState(false)
   const [showCsv, setShowCsv] = useState(false)
 

@@ -265,6 +265,10 @@ export const api = {
     apiFetch(`/lectures/${domainId}`, { signal }),
   generateLecture: (body) =>
     apiFetch('/lectures/generate', { method: 'POST', body }),
+  // Is it playable yet? Generation returns a row long before there is audio in
+  // it, so anything offering to open a lecture polls this first.
+  lectureStatus: (lectureId, signal) =>
+    apiFetch(`/lectures/${lectureId}/status`, { signal }),
 
   // Export (authenticated file downloads)
   exportModuleJson: (moduleId, filename) =>

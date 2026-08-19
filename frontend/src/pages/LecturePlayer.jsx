@@ -6,7 +6,9 @@ import PlayerControls from '../components/player/PlayerControls'
 import TranscriptView from '../components/player/TranscriptView'
 import VoiceInput from '../components/player/VoiceInput'
 import Visualizer from '../components/player/Visualizer'
+import { useToast } from '../hooks/useToast'
 import { usePlayer } from '../hooks/usePlayer'
+import { ROUTES, path } from '../routes'
 
 /**
  * Full-screen lecture player — spec §5.5.
@@ -18,7 +20,8 @@ import { usePlayer } from '../hooks/usePlayer'
 export default function LecturePlayer() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { lecture, loading, error, open, position } = usePlayer()
+  const toast = useToast()
+  const { lecture, loading, error, playbackError, open, position } = usePlayer()
   const [view, setView] = useState('visualizer')
 
   // Only load when this is a different lecture — re-opening the one already
@@ -26,6 +29,22 @@ export default function LecturePlayer() {
   useEffect(() => {
     if (id && lecture?.id !== id) open(id)
   }, [id, lecture?.id, open])
+
+  // A lecture that can't be opened — still generating, or with no audio —
+  // leaves nothing to play, scrub or read. Reached by URL (or by a tile that
+  // shouldn't have been tappable), the old behaviour was a dead-end error
+  // screen; going back to where the lecture lives is the only useful move.
+  const unopenable = Boolean(error) && !loading
+  useEffect(() => {
+    if (!unopenable) return
+    toast.error(error)
+    navigate(
+      lecture?.module_id
+        ? `${path('module', { id: lecture.module_id })}?tab=classroom`
+        : ROUTES.dashboard,
+      { replace: true },
+    )
+  }, [unopenable, error, lecture?.module_id, navigate, toast])
 
   const tutor = lecture?.tutor_voice === 'sophia' ? 'Sophia' : 'Marcus'
 
@@ -54,6 +73,7 @@ export default function LecturePlayer() {
       {/* Stage */}
       <main className="flex min-h-0 flex-1 flex-col px-5 py-6">
         {error ? (
+          // Shown for the instant before the redirect above takes effect.
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
             <AlertCircle size={28} className="text-warning" aria-hidden="true" />
             <p className="max-w-xs text-sm text-sec">{error}</p>
@@ -85,6 +105,15 @@ export default function LecturePlayer() {
       {/* Controls bar */}
       <div className="border-t border-border bg-surface px-5 py-5 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
         <div className="mx-auto max-w-md">
+          {/* A lecture that loaded but wouldn't start still has a transcript
+              worth reading, so this says what happened without taking the
+              screen away. */}
+          {playbackError && (
+            <p className="mb-4 flex items-start gap-2 rounded-xl bg-warning/10 px-3 py-2 text-xs text-warning">
+              <AlertCircle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+              {playbackError}
+            </p>
+          )}
           <PlayerControls
             view={view}
             onToggleView={() =>

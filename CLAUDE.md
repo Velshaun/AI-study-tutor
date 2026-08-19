@@ -110,6 +110,20 @@ that swallowed every later tap and made the app look frozen. A dismissal that
 always works beats a fade on the way out. This applies to `Modal.jsx` and
 `TermSheet.jsx`.
 
+**A lecture id is not a lecture.** Generation writes the row first —
+`pending`, `generating_text`, `generating_audio` — so `domain.lecture_id`
+existing said nothing about whether there was audio behind it. Tiles opened an
+empty player and the completion toast fired over a row still being written.
+Status is now the gate everywhere (`lib/lectures.js`), the tile shows which
+stage it's at instead of accepting the tap, and anything offering to *open* a
+lecture waits on `GET /lectures/{id}/status` first.
+
+**The player's `error` means "can't be opened", never "audio hiccup".** They
+were one field, and the screen redirects on the first — so a dropped connection
+mid-lecture would have read as "this lecture doesn't exist" and bounced the
+learner out of it. A media error now sets `playbackError`, which shows as a
+strip above the controls and leaves the transcript where it is.
+
 **Generation outlives the screen that started it.** `GenerationProvider` sits in
 `RootLayout` (inside the router, above every route), so navigating away doesn't
 stop a job. Tiles show "Generating…" whenever the learner returns; completion
@@ -157,6 +171,10 @@ Bugs the first layer could not have caught, and the later ones did:
 - `AnimatePresence` leaving an invisible tap-swallowing overlay.
 - A unique index on `(module_id, order_index)` the mocked client didn't model.
 - A multi-image OCR prompt saying "this image", so only the first frame was read.
+- `loadChunk` reading `chunks` from state in the same tick `setChunks` was
+  called, so a freshly opened lecture never got a `src`. Every visible symptom
+  pointed elsewhere — the transcript scrubbed, the button flipped to "pause" —
+  because all of that runs off state the audio element was never part of.
 
 ---
 

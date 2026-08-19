@@ -68,6 +68,10 @@ export function PlayerProvider({ children }) {
   const [speed, setSpeed] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  // Kept apart from `error`: a lecture that loaded but wouldn't start is still a
+  // lecture worth showing the transcript of, so this surfaces as a strip rather
+  // than replacing the screen.
+  const [playbackError, setPlaybackError] = useState(null)
   const [minimised, setMinimised] = useState(false)
 
   // One <audio> element for the whole session, held in a ref.
@@ -177,32 +181,65 @@ export function PlayerProvider({ children }) {
     [lectureId],
   )
 
-  /** Point the element at a chunk and optionally seek within it. */
+  /** Start the element, saying why it didn't rather than swallowing the reason.
+   *
+   *  A rejected play() used to be discarded, which is how a player with no
+   *  source at all still looked like a working player: the button flicked back
+   *  to "play" and nothing else ever said a word. */
+  const startPlayback = useCallback((audio) => {
+    audioCtxRef.current?.resume?.()
+    const attempt = audio.play()
+    if (!attempt?.then) return
+    attempt.then(
+      () => setPlaybackError(null),
+      (err) => {
+        setPlaying(false)
+        // Routine: the src changed (a seek across a chunk boundary) before this
+        // play() settled. The new load starts its own playback.
+        if (err?.name === 'AbortError') return
+        setPlaybackError(
+          err?.name === 'NotAllowedError'
+            ? 'Your browser blocked playback. Tap play to start the audio.'
+            : 'That audio could not be played. Try again in a moment.',
+        )
+      },
+    )
+  }, [])
+
+  /** Point the element at a chunk and optionally seek within it.
+   *
+   *  `list` exists because the chunks usually arrive in the same tick that this
+   *  is called from: `open` sets them with setChunks and calls straight through,
+   *  so the `chunks` this closure captured is still the *previous* render's —
+   *  empty, on a first open. Reading it there found no chunk, returned early and
+   *  left the element with no src at all, which is why a freshly opened lecture
+   *  played nothing while the transcript still scrubbed happily. Callers that
+   *  have the list to hand pass it; everyone else gets state, which by then is
+   *  correct. */
   const loadChunk = useCallback(
-    (index, offset = 0, autoplay = false) => {
+    (index, offset = 0, autoplay = false, list = null) => {
       const audio = audioRef.current
-      const chunk = chunks[index]
+      const chunk = (list || chunks)[index]
       if (!audio || !chunk?.url) return
 
       if (autoplay) playIntentRef.current = true
       setChunkIndex(index)
+      setPlaybackError(null)
       audio.src = chunk.url
       audio.playbackRate = speed
-      audio.currentTime = 0
 
       const start = () => {
         if (offset > 0) audio.currentTime = Math.min(offset, audio.duration || offset)
         // Only start if playback is still intended — a pause may have landed
         // while this chunk was loading.
-        if (autoplay && playIntentRef.current) {
-          audioCtxRef.current?.resume?.()
-          audio.play().catch(() => setPlaying(false))
-        }
+        if (autoplay && playIntentRef.current) startPlayback(audio)
       }
+      // A fresh src resets readyState to 0, so this almost always waits for the
+      // element to report what it loaded before seeking into it.
       if (audio.readyState >= 1) start()
       else audio.addEventListener('loadedmetadata', start, { once: true })
     },
-    [chunks, speed],
+    [chunks, speed, startPlayback],
   )
 
   /** Load a lecture by id and restore its saved position. */
@@ -210,6 +247,7 @@ export function PlayerProvider({ children }) {
     async (lectureId, { autoplay = false } = {}) => {
       setLoading(true)
       setError(null)
+      setPlaybackError(null)
       try {
         const detail = await apiFetch(`/lectures/${lectureId}/detail`)
         const list = (detail?.audio_chunks || []).filter((c) => c.url)
@@ -231,7 +269,7 @@ export function PlayerProvider({ children }) {
         const startAt = detail?.last_position_secs || 0
         setPosition(startAt)
         const { index, offset } = locateChunk(startAt, list)
-        loadChunk(index, offset, autoplay)
+        loadChunk(index, offset, autoplay, list)
       } catch (err) {
         setError(err?.message || 'Could not load this lecture.')
       } finally {
@@ -250,13 +288,14 @@ export function PlayerProvider({ children }) {
       setChunks(list)
       setDurations([])
       setError(list.length ? null : 'This lecture has no audio yet.')
+      setPlaybackError(null)
       setMinimised(false)
 
       const startAt = lectureRow?.last_position_secs || 0
       setPosition(startAt)
       if (list.length) {
         const { index, offset } = locateChunk(startAt, list)
-        loadChunk(index, offset, autoplay)
+        loadChunk(index, offset, autoplay, list)
       }
     },
     [loadChunk],
@@ -266,6 +305,18 @@ export function PlayerProvider({ children }) {
     const audio = audioRef.current
     if (!audio) return
     playIntentRef.current = true
+
+    // Nothing pointed at yet: load the chunk covering the current position and
+    // start there. play() on a sourceless element rejects, and the only sign of
+    // it used to be the button springing back — so if anything ever leaves the
+    // element unloaded again, this recovers inside the tap that noticed.
+    if (!audio.src && !audio.currentSrc) {
+      if (!chunks.length) return
+      const { index, offset } = locateChunk(position, chunks, durations)
+      loadChunk(index, offset, true, chunks)
+      return
+    }
+
     // Reanchor the timeline to the audio element's true position before playing.
     // After a voice-Q&A pause the element holds the exact resume point, so this
     // snaps the transcript highlight/scroll back to it rather than leaving
@@ -275,9 +326,8 @@ export function PlayerProvider({ children }) {
       setPosition(chunkStartTime(chunkIndex, chunks, durations) + audio.currentTime)
     }
     ensureAnalyser()
-    audioCtxRef.current?.resume?.()
-    audio.play().catch(() => setPlaying(false))
-  }, [ensureAnalyser, chunkIndex, chunks, durations])
+    startPlayback(audio)
+  }, [ensureAnalyser, startPlayback, loadChunk, chunkIndex, chunks, durations, position])
 
   const pause = useCallback(() => {
     // Drop the intent first, so any chunk still loading won't autoplay into a
@@ -422,7 +472,13 @@ export function PlayerProvider({ children }) {
       }
     }
 
-    const onError = () => setError('Audio failed to load.')
+    // A media error mid-lecture is a playback problem, not a reason to decide
+    // the lecture can't be opened — `error` is what the screen redirects on, so
+    // a dropped connection must not read as "this lecture doesn't exist".
+    const onError = () => {
+      setPlaying(false)
+      setPlaybackError('That audio failed to load. Check your connection, then tap play.')
+    }
 
     audio.addEventListener('play', onPlay)
     audio.addEventListener('pause', onPause)
@@ -545,7 +601,7 @@ export function PlayerProvider({ children }) {
   const value = useMemo(
     () => ({
       lecture, chunks, timeline, duration, position, playing, speed,
-      loading, error, minimised, chunkIndex,
+      loading, error, playbackError, minimised, chunkIndex,
       open, openWith, play, pause, toggle, seek, skip, changeSpeed, close,
       setMinimised,
       speak, stopSpeaking, primeAnswerAudio,
@@ -554,7 +610,7 @@ export function PlayerProvider({ children }) {
       SKIP_SECONDS,
     }),
     [lecture, chunks, timeline, duration, position, playing, speed, loading,
-     error, minimised, chunkIndex, open, openWith, play, pause, toggle, seek,
+     error, playbackError, minimised, chunkIndex, open, openWith, play, pause, toggle, seek,
      skip, changeSpeed, close, speak, stopSpeaking, primeAnswerAudio,
      ensureAnalyser],
   )
