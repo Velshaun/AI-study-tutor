@@ -1,17 +1,30 @@
-import { Check, Clock, RotateCcw, X } from 'lucide-react'
+import { Check, ChevronLeft, Clock, RotateCcw, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import { planExpansions } from '../../lib/terms'
+import QuestionNavigator from './QuestionNavigator'
 import TermSheet from './TermSheet'
 import TermText from './TermText'
 
 /**
  * Quiz runner — spec Prompt 6.6.
  *
- * One question at a time, four options. Selecting an option locks it in and
- * reveals immediate correct/incorrect feedback: the correct option is
- * highlighted whether or not it was chosen, and *every* option explains itself,
- * so a lucky guess still teaches the other three. A score screen closes the run.
+ * One question at a time, four options, with a Previous button and a navigator
+ * strip so a learner can move around the paper rather than only forwards.
+ *
+ * Answering and being shown the answer are separate things here, and keeping
+ * them separate is what makes moving around coherent:
+ *
+ *  - A **quiz** carries its answer key, so choosing an option reveals the
+ *    correct one immediately and every option explains itself — a lucky guess
+ *    still teaches the other three. That answer then stands: changing it after
+ *    being told the right one would make the score, which feeds this module's
+ *    domain strength, a number the learner had dictated.
+ *  - An **exam** is sent without its key and says nothing until the paper is
+ *    handed in, exactly as the real sitting does. Every answer stays editable
+ *    until then, and the summary explains the lot.
+ *
+ * A score screen closes the run — or whatever `renderResult` supplies.
  *
  * When the exam carries a duration the run is timed: a countdown sits above the
  * progress bar and, at zero, the paper is submitted as it stands — the same
@@ -25,13 +38,10 @@ import TermText from './TermText'
  * mid-run and coming back reopens the same question with the same answers, and
  * a timed exam resumes with the clock where it was rather than reset.
  *
- * The correct answers ship with a *quiz* (it's a study quiz, not a proctored
- * exam), so feedback there is instant with no round-trip. An exam withholds
- * them: its first sitting can become the baseline everything later is measured
- * against, and a score that can be raised by reading the network response is
- * not a measurement. Where the caller passes `onAnswer`, each question's answer
- * is fetched as it is answered — one read, no model call. Either way the full
- * set is submitted at the end for an authoritative, recorded score.
+ * A caller that wants an exam to reveal as it goes can pass `onAnswer`, which
+ * fetches one question's answer at a time; doing so also fixes that answer, by
+ * the rule above. Either way the full set is submitted at the end for an
+ * authoritative, server-side score.
  */
 
 /** mm:ss for a countdown. */
@@ -57,9 +67,6 @@ export default function QuizRunner({
     const previous = saved?.answers || []
     return blank.map((_, i) => (previous[i] === undefined ? null : previous[i]))
   })
-  const [locked, setLocked] = useState(
-    () => (saved?.answers?.[saved?.position ?? 0] ?? null) != null,
-  )
   const [finished, setFinished] = useState(false)
   const [result, setResult] = useState(null)
   // A resumed exam keeps the clock it had; a fresh one starts at full length.
@@ -72,9 +79,14 @@ export default function QuizRunner({
   const [timedOut, setTimedOut] = useState(false)
   const [openTerm, setOpenTerm] = useState(null)
   // Answers revealed so far, by question index — only used where the paper
-  // arrived without them. A resumed exam starts empty: a question answered
-  // before the tab was closed keeps its choice, and re-reveals when reopened.
+  // arrived without them and the caller asked for per-question reveals.
   const [revealed, setRevealed] = useState({})
+  // Which questions have been looked at, so the navigator can tell "not been
+  // there yet" from "been and left it blank". Seeded with wherever the run
+  // opens, which on a resumed paper is not question one.
+  const [visited, setVisited] = useState(
+    () => new Set([Math.min(saved?.position ?? 0, Math.max(0, questions.length - 1))]),
+  )
 
   // The countdown works from a fixed deadline rather than by decrementing, so a
   // backgrounded tab (where timers are throttled) still comes back honest.
@@ -106,9 +118,22 @@ export default function QuizRunner({
   const answer = carried ? q : revealed[index] || {}
   const correctIndex = answer.correct_index ?? null
   const explanation = answer.explanation || ''
-  // Undefined until it arrives, so the options can stay neutral rather than
-  // flashing the chosen one as wrong for the length of a round trip.
-  const awaitingReveal = locked && !carried && correctIndex == null && !answer.failed
+
+  const answered = chosen != null
+  // Answered and *shown the answer* are different things, and separating them
+  // is what makes going back coherent.
+  //
+  // A quiz carries its key, so answering reveals immediately — that is the
+  // point of a study quiz. An exam withholds it and says nothing until the
+  // paper is handed in, which is how the real sitting works and, more to the
+  // point, is the only way "change your answer before you submit" can mean
+  // anything: being able to revise an answer after being told the right one
+  // would make a pre-assessment baseline a number the learner had dictated.
+  const isRevealed = carried ? answered : revealed[index] !== undefined
+  // So: an answer stands until its answer has been shown, and can be changed
+  // freely until then.
+  const canChange = !isRevealed
+  const showState = isRevealed && correctIndex != null
 
   async function finish(answerList, { expired = false } = {}) {
     if (submittingRef.current) return
@@ -141,13 +166,13 @@ export default function QuizRunner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [durationMinutes, finished])
 
-  // Fetch the answer for a locked question the paper didn't carry one for.
+  // Fetch the answer for an answered question the paper didn't carry one for.
   //
   // Keyed on the question rather than fired from the tap, so it covers every
   // way of arriving at an answered question: choosing an option, stepping back
   // to one, and resuming a run that was left half-finished.
   useEffect(() => {
-    if (!onAnswer || !locked || carried) return
+    if (!onAnswer || !answered || carried) return
     if (revealed[index] !== undefined || chosen == null) return
     if (revealingRef.current.has(index)) return
 
@@ -162,17 +187,24 @@ export default function QuizRunner({
         setRevealed((cur) => ({ ...cur, [asking]: { failed: true } })),
       )
       .finally(() => revealingRef.current.delete(asking))
-  }, [onAnswer, locked, carried, index, chosen, revealed])
+  }, [onAnswer, answered, carried, index, chosen, revealed])
 
   function choose(optionIndex) {
-    // A tap that opened a definition must not also lock in an answer.
-    if (locked || openTerm) return
+    // A tap that opened a definition must not also count as an answer.
+    if (!canChange || openTerm) return
     const next = [...answersRef.current]
     next[index] = optionIndex
     answersRef.current = next
     setAnswers(next)
-    setLocked(true)
     persist(index, next)
+  }
+
+  /** Move to a question. Every route between questions comes through here. */
+  function goTo(to) {
+    if (to < 0 || to >= questions.length || to === index) return
+    setIndex(to)
+    setVisited((seen) => new Set(seen).add(to))
+    persist(to, answersRef.current)
   }
 
   /** Save where the learner is, with the deadline a timed run has to keep. */
@@ -188,10 +220,7 @@ export default function QuizRunner({
 
   async function next() {
     if (index < questions.length - 1) {
-      const to = index + 1
-      setIndex(to)
-      setLocked(answers[to] != null)
-      persist(to, answersRef.current)
+      goTo(index + 1)
       return
     }
     await finish(answers)
@@ -201,7 +230,7 @@ export default function QuizRunner({
     setIndex(0)
     answersRef.current = questions.map(() => null)
     setAnswers(answersRef.current)
-    setLocked(false)
+    setVisited(new Set([0]))
     setFinished(false)
     setResult(null)
     setTimedOut(false)
@@ -298,9 +327,16 @@ export default function QuizRunner({
         <div className="h-1.5 overflow-hidden rounded-full bg-surface2">
           <div
             className="h-full rounded-full bg-accent transition-[width] duration-300"
-            style={{ width: `${((index + (locked ? 1 : 0)) / questions.length) * 100}%` }}
+            style={{ width: `${((index + (answered ? 1 : 0)) / questions.length) * 100}%` }}
           />
         </div>
+        <QuestionNavigator
+          count={questions.length}
+          index={index}
+          answers={answers}
+          visited={visited}
+          onJump={goTo}
+        />
       </div>
 
       {/* Keyed, so changing question remounts this and replays the entrance.
@@ -320,10 +356,7 @@ export default function QuizRunner({
             {q.options.map((option, i) => {
               const isChosen = chosen === i
               const isCorrect = correctIndex != null && i === correctIndex
-              // Hold the styling back until the answer is known, or a locked
-              // question would show every option — including the right one —
-              // as wrong while the reveal is in flight.
-              const showState = locked && !awaitingReveal
+
               const why = optionExplanations[i]
 
               let tone = 'border-border bg-surface hover:border-accent/50'
@@ -333,13 +366,21 @@ export default function QuizRunner({
                 tone = 'border-warning bg-warning/10'
               } else if (showState) {
                 tone = 'border-border bg-surface opacity-60'
+              } else if (isChosen) {
+                // Chosen, with nothing yet said about whether it's right. Every
+                // other branch here depends on the answer having been revealed,
+                // so without this an exam — which reveals nothing until the end
+                // — showed no sign of what you had picked, either as you picked
+                // it or when you came back to check.
+                tone = 'border-accent bg-accent/10'
               }
 
               return (
                 <button
                   key={i}
                   onClick={() => choose(i)}
-                  disabled={locked}
+                  disabled={!canChange}
+                  aria-pressed={isChosen}
                   className={`flex w-full flex-col gap-2 rounded-xl border px-4 py-3 text-left transition-colors ${tone}`}
                 >
                   <div className="flex items-center gap-3">
@@ -383,7 +424,7 @@ export default function QuizRunner({
           {/* The overall rationale, once answered. Mounted plainly: an
               animated `initial` that never advances would leave the
               explanation invisible, and an explanation is the point. */}
-          {locked && explanation && (
+          {isRevealed && explanation && (
             <div className="rounded-xl bg-surface2 px-4 py-3">
               <p className="mb-1 text-xs font-medium uppercase tracking-wider text-accent2">
                 {chosen === correctIndex ? 'Correct' : 'Explanation'}
@@ -393,9 +434,19 @@ export default function QuizRunner({
           )}
       </div>
 
-      <button onClick={next} disabled={!locked} className="btn-primary w-full">
-        {index < questions.length - 1 ? 'Next question' : 'Finish & score'}
-      </button>
+      <div className="flex gap-3">
+        <button
+          onClick={() => goTo(index - 1)}
+          disabled={index === 0}
+          className="btn-secondary min-h-11 shrink-0 px-4 disabled:opacity-40"
+        >
+          <ChevronLeft size={16} aria-hidden="true" />
+          Previous
+        </button>
+        <button onClick={next} disabled={!answered} className="btn-primary flex-1">
+          {index < questions.length - 1 ? 'Next question' : 'Finish & score'}
+        </button>
+      </div>
 
       <TermSheet term={openTerm} onClose={() => setOpenTerm(null)} />
     </div>

@@ -84,11 +84,11 @@ export default function ExamRun() {
         attempt={attempt}
         onSubmit={submit}
         onRestart={() => navigate(-1)}
-        // The paper arrived without its answers; this is how each one is
-        // revealed, as it is answered.
-        onAnswer={({ index, chosenIndex }) =>
-          api.answerExamQuestion(examId, index, chosenIndex)
-        }
+        // Deliberately no `onAnswer`: an exam says nothing until the paper is
+        // handed in. That is how the real sitting works, and it is what lets a
+        // learner go back and revise an answer — revising one after being shown
+        // the right answer would make a baseline a number they had dictated.
+        // Everything is explained in the summary, missed questions included.
         renderResult={({ result, questions }) => (
           <ExamSummary
             result={result}

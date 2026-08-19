@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Check, RotateCcw, Star, Trash2, X } from 'lucide-react'
+import { Check, ChevronLeft, RotateCcw, Star, Trash2, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { planExpansions } from '../../lib/terms'
@@ -35,7 +35,17 @@ export default function FlashcardDeck({
   )
   const [flipped, setFlipped] = useState(false)
   const [direction, setDirection] = useState(0)
-  const [known, setKnown] = useState(() => saved?.state?.known ?? 0)
+  // Which cards are marked known, by id rather than as a running total. Going
+  // back and re-deciding has to be able to *unmark* one, and a counter can only
+  // ever go up — a learner who marked a card known, stepped back and skipped it
+  // would otherwise leave it counted.
+  //
+  // A run saved before this change stored a plain number, which says how many
+  // without saying which. Those resume with an empty set: the count restarts
+  // rather than being wrong in a way nothing can correct.
+  const [known, setKnown] = useState(
+    () => new Set(Array.isArray(saved?.state?.known) ? saved.state.known : []),
+  )
   const [openTerm, setOpenTerm] = useState(null)
 
   const current = cards[index]
@@ -55,11 +65,15 @@ export default function FlashcardDeck({
 
   function advance(dir, countKnown) {
     setDirection(dir)
-    if (countKnown) setKnown((k) => k + 1)
+    const marked = new Set(known)
+    if (countKnown) marked.add(current.id)
+    else marked.delete(current.id)
+    setKnown(marked)
+
     const position = index + 1
     attempt?.save?.({
       position,
-      state: { known: known + (countKnown ? 1 : 0) },
+      state: { known: [...marked] },
       // Reaching the end finishes the run, so it stops being resumable.
       completed: position >= cards.length,
     })
@@ -76,10 +90,19 @@ export default function FlashcardDeck({
     else if (info.offset.x < -SWIPE_THRESHOLD) advance(-1, false) // left = skip
   }
 
+  /** Back one card. The mark it carries stays until it is re-decided. */
+  function back() {
+    if (index === 0) return
+    setDirection(-1)
+    setFlipped(false)
+    setIndex((i) => i - 1)
+    attempt?.save?.({ position: index - 1, state: { known: [...known] } })
+  }
+
   function restart() {
     setIndex(0)
     setFlipped(false)
-    setKnown(0)
+    setKnown(new Set())
     // Studying again starts a fresh run rather than resuming the finished one.
     attempt?.clear?.()
     onRestart?.()
@@ -94,8 +117,8 @@ export default function FlashcardDeck({
         <div className="space-y-1">
           <h2 className="text-lg font-semibold text-pri">Deck complete</h2>
           <p className="text-sm text-sec">
-            You marked <span className="text-pri">{known}</span> of {cards.length}{' '}
-            as known.
+            You marked <span className="text-pri">{known.size}</span> of{' '}
+            {cards.length} as known.
           </p>
         </div>
         <button onClick={restart} className="btn-primary">
@@ -114,7 +137,7 @@ export default function FlashcardDeck({
           <span>
             Card {index + 1} of {cards.length}
           </span>
-          <span>{known} known</span>
+          <span>{known.size} known</span>
         </div>
         <div className="h-1.5 overflow-hidden rounded-full bg-surface2">
           <div
@@ -213,8 +236,19 @@ export default function FlashcardDeck({
         </button>
       </div>
 
-      {/* Swipe controls (also work by dragging the card) */}
+      {/* Swipe controls (also work by dragging the card), plus a way back:
+          a deck is read, and a learner who has just skipped past something they
+          didn't take in needs to be able to return to it. */}
       <div className="flex items-center justify-center gap-4">
+        <button
+          onClick={back}
+          disabled={index === 0}
+          className="flex size-11 items-center justify-center rounded-full border border-border
+                     text-sec transition-colors hover:text-pri disabled:opacity-40"
+          aria-label="Previous card"
+        >
+          <ChevronLeft size={20} aria-hidden="true" />
+        </button>
         <button
           onClick={() => advance(-1, false)}
           className="flex size-14 items-center justify-center rounded-full border border-border

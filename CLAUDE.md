@@ -132,6 +132,16 @@ weights, same runner — `kind='pre_assessment'` and `adaptive=false`, because a
 baseline weighted towards weaknesses the app hasn't observed yet would be
 measuring nothing twice.
 
+**Answered and shown-the-answer are different states.** Collapsing them into
+one `locked` flag is what made back-navigation impossible to add coherently: an
+answer can only be revised while nobody has told you what the right one is. So
+a quiz, which carries its key and reveals on selection, fixes that answer —
+quiz scores feed domain strength, and a score you can correct after seeing the
+answer is one you dictated. An exam, whose key never leaves the server, says
+nothing until the paper is handed in and stays editable throughout, which is
+also how the real sitting behaves. `ExamRun` deliberately passes no `onAnswer`
+for that reason.
+
 **A quiz ships its answers; an exam withholds them.** They used to be the same
 payload. Instant local feedback is right for a study quiz — a learner who reads
 the response is only robbing themselves of practice. It is wrong for an exam
@@ -303,9 +313,17 @@ group_shared_domains, group_domain_views, coverage_maps, exam_attempts`
   a screen recording on a phone. Labelled honestly rather than promising it.
 - **`/practice/:moduleId`** (the standalone exam setup page) is now redundant:
   the Classroom's own Practice exams section generates and lists them. Delete it.
-- **No runner has a back control or a question navigator.** Stepping is
-  forward-only (`index + 1`), plus restart and resume-at-saved-position. Worth
-  knowing before promising to test either.
+- **`PracticeRunner` has no back control, deliberately.** It is a fifth runner
+  (practice mode, review later) and its answers are recorded as each is
+  submitted, so "revise before you submit" has nothing to attach to. Adding one
+  means deciding whether a revisited question can be re-answered and what that
+  does to what was already recorded. Not attempted.
+- **`POST /practice-exam/{id}/answer` has no consumer** now that exams defer
+  feedback. `QuizRunner` still supports the per-question reveal it feeds, so
+  the endpoint is the ready-made hook for a "check as you go" exam mode.
+- **A flashcard run saved before per-card marks resumes with 0 known.** The old
+  save stored a count, which says how many without saying which; the count
+  restarts rather than being wrong in a way nothing can correct.
 - **Four `AnimatePresence` users remain** — MiniPlayer, VoiceInput,
   QASessionCard, ToastProvider. None of them step; they mount and unmount
   transient panels. They were audited during the stepper sweep, not changed.
