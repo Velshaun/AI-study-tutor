@@ -500,6 +500,9 @@ class StudioLecture(BaseModel):
     # What the lecture is actually about, written when it was generated.
     # Falls back to the domain's own title for anything made before that.
     title: str = "Lecture"
+    # The domain this belongs to. Carried as an id, not just a title, because
+    # the Classroom groups by domain and a title is not a key.
+    domain_id: str | None = None
     domain_title: str | None = None
     duration_secs: int | None = None
     status: str | None = None
@@ -577,6 +580,7 @@ async def studio_media(
             title=(l.get("title") or "").strip()
             or title_of.get(l.get("domain_id"))
             or "Lecture",
+            domain_id=l.get("domain_id"),
             domain_title=title_of.get(l.get("domain_id")),
             duration_secs=l.get("duration_secs"), status=l.get("status"),
             created_at=l.get("created_at"),

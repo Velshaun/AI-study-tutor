@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
+from app.services import performance
 from app.services.ai_service import (
     GenerationError,
     gather_domain_content,
@@ -170,6 +171,11 @@ async def generate(
         questions = generate_quiz(
             gathered["content"], difficulty, payload.question_count,
             subject=gathered["subject"], topic=domain.get("title") or "",
+            # What this learner's own results say about this domain. Weakness
+            # changes what gets asked, not just how many questions arrive.
+            focus=performance.focus_hint(
+                domain.get("module_id") or "", user.id, payload.domain_id,
+            ) if domain.get("module_id") else "",
         )
     except GenerationError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc

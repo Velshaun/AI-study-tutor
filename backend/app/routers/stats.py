@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
+from app.services import performance
 
 logger = logging.getLogger(__name__)
 
@@ -454,4 +455,92 @@ async def module_stats(
         quizzes_taken=len(scores),
         lectures_generated=len(lectures),
         listened_seconds=listened,
+    )
+
+
+# --- Domain performance -----------------------------------------------------
+class DomainPerformance(BaseModel):
+    """One domain's standing, as shown and as planned with.
+
+    `display` is the encouraging number: it rises quickly, falls slowly, and
+    never sits far under the best the learner has demonstrated. `session` is
+    what they actually scored last time, kept separate so today can be a bad day
+    without the week having been one.
+
+    `internal` is not for display. It reacts fully to a regression and is what
+    decides where the next questions come from — see `services/performance`.
+    """
+
+    domain_id: str
+    title: str
+    weight_pct: float = 0.0
+    display: float | None = None
+    session: float | None = None
+    peak: float | None = None
+    internal: float | None = None
+    attempts: int = 0
+    questions: int = 0
+    # 'strong' | 'developing' | 'weak' | 'untouched'
+    status: str = "untouched"
+    # 'up' | 'down' | 'steady' | 'none'
+    trend: str = "none"
+    regressed: bool = False
+    # One encouraging, true sentence about the most recent session.
+    note: str = ""
+
+
+class PerformanceResponse(BaseModel):
+    module_id: str
+    available: bool = True
+    # Weighted by each domain's share of the paper, from `display` — so the
+    # headline moves the way the parts do.
+    overall: float | None = None
+    domains: list[DomainPerformance] = Field(default_factory=list)
+    # Weakest first: the answer to "what next", in order.
+    focus: list[str] = Field(default_factory=list)
+    attempts: int = 0
+    has_baseline: bool = False
+
+
+@router.get("/performance/{module_id}", response_model=PerformanceResponse)
+async def module_performance(
+    module_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> PerformanceResponse:
+    """How strong each domain is, on the evidence of everything graded."""
+    owned = (
+        _client().table("modules").select("id")
+        .eq("id", module_id).eq("user_id", user.id).limit(1).execute()
+    ).data
+    if not owned:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Module not found.")
+
+    scored = performance.for_module(module_id, user.id)
+    domains = [DomainPerformance(**d) for d in scored]
+
+    graded = [d for d in domains if d.display is not None]
+    weight = sum(d.weight_pct for d in graded)
+    overall = (
+        round(sum(d.display * d.weight_pct for d in graded) / weight, 1)
+        if graded and weight > 0
+        else round(sum(d.display for d in graded) / len(graded), 1) if graded
+        else None
+    )
+
+    # Weakest first, and only where there is evidence — an untouched domain
+    # isn't a weakness, it's a blank.
+    focus = [
+        d.title for d in sorted(
+            graded, key=lambda d: (d.internal or 0) - (d.weight_pct or 0),
+        ) if d.status != "strong"
+    ][:5]
+
+    return PerformanceResponse(
+        module_id=module_id,
+        available=performance.available(),
+        overall=overall,
+        domains=domains,
+        focus=focus,
+        attempts=performance.attempt_count(module_id, user.id),
+        has_baseline=performance.baseline(module_id, user.id) is not None,
     )

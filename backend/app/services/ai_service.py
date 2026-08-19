@@ -189,7 +189,7 @@ FLASHCARD_SCHEMA: dict[str, Any] = {
 
 def generate_flashcards(
     domain_content: str, difficulty: str, count: int, *, subject: str = "this subject",
-    topic: str = "", context: dict[str, Any] | None = None,
+    topic: str = "", context: dict[str, Any] | None = None, focus: str = "",
 ) -> list[dict[str, str]]:
     """Return ``[{front, back}]`` for a domain.
 
@@ -205,7 +205,7 @@ def generate_flashcards(
         try:
             batch = _generate_flashcard_batch(
                 domain_content, difficulty, want, subject=subject, topic=topic,
-                written=[c["front"] for c in out],
+                written=[c["front"] for c in out], focus=focus,
             )
         except GenerationError:
             if not out:
@@ -223,7 +223,7 @@ def generate_flashcards(
 
 def _generate_flashcard_batch(
     domain_content: str, difficulty: str, count: int, *, subject: str,
-    topic: str, written: list[str],
+    topic: str, written: list[str], focus: str = "",
 ) -> list[dict[str, str]]:
     """One Gemini call for up to ``FLASHCARD_BATCH_SIZE`` cards."""
     if not settings.gemini_api_key:
@@ -246,6 +246,7 @@ def _generate_flashcard_batch(
         "contradict it. You may add widely-known context where it helps.\n"
         "- Plain text only: no markdown, numbering or 'Front:'/'Back:' labels.\n"
         "- British spelling.\n"
+        + (f"- {focus}\n" if focus else "")
         + (
             "- These cards already exist for this learner — cover different "
             f"ground, do not repeat them:\n{already}\n" if already else ""
@@ -342,9 +343,15 @@ QUIZ_SCHEMA: dict[str, Any] = {
 
 def generate_quiz(
     domain_content: str, difficulty: str, question_count: int, *,
-    subject: str = "this subject", topic: str = "",
+    subject: str = "this subject", topic: str = "", focus: str = "",
 ) -> list[dict[str, Any]]:
-    """Return ``[{question, options[4], correct_index, explanation}]``."""
+    """Return ``[{question, options[4], correct_index, explanation}]``.
+
+    `focus` carries what the learner's own results say about this domain — see
+    ``performance.focus_hint``. It shapes what gets asked rather than how much:
+    a domain someone keeps failing wants its fundamentals covered again, not the
+    same questions with harder wording.
+    """
     if not settings.gemini_api_key:
         raise GenerationError("GEMINI_API_KEY is not configured.")
 
@@ -374,6 +381,7 @@ def generate_quiz(
         "from the other three.\n"
         "- Base questions on the material below. Plain text, British spelling, "
         "no markdown or 'A)' prefixes inside the option text.\n"
+        + (f"- {focus}\n" if focus else "")
         + TERM_PROMPT_RULES
         + "\n"
         f"--- DOMAIN MATERIAL ---\n{domain_content or topic or subject}"

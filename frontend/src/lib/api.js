@@ -199,6 +199,16 @@ export const api = {
   // Per-domain exam readiness, weighted by each domain's share of the paper.
   readiness: (moduleId, signal) =>
     apiFetch(`/stats/readiness/${moduleId}`, { signal }),
+  // Per-domain strength from everything the learner has been graded on. The
+  // shown score is deliberately smoother than the last result — see the
+  // backend's performance service.
+  performance: (moduleId, signal) =>
+    apiFetch(`/stats/performance/${moduleId}`, { signal }),
+  // Past sittings, newest first, each with its per-domain breakdown.
+  examAttempts: (moduleId, signal) =>
+    apiFetch(`/practice-exam/attempts/${moduleId}`, { signal }),
+  examAttempt: (attemptId, signal) =>
+    apiFetch(`/practice-exam/attempt/${attemptId}`, { signal }),
 
   // Tell the backend a discovered link is dead/walled/off-topic. It stops
   // coming back, and a host reported repeatedly is dropped wholesale.
@@ -293,6 +303,14 @@ export const api = {
     apiFetch(`/practice-exam/imported/${batchId}`, { method: 'DELETE' }),
   generateExam: (body) =>
     apiFetch('/practice-exam/generate', { method: 'POST', body }),
+  // The baseline sitting, taken before any studying. The same generator and the
+  // same runner — `adaptive: false` because a baseline has to measure the
+  // blueprint as published, not as the learner's weaknesses would reweight it.
+  generatePreAssessment: (moduleId) =>
+    apiFetch('/practice-exam/generate', {
+      method: 'POST',
+      body: { module_id: moduleId, kind: 'pre_assessment', adaptive: false },
+    }),
   // Saved progress through a quiz, exam, practice set or deck. `itemType` is
   // 'quiz' | 'exam' | 'practice' | 'flashcards'; `itemId` is the quiz/exam id
   // or, for a set or deck, the domain's.

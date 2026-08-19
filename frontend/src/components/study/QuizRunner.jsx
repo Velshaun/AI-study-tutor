@@ -39,7 +39,9 @@ function clock(totalSeconds) {
   return `${mins}:${String(secs).padStart(2, '0')}`
 }
 
-export default function QuizRunner({ quiz, onSubmit, onRestart, attempt }) {
+export default function QuizRunner({
+  quiz, onSubmit, onRestart, attempt, renderResult,
+}) {
   const questions = quiz.questions || []
   const durationMinutes = quiz.duration_minutes || 0
   // Saved progress, read once when the run opens. `useState`'s initialiser is
@@ -163,6 +165,17 @@ export default function QuizRunner({ quiz, onSubmit, onRestart, attempt }) {
     // Starting over discards the saved run rather than resuming into it.
     attempt?.clear?.()
     onRestart?.()
+  }
+
+  // An exam has more to say at the end than a quiz does — a per-domain
+  // breakdown against the real paper's weights — so it supplies its own screen.
+  // A quiz keeps the plain one below, which is the right size for ten questions
+  // on a single topic.
+  if (finished && result && renderResult) {
+    // Values only: `restart` closes over refs, and handing a function that
+    // reads one to a render-time callback is exactly what the refs rule is
+    // there to stop. A custom screen decides its own way out.
+    return renderResult({ result, questions, timedOut })
   }
 
   if (finished && result) {

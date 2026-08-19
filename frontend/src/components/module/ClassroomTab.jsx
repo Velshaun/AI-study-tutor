@@ -6,51 +6,69 @@ import {
   Layers,
   Loader2,
   Mic,
-  Play,
   Sparkles,
 } from 'lucide-react'
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 
+import DomainClassroom from './DomainClassroom'
+import ExamsSection from './ExamsSection'
 import GeneratePreferencesModal from './GeneratePreferencesModal'
 import ModuleKpis from './ModuleKpis'
+import PreAssessmentCard from './PreAssessmentCard'
 import ReadinessCard from './ReadinessCard'
-import SwipeToDelete from '../study/SwipeToDelete'
-import { useConfirm } from '../../hooks/useConfirm'
 import { useGeneration } from '../../hooks/useGeneration'
-import { usePlayer } from '../../hooks/usePlayer'
 import { useToast } from '../../hooks/useToast'
 import { api } from '../../lib/api'
-import { formatClock } from '../../lib/format'
 import * as lectures from '../../lib/lectures'
 import { path } from '../../routes'
 
 /**
- * Classroom tab — per-module KPIs, one "Generate" panel, and everything already
- * generated for the module (grouped by type, each labelled with its domain).
+ * Classroom tab — the module organised the way its exam is.
  *
- * Generating is a single flow, and the only one: tap a media type, set the few
- * preferences that matter for it, and the modal closes straight away. The work
- * runs in the GenerationProvider — mounted above every route — so leaving the
- * module, or the tab, doesn't stop it. The tile keeps showing "Generating…"
- * whenever the learner comes back, and a toast offers to take them to the
- * finished content.
- */
-
-/**
- * A count asked for across the module, split over its domains.
+ * It used to be one pool grouped by media type: every lecture together, every
+ * deck together, every quiz together. That mirrored the tables rather than the
+ * revision — nobody sits down to "do some flashcards", they sit down to work on
+ * a topic and want that topic's lecture, deck and quiz in one place. The domain
+ * was on every item already; nothing grouped by it.
  *
- * Whole numbers, at least one each, and the remainder goes to the earlier
- * domains — so "50 cards across 3 domains" is 17/17/16 rather than 16.67.
+ * So the order here is: where you stand, what to do about it, the papers that
+ * span everything, then the domains themselves. Practice exams sit above the
+ * domain list rather than in it because they are the one thing that isn't
+ * scoped to a domain.
+ *
+ * Generating still runs in the GenerationProvider, above every route, so
+ * leaving the tab doesn't stop the work.
  */
-function share(total, index, domainCount) {
-  const base = Math.floor(total / domainCount)
-  const remainder = total % domainCount
-  return Math.max(1, base + (index < remainder ? 1 : 0))
-}
 
 // How often to re-ask while a lecture is still being written or narrated.
 const GENERATING_POLL_MS = 4000
+
+/**
+ * A count asked for across the module, split over its domains — bent towards
+ * the ones going badly.
+ *
+ * `need` is the per-domain multiplier the server derives from graded results:
+ * a domain being failed earns more questions than one being passed. Falls back
+ * to an even split when nothing has been graded yet, because a preference
+ * invented from no evidence is worse than no preference.
+ */
+function allocate(total, domains, need) {
+  const weights = domains.map((d) => Math.max(0.01, need?.[d.id] ?? 1))
+  const sum = weights.reduce((a, b) => a + b, 0)
+  const exact = weights.map((w) => (total * w) / sum)
+  const floors = exact.map((v) => Math.max(1, Math.floor(v)))
+  let left = total - floors.reduce((a, b) => a + b, 0)
+  // Hand any leftover to the largest fractional parts, neediest first.
+  const order = exact
+    .map((v, i) => [i, v - Math.floor(v)])
+    .sort((a, b) => b[1] - a[1])
+  for (const [i] of order) {
+    if (left <= 0) break
+    floors[i] += 1
+    left -= 1
+  }
+  return floors
+}
 
 const GENERATORS = {
   lecture: {
@@ -81,12 +99,10 @@ const GENERATORS = {
   flashcards: {
     Icon: Layers,
     label: 'Flashcards',
-    async run(domains, values) {
+    async run(domains, values, need) {
+      const counts = allocate(values.count, domains, need)
       for (const [i, domain] of domains.entries()) {
-        await api.generateFlashcards({
-          domain_id: domain.id,
-          count: share(values.count, i, domains.length),
-        })
+        await api.generateFlashcards({ domain_id: domain.id, count: counts[i] })
       }
       return domains[0] ? path('flashcards', { domainId: domains[0].id }) : null
     },
@@ -94,12 +110,13 @@ const GENERATORS = {
   quiz: {
     Icon: CheckCircle2,
     label: 'Quiz',
-    async run(domains, values) {
+    async run(domains, values, need) {
+      const counts = allocate(values.count, domains, need)
       for (const [i, domain] of domains.entries()) {
         await api.generateQuiz({
           domain_id: domain.id,
           difficulty: values.difficulty,
-          question_count: share(values.count, i, domains.length),
+          question_count: counts[i],
         })
       }
       return domains[0] ? path('quizzes', { domainId: domains[0].id }) : null
@@ -107,9 +124,9 @@ const GENERATORS = {
   },
   practice: {
     Icon: ClipboardList,
-    label: 'Practice Exam',
+    label: 'Practice questions',
     async run(domains, values) {
-      // Every domain gets the full length: a practice exam is sat per domain,
+      // Every domain gets the full length: a practice set is sat per domain,
       // and each should be as long as the real paper.
       for (const domain of domains) {
         await api.practiceQuestions(domain.id, { count: values.count })
@@ -120,19 +137,88 @@ const GENERATORS = {
 }
 
 export default function ClassroomTab({ moduleId, domains, examCount = 40 }) {
+  const queryClient = useQueryClient()
+
+  const { data: media, isPending } = useQuery({
+    queryKey: ['studio', moduleId],
+    queryFn: ({ signal }) => api.studioMedia(moduleId, signal),
+    // Something being built is listed while it builds, so the list keeps asking
+    // until it stops being a spinner — and stops the moment nothing is running.
+    refetchInterval: (query) =>
+      (query.state.data?.lectures || []).some((l) => lectures.isGenerating(l.status))
+        ? GENERATING_POLL_MS
+        : false,
+    refetchIntervalInBackground: false,
+  })
+
+  const { data: performance } = useQuery({
+    queryKey: ['performance', moduleId],
+    queryFn: ({ signal }) => api.performance(moduleId, signal),
+  })
+
+  const studyable = (domains || []).filter(
+    (d) => d.status !== 'locked' && !d.is_imported_deck,
+  )
+
   return (
     <div className="space-y-8">
       <ModuleKpis moduleId={moduleId} />
+
+      {/* Nothing has been measured yet — so measure it, before the app starts
+          guessing what to put in front of them. */}
+      {performance && !performance.has_baseline && studyable.length > 0 && (
+        <PreAssessmentCard moduleId={moduleId} questionCount={examCount} />
+      )}
+
       <ReadinessCard moduleId={moduleId} />
-      <GenerateNew moduleId={moduleId} domains={domains} examCount={examCount} />
-      <GeneratedMedia moduleId={moduleId} />
+
+      <ExamsSection
+        moduleId={moduleId}
+        exams={media?.exams ?? []}
+        questionCount={examCount}
+        onDeleted={() => {
+          queryClient.invalidateQueries({ queryKey: ['studio', moduleId] })
+          queryClient.invalidateQueries({ queryKey: ['exam-attempts', moduleId] })
+        }}
+      />
+
+      {isPending ? (
+        <div className="space-y-2">
+          <div className="skeleton h-16 rounded-2xl" />
+          <div className="skeleton h-16 rounded-2xl" />
+        </div>
+      ) : (
+        <DomainClassroom
+          moduleId={moduleId}
+          domains={domains}
+          media={media}
+          performance={performance}
+          examCount={examCount}
+        />
+      )}
+
+      <GenerateAll
+        moduleId={moduleId}
+        domains={domains}
+        performance={performance}
+        examCount={examCount}
+      />
     </div>
   )
 }
 
-function GenerateNew({ moduleId, domains, examCount }) {
+/**
+ * Build one media type across every domain at once.
+ *
+ * Still here alongside the per-domain buttons because they answer different
+ * questions: this one is "set me up for the whole module", the domain buttons
+ * are "I'm working on this topic now". What changed is the split — a fixed
+ * even share ignored that some domains need three times the practice of others.
+ */
+function GenerateAll({ moduleId, domains, performance, examCount }) {
   const queryClient = useQueryClient()
   const generation = useGeneration()
+  const toast = useToast()
   const [asking, setAsking] = useState(null)
 
   // Imported decks are studied individually; a bulk generate shouldn't write a
@@ -140,6 +226,13 @@ function GenerateNew({ moduleId, domains, examCount }) {
   const unlocked = (domains || []).filter(
     (d) => d.status !== 'locked' && !d.is_imported_deck,
   )
+
+  // The server's judgement of where the work is needed, as a plain multiplier
+  // per domain. Weak domains rate above 1, strong ones below.
+  const need = Object.fromEntries(
+    (performance?.domains || []).map((d) => [d.domain_id, needFrom(d)]),
+  )
+  const adaptive = Boolean(performance?.attempts)
 
   function generate(kind, values) {
     const cfg = GENERATORS[kind]
@@ -149,18 +242,28 @@ function GenerateNew({ moduleId, domains, examCount }) {
       kind,
       label: cfg.label,
       run: async () => {
-        const destination = await cfg.run(unlocked, values)
-        queryClient.invalidateQueries({ queryKey: ['studio', moduleId] })
-        queryClient.invalidateQueries({ queryKey: ['module', moduleId] })
-        queryClient.invalidateQueries({ queryKey: ['module-stats', moduleId] })
+        const destination = await cfg.run(unlocked, values, adaptive ? need : null)
+        for (const key of ['studio', 'module', 'module-stats', 'performance']) {
+          queryClient.invalidateQueries({ queryKey: [key, moduleId] })
+        }
         return destination
       },
     })
   }
 
+  if (!unlocked.length) return null
+
   return (
     <section className="space-y-3">
-      <Heading Icon={Sparkles}>Generate</Heading>
+      <h2 className="flex items-center gap-2 border-l-2 border-accent pl-2.5 text-xs font-bold uppercase tracking-[0.14em] text-accent2">
+        <Sparkles size={13} aria-hidden="true" />
+        Generate across every domain
+      </h2>
+      {adaptive && (
+        <p className="px-1 text-xs text-sec">
+          Weighted towards the domains you&rsquo;re finding hardest.
+        </p>
+      )}
       <div className="space-y-2">
         {Object.entries(GENERATORS).map(([kind, cfg]) => {
           const running = generation.isGenerating(moduleId, kind)
@@ -168,7 +271,7 @@ function GenerateNew({ moduleId, domains, examCount }) {
             <button
               key={kind}
               onClick={() => setAsking(kind)}
-              disabled={running || unlocked.length === 0}
+              disabled={running}
               className="flex w-full items-center gap-3 rounded-2xl border border-border bg-surface
                          px-4 py-3.5 text-left transition-colors hover:border-accent/50
                          disabled:opacity-60"
@@ -203,311 +306,29 @@ function GenerateNew({ moduleId, domains, examCount }) {
         domainCount={unlocked.length || 1}
         recommendedExamCount={examCount}
         onClose={() => setAsking(null)}
-        onGenerate={(values) => generate(asking, values)}
+        onGenerate={(values) => {
+          if (!unlocked.length) {
+            toast.error('This module has no unlocked domains yet.')
+            return
+          }
+          generate(asking, values)
+        }}
       />
     </section>
   )
 }
 
-function GeneratedMedia({ moduleId }) {
-  const navigate = useNavigate()
-  const queryClient = useQueryClient()
-  const confirm = useConfirm()
-  const toast = useToast()
-  const player = usePlayer()
-  const { data, isPending } = useQuery({
-    queryKey: ['studio', moduleId],
-    queryFn: ({ signal }) => api.studioMedia(moduleId, signal),
-    // Something being built is listed here while it builds, so the list has to
-    // keep asking until it stops being a spinner. It stops polling the moment
-    // nothing is in progress.
-    refetchInterval: (query) =>
-      (query.state.data?.lectures || []).some((l) => lectures.isGenerating(l.status))
-        ? GENERATING_POLL_MS
-        : false,
-    refetchIntervalInBackground: false,
-  })
-
-  /**
-   * Delete one generated item, once the learner has confirmed.
-   *
-   * The tile goes immediately and the list refetches behind it; a failure puts
-   * it back by refetching, since the server is the authority on what survived.
-   */
-  async function remove({ label, run, playingId }) {
-    const ok = await confirm({
-      title: `Delete this ${label}?`,
-      message: 'This cannot be undone.',
-      confirmLabel: 'Delete',
-      danger: true,
-    })
-    if (!ok) return
-
-    // Deleting the lecture that's playing would leave the player pointing at
-    // audio that no longer exists, so it's dismissed first.
-    if (playingId && player?.lecture?.id === playingId) player.close()
-
-    try {
-      await run()
-      toast.success(`${label[0].toUpperCase()}${label.slice(1)} deleted`)
-    } catch (e) {
-      toast.error(e?.message || `Could not delete that ${label}.`)
-    } finally {
-      queryClient.invalidateQueries({ queryKey: ['studio', moduleId] })
-      queryClient.invalidateQueries({ queryKey: ['module', moduleId] })
-      queryClient.invalidateQueries({ queryKey: ['module-stats', moduleId] })
-    }
-  }
-
-  if (isPending) {
-    return (
-      <section className="space-y-3">
-        <Heading>Generated media</Heading>
-        <div className="skeleton h-16 rounded-2xl" />
-        <div className="skeleton h-16 rounded-2xl" />
-      </section>
-    )
-  }
-
-  const lectures = data?.lectures ?? []
-  const flashcards = data?.flashcards ?? []
-  const quizzes = data?.quizzes ?? []
-  // Domain practice sets and whole exams — generated or imported from a PDF —
-  // are the same thing to a learner, so they share a subsection.
-  const practice = data?.practice ?? []
-  const exams = data?.exams ?? []
-  const empty =
-    !lectures.length && !flashcards.length && !quizzes.length &&
-    !practice.length && !exams.length
-
-  return (
-    <section className="space-y-4">
-      <Heading>Generated media</Heading>
-
-      {empty ? (
-        <p className="card text-center text-sm text-sec">
-          Nothing generated yet. Use “Generate” above to build your first
-          lecture, deck, quiz or practice exam.
-        </p>
-      ) : (
-        <>
-          <Group label="Lectures" show={lectures.length > 0}>
-            {lectures.map((l) => (
-              <SwipeToDelete
-                key={l.id}
-                label="lecture"
-                onDelete={() =>
-                  remove({
-                    label: 'lecture',
-                    playingId: l.id,
-                    run: () => api.deleteLecture(l.id),
-                  })
-                }
-              >
-                <MediaRow
-                  Icon={Mic}
-                  title={l.title}
-                  // A lecture still being built has no duration and nothing to
-                  // play, so it says what stage it's at instead — and the row
-                  // refuses the tap rather than opening an empty player.
-                  pending={lectures.isGenerating(l.status)}
-                  subtitle={
-                    lectures.isGenerating(l.status)
-                      ? scope([l.domain_title, lectures.generatingLabel(l.status)])
-                      : scope([
-                          l.domain_title,
-                          l.duration_secs ? formatClock(l.duration_secs) : 'Audio',
-                          when(l.created_at),
-                        ])
-                  }
-                  onOpen={() => navigate(path('lecture', { id: l.id }))}
-                  action="play"
-                />
-              </SwipeToDelete>
-            ))}
-          </Group>
-
-          <Group label="Flashcard Decks" show={flashcards.length > 0}>
-            {flashcards.map((f) => (
-              <SwipeToDelete
-                key={f.domain_id}
-                label="deck"
-                onDelete={() =>
-                  remove({
-                    label: 'deck',
-                    run: () => api.deleteFlashcardDeck(f.domain_id),
-                  })
-                }
-              >
-                <MediaRow
-                  Icon={Layers}
-                  title={f.title || `${f.domain_title || 'Deck'} — ${f.count} cards`}
-                  subtitle={scope([
-                    f.domain_title,
-                    `${f.count} card${f.count === 1 ? '' : 's'}`,
-                    when(f.created_at),
-                  ])}
-                  onOpen={() => navigate(path('flashcards', { domainId: f.domain_id }))}
-                />
-              </SwipeToDelete>
-            ))}
-          </Group>
-
-          <Group label="Quizzes" show={quizzes.length > 0}>
-            {quizzes.map((q) => (
-              <SwipeToDelete
-                key={q.id}
-                label="quiz"
-                onDelete={() =>
-                  remove({ label: 'quiz', run: () => api.deleteQuiz(q.id) })
-                }
-              >
-                <MediaRow
-                  Icon={CheckCircle2}
-                  title={q.title}
-                  subtitle={scope([
-                    q.domain_title,
-                    `${q.question_count} question${q.question_count === 1 ? '' : 's'}`,
-                    q.score != null ? `${Math.round(q.score)}%` : null,
-                    when(q.created_at),
-                  ])}
-                  onOpen={() => navigate(path('quizzes', { domainId: q.domain_id }))}
-                />
-              </SwipeToDelete>
-            ))}
-          </Group>
-
-          <Group
-            label="Practice Exams"
-            show={practice.length > 0 || exams.length > 0}
-          >
-            {exams.map((e) => (
-              <SwipeToDelete
-                key={e.id}
-                label="practice exam"
-                onDelete={() =>
-                  remove({ label: 'practice exam', run: () => api.deleteExam(e.id) })
-                }
-              >
-                <MediaRow
-                  Icon={ClipboardList}
-                  title={e.title}
-                  subtitle={scope([
-                    `${e.question_count} question${e.question_count === 1 ? '' : 's'}`,
-                    e.duration_minutes ? `${e.duration_minutes} min` : null,
-                    when(e.created_at),
-                  ])}
-                  onOpen={() => navigate(path('examRun', { examId: e.id }))}
-                />
-              </SwipeToDelete>
-            ))}
-            {practice.map((p) => (
-              <SwipeToDelete
-                key={p.domain_id}
-                label="practice set"
-                onDelete={() =>
-                  remove({
-                    label: 'practice set',
-                    run: () => api.deletePracticeSet(p.domain_id),
-                  })
-                }
-              >
-                <MediaRow
-                  Icon={ClipboardList}
-                  title={p.title || `${p.domain_title || 'Practice'} — ${p.count} questions`}
-                  subtitle={scope([
-                    p.domain_title,
-                    `${p.count} question${p.count === 1 ? '' : 's'}`,
-                    when(p.created_at),
-                  ])}
-                  onOpen={() => navigate(path('practiceMode', { domainId: p.domain_id }))}
-                />
-              </SwipeToDelete>
-            ))}
-          </Group>
-        </>
-      )}
-    </section>
-  )
-}
-
-function Group({ label, show, children }) {
-  if (!show) return null
-  return (
-    <div className="space-y-2">
-      <p className="px-1 text-xs font-semibold uppercase tracking-wider text-sec">
-        {label}
-      </p>
-      <div className="space-y-2">{children}</div>
-    </div>
-  )
-}
-
-/** "Covers X · 40 questions · Generated today" — skipping anything unknown. */
-function scope(parts) {
-  return parts.filter(Boolean).join(' · ')
-}
-
-/** How long ago something was generated, in words a glance can take in. */
-function when(iso) {
-  if (!iso) return null
-  const then = new Date(iso)
-  if (Number.isNaN(then.getTime())) return null
-  const days = Math.floor((Date.now() - then.getTime()) / 86400000)
-  if (days <= 0) return 'Generated today'
-  if (days === 1) return 'Generated yesterday'
-  if (days < 7) return `Generated ${days} days ago`
-  return `Generated ${then.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`
-}
-
 /**
- * One piece of generated media.
+ * How much extra a domain has earned, mirroring the server's own rule.
  *
- * `pending` is the whole reason this takes a flag rather than always being a
- * link: media appears here the moment it is asked for, and something still
- * being built must be visible without being openable.
+ * Kept in step with `performance.need_multiplier` deliberately rather than
+ * shipped down the wire: the allocation is arithmetic the learner can see the
+ * result of, and a number that arrives pre-computed is one nobody can check.
  */
-function MediaRow({ Icon, title, subtitle, onOpen, action = 'open', pending = false }) {
-  return (
-    <button
-      onClick={onOpen}
-      disabled={pending}
-      aria-busy={pending}
-      className={`flex w-full items-center gap-3 text-left ${
-        pending
-          ? 'card cursor-default opacity-70'
-          : 'card-interactive'
-      }`}
-    >
-      <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-accent/10 text-accent2">
-        {pending ? (
-          <Loader2 size={18} className="animate-spin" aria-hidden="true" />
-        ) : (
-          <Icon size={18} aria-hidden="true" />
-        )}
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-pri">{title}</p>
-        <p className="truncate text-xs text-sec">{subtitle}</p>
-      </div>
-      {pending ? (
-        <span className="shrink-0 text-xs font-medium text-accent2">Generating…</span>
-      ) : action === 'play' ? (
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-accent text-white">
-          <Play size={16} className="ml-0.5" aria-hidden="true" />
-        </span>
-      ) : (
-        <ChevronRight size={18} className="shrink-0 text-sec" aria-hidden="true" />
-      )}
-    </button>
-  )
-}
-
-function Heading({ Icon, children }) {
-  return (
-    <h2 className="flex items-center gap-2 border-l-2 border-accent pl-2.5 text-xs font-bold uppercase tracking-[0.14em] text-accent2">
-      {Icon && <Icon size={13} aria-hidden="true" />}
-      {children}
-    </h2>
-  )
+function needFrom(entry) {
+  const score = entry?.internal
+  if (score == null) return 1
+  let multiplier = score >= 80 ? 0.5 : score >= 60 ? 1 : score >= 40 ? 1.5 : 2
+  if (entry.regressed) multiplier *= 1.25
+  return multiplier
 }

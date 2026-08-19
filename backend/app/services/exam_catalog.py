@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 GENERIC_QUESTION_COUNT = 20
 GENERIC_DURATION_MINUTES = 60
 GENERIC_LABEL = "Standard practice exam"
+# The house pass mark, used where a vendor publishes none.
+GENERIC_PASS_PCT = 70.0
 
 
 @dataclass(frozen=True)
@@ -48,19 +50,28 @@ class ExamSpec:
     names: tuple[str, ...] = ()
     # False when the vendor publishes a duration but not a question count.
     published: bool = True
+    # The percentage correct treated as a pass.
+    #
+    # An approximation, deliberately. Most vendors publish a *scaled* threshold
+    # — CompTIA's 675 of 900, LPI's 500 of 800 — and scaling is not a linear
+    # function of questions answered correctly, so no percentage can reproduce
+    # their grade. What this is for is a study target on a practice paper: the
+    # scaled threshold expressed as the share of questions a learner should be
+    # getting right to be in range. Erring high is the safe direction.
+    pass_pct: float = GENERIC_PASS_PCT
 
 
 CATALOGUE: tuple[ExamSpec, ...] = (
     # --- CompTIA ------------------------------------------------------------
     ExamSpec("CompTIA A+ Core 1", 90, 90, ("220-1201", "220-1101"),
-             ("a+ core 1", "comptia a+ core 1")),
+             ("a+ core 1", "comptia a+ core 1"), pass_pct=75.0),
     ExamSpec("CompTIA A+ Core 2", 90, 90, ("220-1202", "220-1102"),
-             ("a+ core 2", "comptia a+ core 2")),
-    ExamSpec("CompTIA A+", 90, 90, (), ("comptia a+",)),
+             ("a+ core 2", "comptia a+ core 2"), pass_pct=78.0),
+    ExamSpec("CompTIA A+", 90, 90, (), ("comptia a+",), pass_pct=75.0),
     ExamSpec("CompTIA Network+", 90, 90, ("n10-009", "n10-008"),
-             ("network+", "comptia network+")),
+             ("network+", "comptia network+"), pass_pct=80.0),
     ExamSpec("CompTIA Security+", 90, 90, ("sy0-701", "sy0-601"),
-             ("security+", "comptia security+")),
+             ("security+", "comptia security+"), pass_pct=83.0),
     ExamSpec("CompTIA Linux+", 90, 90, ("xk0-005", "xk0-006"),
              ("linux+", "comptia linux+")),
     ExamSpec("CompTIA CySA+", 85, 165, ("cs0-003", "cs0-004"),
@@ -77,7 +88,8 @@ CATALOGUE: tuple[ExamSpec, ...] = (
     ExamSpec("CompTIA ITF+", 75, 60, ("fc0-u71", "fc0-u61"),
              ("itf+", "it fundamentals+")),
     # --- Linux Professional Institute ---------------------------------------
-    ExamSpec("LPI Linux Essentials", 40, 60, ("010-160",), ("linux essentials",)),
+    ExamSpec("LPI Linux Essentials", 40, 60, ("010-160",), ("linux essentials",),
+             pass_pct=62.5),
     ExamSpec("LPIC-1", 60, 90, ("101-500", "102-500"), ("lpic-1", "lpic 1")),
     ExamSpec("LPIC-2", 60, 90, ("201-450", "202-450"), ("lpic-2", "lpic 2")),
     # --- Cloud --------------------------------------------------------------
@@ -90,7 +102,7 @@ CATALOGUE: tuple[ExamSpec, ...] = (
     ExamSpec("AWS Certified SysOps Administrator - Associate", 65, 130,
              ("soa-c02",), ("sysops administrator associate",)),
     ExamSpec("Microsoft Azure Fundamentals", 50, 45, ("az-900",),
-             ("azure fundamentals",), published=False),
+             ("azure fundamentals",), published=False, pass_pct=70.0),
     ExamSpec("Microsoft Azure Administrator", 50, 120, ("az-104",),
              ("azure administrator",), published=False),
     ExamSpec("Google Associate Cloud Engineer", 50, 120, (),
@@ -108,7 +120,8 @@ CATALOGUE: tuple[ExamSpec, ...] = (
     ExamSpec("ISACA CISA", 150, 240, (), ("cisa",)),
     ExamSpec("ISACA CISM", 150, 240, (), ("cism",)),
     # --- Service management / project ---------------------------------------
-    ExamSpec("ITIL 4 Foundation", 40, 60, (), ("itil 4 foundation", "itil foundation")),
+    ExamSpec("ITIL 4 Foundation", 40, 60, (), ("itil 4 foundation", "itil foundation"),
+             pass_pct=65.0),
     ExamSpec("PMP", 180, 230, (), ("pmp", "project management professional")),
     ExamSpec("CAPM", 150, 180, (), ("capm",)),
     # --- Admissions tests ---------------------------------------------------
@@ -169,6 +182,7 @@ def recommend(*texts: str | None) -> dict[str, object]:
             "duration_minutes": GENERIC_DURATION_MINUTES,
             "matched": False,
             "published": False,
+            "pass_pct": GENERIC_PASS_PCT,
         }
     return {
         "label": spec.label,
@@ -176,4 +190,11 @@ def recommend(*texts: str | None) -> dict[str, object]:
         "duration_minutes": spec.duration_minutes,
         "matched": True,
         "published": spec.published,
+        "pass_pct": spec.pass_pct,
     }
+
+
+def pass_pct(*texts: str | None) -> float:
+    """The share of questions that counts as a pass for this module's exam."""
+    spec = find(*texts)
+    return spec.pass_pct if spec else GENERIC_PASS_PCT

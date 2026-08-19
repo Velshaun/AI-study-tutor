@@ -39,7 +39,7 @@ from pydantic import BaseModel, Field
 
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import exam_catalog, exam_profile, schema_features
+from app.services import exam_catalog, exam_profile, performance, schema_features
 from app.services.ai_service import (
     MAX_QUIZ_QUESTIONS,
     GenerationError,
@@ -103,6 +103,15 @@ class GenerateRequest(BaseModel):
     )
     include_imported: bool = True
     difficulty: str | None = None
+    # 'practice', or 'pre_assessment' for the baseline sitting taken before any
+    # studying. Same generator, same weights, same runner — the flag only says
+    # when it happened, because that is the only thing that makes it a baseline.
+    kind: str = "practice"
+    # Bend the allocation towards the domains this learner is weakest in. Off
+    # for a pre-assessment, which has to measure the blueprint as published: a
+    # baseline weighted by what they're bad at would report a score no real
+    # sitting could produce.
+    adaptive: bool = True
 
 
 class ExamQuestion(BaseModel):
@@ -120,6 +129,13 @@ class ExamQuestion(BaseModel):
     terms: list[dict[str, Any]] = Field(default_factory=list)
     origin: str = "generated"  # 'generated' | 'imported'
     domain_title: str | None = None
+    # Which blueprint domain this question came from. Written with the question,
+    # because a per-domain result cannot be reconstructed afterwards — an exam
+    # used to allocate questions by domain weight and then throw the attribution
+    # away at insert time, leaving a percentage as the most the app could say
+    # about a 90-question paper. Null for imported papers, where nothing in the
+    # PDF says which domain a question belongs to.
+    domain_id: str | None = None
 
 
 class PracticeExam(BaseModel):
@@ -145,11 +161,32 @@ class QuestionResult(BaseModel):
     option_explanations: list[str] = Field(default_factory=list)
 
 
+class DomainResult(BaseModel):
+    """How one domain went, and what it is worth on the real paper."""
+
+    domain_id: str | None = None
+    title: str = ""
+    weight_pct: float = 0.0
+    correct: int = 0
+    total: int = 0
+    pct: float = 0.0
+
+
 class ExamResult(BaseModel):
     exam_id: str
+    # Null where the attempt couldn't be stored — the grade still stands.
+    attempt_id: str | None = None
+    kind: str = "practice"
     score: float
     correct: int
     total: int
+    # The published threshold for this certification, as a share of questions.
+    # Null for a module that isn't a recognised exam.
+    pass_pct: float | None = None
+    passed: bool | None = None
+    domains: list[DomainResult] = Field(default_factory=list)
+    # {verdict, strengths[], gaps[], next_steps[], written_by}
+    summary: dict[str, Any] = Field(default_factory=dict)
     results: list[QuestionResult]
 
 
@@ -531,15 +568,21 @@ def _deck_domain_ids(domains: list[dict[str, Any]], user_id: str) -> set[str]:
     return {r["domain_id"] for r in rows if r.get("domain_id")}
 
 
-def _exam_title(module: dict[str, Any], question_count: int) -> str:
+def _exam_title(
+    module: dict[str, Any], question_count: int, kind: str = "practice",
+) -> str:
     """A name that says what this exam simulates.
 
     "Full Exam Simulation — CompTIA Security+" when it's the real length of a
     recognised paper, otherwise the module and the length, because a shorter run
-    isn't a simulation of anything.
+    isn't a simulation of anything. A baseline says so outright — it will sit in
+    the list beside a dozen later attempts, and which one was the starting point
+    is the thing worth being able to see at a glance.
     """
     known = exam_catalog.find(module.get("title"), module.get("detected_subject"))
     label = known.label if known else (module.get("title") or "Practice")
+    if kind == "pre_assessment":
+        return f"Baseline assessment — {label}"[:200]
     if known and question_count >= known.question_count:
         return f"Full Exam Simulation — {label}"[:200]
     return f"{label} — {question_count}-question practice"[:200]
@@ -613,6 +656,7 @@ async def generate_exam(
     module = _own_module(payload.module_id, user.id)
     client = _client()
     difficulty = (payload.difficulty or _preferred_difficulty(user.id)).lower()
+    kind = "pre_assessment" if payload.kind == "pre_assessment" else "practice"
 
     domains = (
         client.table("domains").select("*")
@@ -652,6 +696,22 @@ async def generate_exam(
     #    re-allocated over a couple of further rounds.
     by_id = {d["id"]: d for d in domains}
     weight_by_id = _effective_weights(domains, _deck_domain_ids(domains, user.id))
+
+    # Bend the published weighting towards what this learner keeps getting
+    # wrong. Only ever a bend: a domain worth 4% of the paper does not become
+    # worth 30% because it is going badly, so the exam weight stays the base and
+    # need multiplies it. Empty until there is something to go on.
+    if payload.adaptive and payload.kind != "pre_assessment":
+        need = performance.adaptive_weights(payload.module_id, user.id)
+        if need:
+            weight_by_id = {
+                domain_id: need.get(domain_id, base) or base
+                for domain_id, base in weight_by_id.items()
+            }
+            logger.info(
+                "Exam for module %s weighted towards weak domains", payload.module_id,
+            )
+
     for attempt in range(1 + TOPUP_ROUNDS):
         remaining = total - len(questions)
         if remaining <= 0:
@@ -685,6 +745,7 @@ async def generate_exam(
                     terms=gq.get("terms") or [],
                     origin="generated",
                     domain_title=domain.get("title"),
+                    domain_id=domain.get("id"),
                 ))
         if len(questions) == before:  # no progress — further rounds won't help
             break
@@ -710,13 +771,20 @@ async def generate_exam(
     duration = exam_profile.exam_duration_minutes(
         len(questions), module, requested=payload.duration_minutes,
     )
-    exam_row = client.table("practice_exams").insert({
-        "module_id": payload.module_id,
-        "user_id": user.id,
-        "title": _exam_title(module, len(questions)),
-        "duration_minutes": duration,
-        "total_points": len(questions),
-    }).execute().data[0]
+    exam_row = client.table("practice_exams").insert(
+        schema_features.strip_unsupported(
+            "practice_exams",
+            [{
+                "module_id": payload.module_id,
+                "user_id": user.id,
+                "title": _exam_title(module, len(questions), kind),
+                "duration_minutes": duration,
+                "total_points": len(questions),
+                "kind": kind,
+            }],
+            "kind",
+        )[0]
+    ).execute().data[0]
 
     client.table("practice_questions").insert(schema_features.strip_unsupported(
         "practice_questions",
@@ -731,6 +799,7 @@ async def generate_exam(
                 "points": 1,
                 "position": q.index,
                 "terms": q.terms,
+                "domain_id": q.domain_id,
             }
             for q in questions
         ],
@@ -807,6 +876,7 @@ def _to_exam(row: dict[str, Any], questions: list[dict[str, Any]]) -> PracticeEx
                 explanation=q.get("expected_answer") or "",
                 option_explanations=_option_explanations(q.get("options")),
                 terms=q.get("terms") or [],
+                domain_id=q.get("domain_id"),
             )
             for i, q in enumerate(questions)
         ],
@@ -835,6 +905,74 @@ async def list_exams(
     ]
 
 
+class AttemptSummary(BaseModel):
+    """A past sitting, as the history list shows it."""
+
+    id: str
+    exam_id: str
+    kind: str = "practice"
+    score: float = 0
+    correct: int = 0
+    total: int = 0
+    pass_pct: float | None = None
+    passed: bool | None = None
+    domain_results: list[DomainResult] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    submitted_at: datetime | None = None
+
+
+def _to_attempt(row: dict[str, Any]) -> AttemptSummary:
+    return AttemptSummary(
+        id=row["id"],
+        exam_id=row.get("exam_id") or "",
+        kind=row.get("kind") or "practice",
+        score=float(row.get("score") or 0),
+        correct=row.get("correct") or 0,
+        total=row.get("total") or 0,
+        pass_pct=row.get("pass_pct"),
+        passed=row.get("passed"),
+        domain_results=[
+            DomainResult(**d) for d in (row.get("domain_results") or [])
+        ],
+        summary=row.get("summary") or {},
+        submitted_at=row.get("submitted_at"),
+    )
+
+
+@router.get("/attempts/{module_id}", response_model=list[AttemptSummary])
+async def list_attempts(
+    module_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> list[AttemptSummary]:
+    """Every sitting for a module, newest first. The baseline is in here too."""
+    _own_module(module_id, user.id)
+    if not performance.available():
+        return []
+    rows = (
+        _client().table("exam_attempts").select("*")
+        .eq("module_id", module_id).eq("user_id", user.id)
+        .order("submitted_at", desc=True).execute()
+    ).data or []
+    return [_to_attempt(r) for r in rows]
+
+
+@router.get("/attempt/{attempt_id}", response_model=AttemptSummary)
+async def get_attempt(
+    attempt_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> AttemptSummary:
+    """One stored sitting — the summary screen, reopened."""
+    if not performance.available():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Attempt not found.")
+    rows = (
+        _client().table("exam_attempts").select("*")
+        .eq("id", attempt_id).eq("user_id", user.id).limit(1).execute()
+    ).data or []
+    if not rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Attempt not found.")
+    return _to_attempt(rows[0])
+
+
 @router.get("/{exam_id}", response_model=PracticeExam)
 async def get_exam(
     exam_id: str,
@@ -845,14 +983,71 @@ async def get_exam(
     return _to_exam(exam, _exam_questions(exam_id))
 
 
+def _domain_breakdown(
+    questions: list[dict[str, Any]], results: list[QuestionResult],
+    module_id: str | None, user_id: str,
+) -> list[DomainResult]:
+    """Right and wrong per domain, in blueprint order.
+
+    Questions with no domain — every question of an imported past paper, since
+    a PDF never says which blueprint domain it is testing — are gathered under
+    one honest heading rather than being dropped, or spread across the domains
+    they might have belonged to.
+    """
+    tally: dict[str | None, list[int]] = {}
+    for question, result in zip(questions, results, strict=False):
+        entry = tally.setdefault(question.get("domain_id"), [0, 0])
+        entry[0] += int(result.is_correct)
+        entry[1] += 1
+    if not tally:
+        return []
+
+    domains = []
+    if module_id:
+        domains = (
+            _client().table("domains")
+            .select("id, title, weight_pct, order_index")
+            .eq("module_id", module_id).eq("user_id", user_id)
+            .order("order_index").execute()
+        ).data or []
+
+    out: list[DomainResult] = []
+    for domain in domains:
+        counts = tally.get(domain["id"])
+        if not counts:
+            continue
+        correct, total = counts
+        out.append(DomainResult(
+            domain_id=domain["id"],
+            title=domain.get("title") or "",
+            weight_pct=float(domain.get("weight_pct") or 0),
+            correct=correct, total=total,
+            pct=round(correct / total * 100, 1) if total else 0.0,
+        ))
+    if None in tally:
+        correct, total = tally[None]
+        out.append(DomainResult(
+            title="Not attributed to a domain",
+            correct=correct, total=total,
+            pct=round(correct / total * 100, 1) if total else 0.0,
+        ))
+    return out
+
+
 @router.post("/{exam_id}/submit", response_model=ExamResult)
 async def submit_exam(
     exam_id: str,
     payload: SubmitRequest,
     user: AuthUser = Depends(get_current_user),
 ) -> ExamResult:
-    """Grade an attempt against the stored answers."""
-    _own_exam(exam_id, user.id)
+    """Grade an attempt, break it down by domain, and keep it.
+
+    Grading used to end at a percentage that was returned and forgotten. The
+    breakdown is the part that tells a learner what to do next, and keeping the
+    attempt is what lets the app say anything at all about whether they are
+    getting better.
+    """
+    exam = _own_exam(exam_id, user.id)
     questions = _exam_questions(exam_id)
     if not questions:
         raise HTTPException(status.HTTP_409_CONFLICT, "This exam has no questions.")
@@ -872,8 +1067,43 @@ async def submit_exam(
 
     total = len(questions)
     score = round(correct / total * 100, 1) if total else 0.0
+    module_id = exam.get("module_id")
+    kind = exam.get("kind") or "practice"
+
+    module: dict[str, Any] = {}
+    if module_id:
+        rows = (
+            _client().table("modules").select("title, detected_subject")
+            .eq("id", module_id).limit(1).execute()
+        ).data or []
+        module = rows[0] if rows else {}
+
+    threshold = (
+        exam_catalog.pass_pct(module.get("detected_subject"), module.get("title"))
+        if module else None
+    )
+    passed = score >= threshold if threshold is not None else None
+
+    domains = _domain_breakdown(questions, results, module_id, user.id)
+    domain_payload = [d.model_dump() for d in domains]
+    summary = performance.summarise_attempt(
+        subject=module.get("detected_subject") or module.get("title") or "this subject",
+        score=score, correct=correct, total=total,
+        pass_pct=threshold, passed=passed,
+        domain_results=domain_payload, is_baseline=kind == "pre_assessment",
+    )
+    attempt_id = performance.record_attempt(
+        exam_id=exam_id, module_id=module_id, user_id=user.id, kind=kind,
+        score=score, correct=correct, total=total,
+        pass_pct=threshold, passed=passed,
+        domain_results=domain_payload, summary=summary,
+    )
+
     return ExamResult(
-        exam_id=exam_id, score=score, correct=correct, total=total, results=results,
+        exam_id=exam_id, attempt_id=attempt_id, kind=kind,
+        score=score, correct=correct, total=total,
+        pass_pct=threshold, passed=passed,
+        domains=domains, summary=summary, results=results,
     )
 
 

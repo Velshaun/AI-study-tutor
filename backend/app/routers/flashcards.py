@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.database import get_supabase
-from app.services import schema_features
+from app.services import performance, schema_features
 from app.routers.auth import AuthUser, get_current_user
 from app.services.ai_service import (
     GenerationError,
@@ -146,6 +146,11 @@ async def generate(
         cards = generate_flashcards(
             gathered["content"], difficulty, payload.count,
             subject=gathered["subject"], topic=domain.get("title") or "",
+            # Weak domains get cards that rebuild the fundamentals; strong ones
+            # get the edges. Same count, different deck.
+            focus=performance.focus_hint(
+                domain.get("module_id") or "", user.id, payload.domain_id,
+            ) if domain.get("module_id") else "",
         )
     except GenerationError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc

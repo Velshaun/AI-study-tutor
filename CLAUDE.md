@@ -40,6 +40,7 @@ supabase/migrations/   timestamped, idempotent, safe to re-run
 | `link_check` / `dead_links` | Validating discovered URLs; learner reports feeding back |
 | `extraction` | PDF, text, audio, **image (Gemini vision)**, **video (frames + narration)** |
 | `pipeline` | Ingestion, and the guard that stops it destroying study content |
+| `performance` | Rolling per-domain strength, adaptive weighting, attempt records |
 | `schema_features` | Probes for optional columns so the API can deploy ahead of a migration |
 
 ---
@@ -99,6 +100,37 @@ explanations live in `practice_questions.options` (already object-shaped for
 practice mode; both shapes are read). Quiz questions carry their terms inside
 `quizzes.questions`. Migrations were added only where there was genuinely
 nowhere to put something.
+
+**The Classroom is organised by domain, not by media type.** It was one pool
+grouped by table — every lecture together, every deck together — which mirrored
+the schema rather than the revision. Nobody sits down to "do some flashcards".
+Every item already carried its `domain_id`; nothing grouped by it. Practice
+exams stay outside the domain list because they are the one thing that spans
+the whole blueprint.
+
+**Two scores per domain, and only one of them is shown.** The display score
+rises fast, falls slowly (0.6 up, 0.2 down) and never sits below 90% of the
+best demonstrated, so one bad evening after a good fortnight reads as one bad
+evening. The internal score reacts fully and decides where the next questions
+come from. Collapsing them into one figure means either discouraging the
+learner or misleading the generator; there is no single number that does both.
+Red needs a low score on *both*, across two or more sittings.
+
+**Exam questions carry `domain_id`.** Generation always allocated by domain
+weight and then dropped the attribution at insert, so a 90-question paper could
+only ever yield one percentage. Everything downstream — the breakdown, the
+baseline, adaptive weighting — was impossible until the column was written.
+
+**Pass marks are an approximation, and say so.** Vendors publish scaled
+thresholds (675/900, 500/800) that are not linear in questions correct, so
+`exam_catalog.pass_pct` is a study target rather than a re-implementation of
+anyone's grading. The threshold is stored *with* each attempt so changing it
+later never re-grades an old sitting.
+
+**A pre-assessment is a flag, not a second code path.** Same generator, same
+weights, same runner — `kind='pre_assessment'` and `adaptive=false`, because a
+baseline weighted towards weaknesses the app hasn't observed yet would be
+measuring nothing twice.
 
 **Polymorphic tables follow the `review_later` precedent** — `item_type` +
 `item_id`, no FK — where the referent lives in one of several tables. That's
@@ -200,11 +232,13 @@ All twelve features from the August audit are shipped. Latest work, newest first
 `20260818000000` interactive terms · `20260819000000` deck titles ·
 `20260820000000` study attempts · `20260821000000` tutor messages
 
-**Not applied: `20260822000000` source coverage map.** No token to run it with.
-Until it lands, `coverage.available()` is false, the tutor falls back to the
-old 60k sample, and `analysis.mode` on every assessment says `sampled` so the
-UI admits it. Applying the migration and restarting the API is all that's
-needed — `schema_features` probes once per process.
+**Not applied: `20260822000000` source coverage map, `20260823000000` domain performance.** No token to run it with.
+Until they land: `coverage.available()` is false, the tutor falls back to the
+old 60k sample, and `analysis.mode` says `sampled` so the UI admits it;
+`performance.available()` is false, so attempts aren't recorded, every domain
+reads as untouched, and generation falls back to the published exam weighting.
+Applying the migrations and restarting the API is all that's needed —
+`schema_features` probes once per process.
 
 Applied through the Supabase **Management API** with a personal access token
 (`POST /v1/projects/{ref}/database/query`). The service-role key cannot run DDL,
@@ -233,8 +267,15 @@ group_shared_domains, group_domain_views`
   JPEG on pick, so it rarely arrives; if it does, Gemini may reject it.
 - **"Add a screen recording" is a picker, not a recorder** — the web can't start
   a screen recording on a phone. Labelled honestly rather than promising it.
-- **`/practice/:moduleId`** (the standalone exam setup page) still exists but its
-  only entry point was removed; it's reachable by URL only. Fold it in or delete.
+- **`/practice/:moduleId`** (the standalone exam setup page) is now redundant:
+  the Classroom's own Practice exams section generates and lists them. Delete it.
+- **The pre-assessment can be read before it's answered.** `GET /practice-exam/
+  {id}` ships `correct_index` with every question, which is what makes feedback
+  instant and is deliberate for a quiz. It matters more now that a first sitting
+  is a stored baseline. Splitting the payload would cost the instant feedback.
+- **`ReadinessCard` and the domain rows now both show per-domain state.**
+  Readiness measures effort and progress, performance measures graded strength —
+  defensible, but two lists on one screen is worth a second look.
 - **Deleting a module bumps its `updated_at`**, which affects dashboard ordering
   — inherent to the write, not a bug.
 

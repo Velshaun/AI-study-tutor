@@ -1,11 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
 
+import { useQueryClient } from '@tanstack/react-query'
+
+import ExamSummary from '../components/study/ExamSummary'
 import PageTitle from '../components/PageTitle'
 import QuizRunner from '../components/study/QuizRunner'
 import { useAttempt } from '../hooks/useAttempt'
 import { useToast } from '../hooks/useToast'
 import { ApiError, api } from '../lib/api'
+import { path } from '../routes'
 
 /**
  * Sit a stored practice exam.
@@ -19,6 +23,7 @@ export default function ExamRun() {
   const navigate = useNavigate()
   const toast = useToast()
 
+  const queryClient = useQueryClient()
   const attempt = useAttempt('exam', examId)
   const { data: exam, isPending, error } = useQuery({
     queryKey: ['exam', examId],
@@ -27,6 +32,14 @@ export default function ExamRun() {
 
   async function submit(answers) {
     const result = await api.submitExam(examId, answers)
+    // The sitting is now recorded, so everything derived from past results —
+    // per-domain strength, the module's readiness, what gets generated next —
+    // is out of date the moment this returns.
+    if (exam?.module_id) {
+      for (const key of ['performance', 'exam-attempts', 'readiness', 'module-stats']) {
+        queryClient.invalidateQueries({ queryKey: [key, exam.module_id] })
+      }
+    }
     toast.success(`Exam score saved · ${Math.round(result.score)}%`)
     return result
   }
@@ -71,6 +84,20 @@ export default function ExamRun() {
         attempt={attempt}
         onSubmit={submit}
         onRestart={() => navigate(-1)}
+        renderResult={({ result, questions }) => (
+          <ExamSummary
+            result={result}
+            questions={questions}
+            onRestart={() =>
+              navigate(
+                exam?.module_id
+                  ? `${path('module', { id: exam.module_id })}?tab=classroom`
+                  : -1,
+                { replace: true },
+              )
+            }
+          />
+        )}
       />
     </div>
   )

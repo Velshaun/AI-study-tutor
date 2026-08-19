@@ -46,6 +46,9 @@
   /* --- status --------------------------------------------------------- */
   --color-success: #4caf50;
   --color-warning: #ff9800;
+  /* Reserved for a domain that has gone badly more than once. Never used for a
+     single poor session — see lib/performance.js. */
+  --color-danger: #ef5350;
 
   /* --- type ----------------------------------------------------------- */
   --font-sans: 'Inter Variable', 'Inter', system-ui, -apple-system,
@@ -84,6 +87,7 @@
 
     --color-success: #2e7d32;
     --color-warning: #e07000;
+    --color-danger: #c62828;
   }
 
   :root {
