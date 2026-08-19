@@ -303,6 +303,14 @@ export const api = {
     apiFetch(`/practice-exam/imported/${batchId}`, { method: 'DELETE' }),
   generateExam: (body) =>
     apiFetch('/practice-exam/generate', { method: 'POST', body }),
+  // Reveal one exam question's answer, once it has been answered. The paper
+  // itself ships without its key so a sitting can't be inflated by reading the
+  // response — see the runner.
+  answerExamQuestion: (examId, index, chosenIndex) =>
+    apiFetch(`/practice-exam/${examId}/answer`, {
+      method: 'POST',
+      body: { index, chosen_index: chosenIndex },
+    }),
   // The baseline sitting, taken before any studying. The same generator and the
   // same runner — `adaptive: false` because a baseline has to measure the
   // blueprint as published, not as the learner's weaknesses would reweight it.

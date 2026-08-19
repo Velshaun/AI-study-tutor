@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
-import { Target } from 'lucide-react'
+import { ChevronDown, Target } from 'lucide-react'
+import { useState } from 'react'
 
 import { api } from '../../lib/api'
 
@@ -14,7 +15,35 @@ import { api } from '../../lib/api'
  * A domain nothing has been attempted in shows a dash rather than a zero: an
  * untouched domain isn't a failed one, and saying "0%" would read as though the
  * learner had tried and got everything wrong.
+ *
+ * It collapses, and it sits below the domain list. This is a summary of the
+ * screen above it: the domains are what a learner navigates by, and a full
+ * per-domain breakdown standing between them and their topics made the page
+ * something to scroll past. Collapsed, the headline number stays — hiding the
+ * detail shouldn't mean hiding where you stand — and the choice is remembered
+ * per module, because "I've seen this" is a lasting statement, not a per-visit
+ * one.
  */
+
+const COLLAPSE_KEY = 'readiness-collapsed'
+
+function storedCollapsed(moduleId) {
+  try {
+    return JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '{}')[moduleId] === true
+  } catch {
+    return false
+  }
+}
+
+function rememberCollapsed(moduleId, collapsed) {
+  try {
+    const all = JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '{}')
+    all[moduleId] = collapsed
+    localStorage.setItem(COLLAPSE_KEY, JSON.stringify(all))
+  } catch {
+    // A browser refusing storage costs the memory of the choice, nothing more.
+  }
+}
 
 const STATUS = {
   strong: { label: 'Strong', dot: 'bg-success', text: 'text-success' },
@@ -24,6 +53,7 @@ const STATUS = {
 }
 
 export default function ReadinessCard({ moduleId }) {
+  const [collapsed, setCollapsed] = useState(() => storedCollapsed(moduleId))
   const { data, isPending } = useQuery({
     queryKey: ['readiness', moduleId],
     queryFn: ({ signal }) => api.readiness(moduleId, signal),
@@ -37,6 +67,12 @@ export default function ReadinessCard({ moduleId }) {
   const overall = data?.overall
   const focus = data?.focus || []
 
+  function toggle() {
+    const next = !collapsed
+    setCollapsed(next)
+    rememberCollapsed(moduleId, next)
+  }
+
   return (
     <section className="space-y-3">
       <h2 className="flex items-center gap-2 border-l-2 border-accent pl-2.5 text-xs font-bold uppercase tracking-[0.14em] text-accent2">
@@ -45,26 +81,40 @@ export default function ReadinessCard({ moduleId }) {
       </h2>
 
       <div className="card space-y-4">
-        <div className="flex items-center gap-4">
-          <div className="flex size-16 shrink-0 items-center justify-center rounded-full border-2 border-accent/40">
+        {/* The headline stays whether or not the detail is open — collapsing is
+            for hiding the working, not the answer. */}
+        <button
+          onClick={toggle}
+          aria-expanded={!collapsed}
+          className="flex w-full items-center gap-4 text-left"
+        >
+          <span className="flex size-16 shrink-0 items-center justify-center rounded-full border-2 border-accent/40">
             <span className="text-lg font-bold tabular-nums text-pri">
               {overall == null ? '—' : `${Math.round(overall)}%`}
             </span>
-          </div>
-          <div className="min-w-0 space-y-0.5">
-            <p className="text-sm font-medium text-pri">
+          </span>
+          <span className="min-w-0 flex-1 space-y-0.5">
+            <span className="block text-sm font-medium text-pri">
               {overall == null
                 ? 'Nothing attempted yet'
                 : 'Weighted across the exam blueprint'}
-            </p>
-            <p className="text-xs text-sec">
+            </span>
+            <span className="block text-xs text-sec">
               {data?.untouched_weight_pct > 0
                 ? `${Math.round(data.untouched_weight_pct)}% of the exam is still untouched`
                 : 'Every domain has been started'}
-            </p>
-          </div>
-        </div>
+            </span>
+          </span>
+          <ChevronDown
+            size={18}
+            className={`shrink-0 text-sec transition-transform ${
+              collapsed ? '' : 'rotate-180'
+            }`}
+            aria-hidden="true"
+          />
+        </button>
 
+        {collapsed ? null : (
         <div className="space-y-2.5">
           {domains.map((d) => {
             const tone = STATUS[d.status] || STATUS.untouched
@@ -112,8 +162,9 @@ export default function ReadinessCard({ moduleId }) {
             )
           })}
         </div>
+        )}
 
-        {focus.length > 0 && (
+        {!collapsed && focus.length > 0 && (
           <div className="rounded-xl bg-accent/10 px-4 py-3">
             <p className="text-xs font-semibold uppercase tracking-wider text-accent2">
               Study these next

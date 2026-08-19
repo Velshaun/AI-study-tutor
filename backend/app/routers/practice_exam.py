@@ -118,7 +118,10 @@ class ExamQuestion(BaseModel):
     index: int
     question: str
     options: list[str]
-    correct_index: int
+    # Null on the way out to a client that hasn't answered yet. Populated
+    # internally while an exam is being built and written, and returned only by
+    # the per-question answer endpoint — see `_without_answers`.
+    correct_index: int | None = None
     explanation: str = ""
     # One line per option, positionally aligned with `options`: why that choice
     # is right, or why it is wrong. Shown for every option once an answer is in,
@@ -206,6 +209,23 @@ def _own_module(module_id: str, user_id: str) -> dict[str, Any]:
     if not rows:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Module not found.")
     return rows[0]
+
+
+def _without_answers(questions: list[ExamQuestion]) -> list[ExamQuestion]:
+    """The same questions with the answer key removed.
+
+    Applied at every point an exam leaves the API, not at the point it is built:
+    the builder needs the answers to write them to the database, and a single
+    strip on the way out is one thing to get right rather than three.
+    """
+    return [
+        q.model_copy(update={
+            "correct_index": None,
+            "explanation": "",
+            "option_explanations": [],
+        })
+        for q in questions
+    ]
 
 
 def _own_exam(exam_id: str, user_id: str) -> dict[str, Any]:
@@ -338,7 +358,7 @@ def _store_imported_exam(
         title=exam_row["title"],
         question_count=len(built),
         duration_minutes=duration,
-        questions=built,
+        questions=_without_answers(built),
         created_at=exam_row.get("created_at"),
     )
 
@@ -812,7 +832,7 @@ async def generate_exam(
         title=exam_row["title"],
         question_count=len(questions),
         duration_minutes=duration,
-        questions=questions,
+        questions=_without_answers(questions),
         created_at=exam_row.get("created_at"),
     )
 
@@ -860,6 +880,21 @@ def _exam_questions(exam_id: str) -> list[dict[str, Any]]:
 
 
 def _to_exam(row: dict[str, Any], questions: list[dict[str, Any]]) -> PracticeExam:
+    """The paper as the learner receives it: questions, and no answers.
+
+    The answer key used to ride along with the paper. That is fine for a study
+    quiz — the runner shows instant feedback from data it already holds, and a
+    learner who wants to look is only cheating themselves out of practice. It is
+    not fine for an exam whose first sitting is stored as the baseline every
+    later attempt is measured against, and which decides how much of each domain
+    gets generated from here on. A score that can be inflated by reading the
+    payload isn't a measurement.
+
+    So the key is withheld until each question is answered, one at a time,
+    through ``POST /{exam_id}/answer`` — the same shape practice mode already
+    uses, and no slower for it: the explanations were written at generation
+    time, so revealing one is a read.
+    """
     return PracticeExam(
         id=row["id"],
         module_id=row.get("module_id"),
@@ -872,9 +907,9 @@ def _to_exam(row: dict[str, Any], questions: list[dict[str, Any]]) -> PracticeEx
                 index=q.get("position", i),
                 question=q.get("prompt") or "",
                 options=_option_texts(q.get("options")),
-                correct_index=int(q.get("correct_index") or 0),
-                explanation=q.get("expected_answer") or "",
-                option_explanations=_option_explanations(q.get("options")),
+                # correct_index, explanation and option_explanations are
+                # deliberately absent — see the docstring. The defaults on the
+                # model are what a client sees until it answers.
                 terms=q.get("terms") or [],
                 domain_id=q.get("domain_id"),
             )
@@ -1032,6 +1067,63 @@ def _domain_breakdown(
             pct=round(correct / total * 100, 1) if total else 0.0,
         ))
     return out
+
+
+class AnswerRequest(BaseModel):
+    """One question of a paper, answered."""
+
+    index: int = Field(..., ge=0, description="The question's position.")
+    # Null is a skip — the learner moved on. It still reveals, because the
+    # runner shows the answer either way.
+    chosen_index: int | None = None
+
+
+class AnswerResult(BaseModel):
+    index: int
+    chosen_index: int | None = None
+    correct_index: int
+    is_correct: bool
+    explanation: str = ""
+    option_explanations: list[str] = Field(default_factory=list)
+
+
+@router.post("/{exam_id}/answer", response_model=AnswerResult)
+async def answer_question(
+    exam_id: str,
+    payload: AnswerRequest,
+    user: AuthUser = Depends(get_current_user),
+) -> AnswerResult:
+    """Reveal one question's answer, once it has been answered.
+
+    This exists so the paper itself can be sent without its answer key. It used
+    to travel with the questions, which is defensible for a study quiz and not
+    for an exam whose first sitting becomes the baseline every later attempt is
+    measured against — and which decides how much of each domain gets generated
+    from here on. A number that can be raised by reading the network response
+    is not a measurement of anything.
+
+    It costs a round trip per question and no model call: the explanations were
+    written at generation time, so this is one read. The same trade practice
+    mode already makes, measured there at 0.14s.
+    """
+    _own_exam(exam_id, user.id)
+    rows = (
+        _client().table("practice_questions").select("*")
+        .eq("exam_id", exam_id).eq("position", payload.index).limit(1).execute()
+    ).data or []
+    if not rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such question on this exam.")
+
+    question = rows[0]
+    correct_index = int(question.get("correct_index") or 0)
+    return AnswerResult(
+        index=payload.index,
+        chosen_index=payload.chosen_index,
+        correct_index=correct_index,
+        is_correct=payload.chosen_index == correct_index,
+        explanation=question.get("expected_answer") or "",
+        option_explanations=_option_explanations(question.get("options")),
+    )
 
 
 @router.post("/{exam_id}/submit", response_model=ExamResult)

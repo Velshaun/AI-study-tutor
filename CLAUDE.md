@@ -132,6 +132,17 @@ weights, same runner — `kind='pre_assessment'` and `adaptive=false`, because a
 baseline weighted towards weaknesses the app hasn't observed yet would be
 measuring nothing twice.
 
+**A quiz ships its answers; an exam withholds them.** They used to be the same
+payload. Instant local feedback is right for a study quiz — a learner who reads
+the response is only robbing themselves of practice. It is wrong for an exam
+whose first sitting becomes the baseline every later attempt is measured
+against, and which decides how much of each domain gets generated from then on:
+a number that can be raised by reading the network response is not a
+measurement. `POST /practice-exam/{id}/answer` reveals one question at a time,
+once answered — one read, no model call, the same trade practice mode already
+makes. The runner holds the styling back until the answer lands, or a locked
+question flashes every option as wrong for the length of the round trip.
+
 **Polymorphic tables follow the `review_later` precedent** — `item_type` +
 `item_id`, no FK — where the referent lives in one of several tables. That's
 `study_attempts` and `review_later`.
@@ -230,27 +241,30 @@ All twelve features from the August audit are shipped. Latest work, newest first
 
 `20260817000000` exam length · `20260817010000` dead links ·
 `20260818000000` interactive terms · `20260819000000` deck titles ·
-`20260820000000` study attempts · `20260821000000` tutor messages
-
-**Not applied: `20260822000000` source coverage map, `20260823000000` domain performance.** No token to run it with.
-Until they land: `coverage.available()` is false, the tutor falls back to the
-old 60k sample, and `analysis.mode` says `sampled` so the UI admits it;
-`performance.available()` is false, so attempts aren't recorded, every domain
-reads as untouched, and generation falls back to the published exam weighting.
-Applying the migrations and restarting the API is all that's needed —
-`schema_features` probes once per process.
+`20260820000000` study attempts · `20260821000000` tutor messages ·
+`20260822000000` coverage maps · `20260823000000` domain performance
 
 Applied through the Supabase **Management API** with a personal access token
 (`POST /v1/projects/{ref}/database/query`). The service-role key cannot run DDL,
 and `supabase db push` needs the database password, which isn't in the repo.
-**The token used previously has been rotated — a new one is needed to apply
+`20260822000000` source coverage map · `20260823000000` domain performance
+were applied on 19 Aug 2026 — `coverage.available()` and
+`performance.available()` both return true against production now.
+
+Two things worth knowing for next time. `urllib` gets a **403 / Cloudflare
+1010** from `api.supabase.com` on its default user-agent; `curl` works. And the
+SQL has to be JSON-encoded to a file and posted with `--data-binary @file` —
+these migrations contain `$$` blocks and quotes that no amount of shell quoting
+survives.
+
+**The token used for this has been rotated — a new one is needed to apply
 anything further.**
 
-Live tables (23, plus `coverage_maps` once its migration is applied): `profiles, modules, domains, lectures, qa_sessions, lecture_qa,
+Live tables (25): `profiles, modules, domains, lectures, qa_sessions, lecture_qa,
 flashcards, quizzes, practice_exams, practice_questions, imported_practice_questions,
 exam_concept_cache, review_later, study_attempts, tutor_messages, user_files,
 module_access, study_time, dead_link_reports, groups, group_members,
-group_shared_domains, group_domain_views`
+group_shared_domains, group_domain_views, coverage_maps, exam_attempts`
 
 ### Known gaps and loose ends
 
@@ -269,13 +283,12 @@ group_shared_domains, group_domain_views`
   a screen recording on a phone. Labelled honestly rather than promising it.
 - **`/practice/:moduleId`** (the standalone exam setup page) is now redundant:
   the Classroom's own Practice exams section generates and lists them. Delete it.
-- **The pre-assessment can be read before it's answered.** `GET /practice-exam/
-  {id}` ships `correct_index` with every question, which is what makes feedback
-  instant and is deliberate for a quiz. It matters more now that a first sitting
-  is a stored baseline. Splitting the payload would cost the instant feedback.
-- **`ReadinessCard` and the domain rows now both show per-domain state.**
-  Readiness measures effort and progress, performance measures graded strength —
-  defensible, but two lists on one screen is worth a second look.
+- **Multi-question navigation can't be verified in the browser harness.** The
+  pane doesn't composite, so `requestAnimationFrame` never fires, so
+  framer-motion's exit animation never completes and `AnimatePresence
+  mode="wait"` never mounts the next question. The header advances, the body
+  doesn't. Confirmed as an artifact by A/B against the unmodified path — but it
+  means anything about stepping between questions needs a real browser.
 - **Deleting a module bumps its `updated_at`**, which affects dashboard ordering
   — inherent to the write, not a bug.
 

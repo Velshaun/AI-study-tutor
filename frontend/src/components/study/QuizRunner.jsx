@@ -26,9 +26,13 @@ import TermText from './TermText'
  * mid-run and coming back reopens the same question with the same answers, and
  * a timed exam resumes with the clock where it was rather than reset.
  *
- * The correct answers ship with the quiz (it's a study quiz, not a proctored
- * exam), so feedback is instant with no round-trip. The full set of answers is
- * still submitted at the end for an authoritative, recorded score.
+ * The correct answers ship with a *quiz* (it's a study quiz, not a proctored
+ * exam), so feedback there is instant with no round-trip. An exam withholds
+ * them: its first sitting can become the baseline everything later is measured
+ * against, and a score that can be raised by reading the network response is
+ * not a measurement. Where the caller passes `onAnswer`, each question's answer
+ * is fetched as it is answered — one read, no model call. Either way the full
+ * set is submitted at the end for an authoritative, recorded score.
  */
 
 /** mm:ss for a countdown. */
@@ -40,7 +44,7 @@ function clock(totalSeconds) {
 }
 
 export default function QuizRunner({
-  quiz, onSubmit, onRestart, attempt, renderResult,
+  quiz, onSubmit, onRestart, attempt, renderResult, onAnswer,
 }) {
   const questions = quiz.questions || []
   const durationMinutes = quiz.duration_minutes || 0
@@ -68,6 +72,10 @@ export default function QuizRunner({
   })
   const [timedOut, setTimedOut] = useState(false)
   const [openTerm, setOpenTerm] = useState(null)
+  // Answers revealed so far, by question index — only used where the paper
+  // arrived without them. A resumed exam starts empty: a question answered
+  // before the tab was closed keeps its choice, and re-reveals when reopened.
+  const [revealed, setRevealed] = useState({})
 
   // The countdown works from a fixed deadline rather than by decrementing, so a
   // backgrounded tab (where timers are throttled) still comes back honest.
@@ -83,9 +91,25 @@ export default function QuizRunner({
     }),
   )
   const submittingRef = useRef(false)
+  // Which questions have a reveal in flight. The effect below depends on the
+  // `onAnswer` the caller passed, which is usually an inline arrow and so a new
+  // function every render — without this, every render between asking and
+  // answering would ask again.
+  const revealingRef = useRef(new Set())
 
   const q = questions[index]
   const chosen = answers[index]
+
+  // Where this question's answer comes from. A quiz ships its own; an exam
+  // withholds it and hands it over one question at a time, once answered, so
+  // that reading the network response can't raise a baseline score.
+  const carried = q?.correct_index != null
+  const answer = carried ? q : revealed[index] || {}
+  const correctIndex = answer.correct_index ?? null
+  const explanation = answer.explanation || ''
+  // Undefined until it arrives, so the options can stay neutral rather than
+  // flashing the chosen one as wrong for the length of a round trip.
+  const awaitingReveal = locked && !carried && correctIndex == null && !answer.failed
 
   async function finish(answerList, { expired = false } = {}) {
     if (submittingRef.current) return
@@ -117,6 +141,29 @@ export default function QuizRunner({
     // answers it submits are read from a ref at call time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [durationMinutes, finished])
+
+  // Fetch the answer for a locked question the paper didn't carry one for.
+  //
+  // Keyed on the question rather than fired from the tap, so it covers every
+  // way of arriving at an answered question: choosing an option, stepping back
+  // to one, and resuming a run that was left half-finished.
+  useEffect(() => {
+    if (!onAnswer || !locked || carried) return
+    if (revealed[index] !== undefined || chosen == null) return
+    if (revealingRef.current.has(index)) return
+
+    const asking = index
+    revealingRef.current.add(asking)
+    onAnswer({ index: asking, chosenIndex: chosen })
+      .then((data) => setRevealed((cur) => ({ ...cur, [asking]: data })))
+      .catch(() =>
+        // The choice stands and the paper still grades server-side on submit;
+        // only this question's explanation is missing, so let the run carry on
+        // rather than blocking it on an unanswerable request.
+        setRevealed((cur) => ({ ...cur, [asking]: { failed: true } })),
+      )
+      .finally(() => revealingRef.current.delete(asking))
+  }, [onAnswer, locked, carried, index, chosen, revealed])
 
   function choose(optionIndex) {
     // A tap that opened a definition must not also lock in an answer.
@@ -160,6 +207,8 @@ export default function QuizRunner({
     setResult(null)
     setTimedOut(false)
     setRemaining(durationMinutes * 60)
+    setRevealed({})
+    revealingRef.current = new Set()
     deadlineRef.current = null
     submittingRef.current = false
     // Starting over discards the saved run rather than resuming into it.
@@ -215,7 +264,7 @@ export default function QuizRunner({
 
   if (!q) return null
 
-  const optionExplanations = q.option_explanations || []
+  const optionExplanations = answer.option_explanations || []
   const terms = q.terms || []
   // An acronym expands on the first occurrence a learner reads, counted across
   // the whole question rather than per line.
@@ -276,8 +325,11 @@ export default function QuizRunner({
           <div className="space-y-2.5">
             {q.options.map((option, i) => {
               const isChosen = chosen === i
-              const isCorrect = i === q.correct_index
-              const showState = locked
+              const isCorrect = correctIndex != null && i === correctIndex
+              // Hold the styling back until the answer is known, or a locked
+              // question would show every option — including the right one —
+              // as wrong while the reveal is in flight.
+              const showState = locked && !awaitingReveal
               const why = optionExplanations[i]
 
               let tone = 'border-border bg-surface hover:border-accent/50'
@@ -335,16 +387,16 @@ export default function QuizRunner({
           </div>
 
           {/* The overall rationale, once answered */}
-          {locked && q.explanation && (
+          {locked && explanation && (
             <motion.div
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
               className="rounded-xl bg-surface2 px-4 py-3"
             >
               <p className="mb-1 text-xs font-medium uppercase tracking-wider text-accent2">
-                {chosen === q.correct_index ? 'Correct' : 'Explanation'}
+                {chosen === correctIndex ? 'Correct' : 'Explanation'}
               </p>
-              <p className="text-sm leading-relaxed text-pri">{q.explanation}</p>
+              <p className="text-sm leading-relaxed text-pri">{explanation}</p>
             </motion.div>
           )}
         </motion.div>

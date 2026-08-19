@@ -84,6 +84,11 @@ export default function ExamRun() {
         attempt={attempt}
         onSubmit={submit}
         onRestart={() => navigate(-1)}
+        // The paper arrived without its answers; this is how each one is
+        // revealed, as it is answered.
+        onAnswer={({ index, chosenIndex }) =>
+          api.answerExamQuestion(examId, index, chosenIndex)
+        }
         renderResult={({ result, questions }) => (
           <ExamSummary
             result={result}

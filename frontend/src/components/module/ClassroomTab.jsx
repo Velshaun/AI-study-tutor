@@ -170,8 +170,6 @@ export default function ClassroomTab({ moduleId, domains, examCount = 40 }) {
         <PreAssessmentCard moduleId={moduleId} questionCount={examCount} />
       )}
 
-      <ReadinessCard moduleId={moduleId} />
-
       <ExamsSection
         moduleId={moduleId}
         exams={media?.exams ?? []}
@@ -196,6 +194,11 @@ export default function ClassroomTab({ moduleId, domains, examCount = 40 }) {
           examCount={examCount}
         />
       )}
+
+      {/* Below the domains, not above them: the domain list is what a learner
+          navigates by, and a full per-domain breakdown standing in front of it
+          made the topics something to scroll past. */}
+      <ReadinessCard moduleId={moduleId} />
 
       <GenerateAll
         moduleId={moduleId}
