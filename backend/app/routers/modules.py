@@ -525,11 +525,26 @@ class StudioQuiz(BaseModel):
     created_at: datetime | None = None
 
 
+class StudioExam(BaseModel):
+    """A sat-in-one-go practice exam, generated or imported from a PDF.
+
+    Imported papers are stored in the same tables as generated ones, so nothing
+    here distinguishes them — deliberately: they are the same experience.
+    """
+
+    id: str
+    title: str = "Practice Exam"
+    question_count: int = 0
+    duration_minutes: int = 0
+    created_at: datetime | None = None
+
+
 class StudioMedia(BaseModel):
     lectures: list[StudioLecture] = Field(default_factory=list)
     flashcards: list[StudioSet] = Field(default_factory=list)
     quizzes: list[StudioQuiz] = Field(default_factory=list)
     practice: list[StudioSet] = Field(default_factory=list)
+    exams: list[StudioExam] = Field(default_factory=list)
 
 
 @router.get("/{module_id}/studio", response_model=StudioMedia)
@@ -594,18 +609,23 @@ async def studio_media(
         """
         counts: dict[str, int] = {}
         newest: dict[str, Any] = {}
+        titles: dict[str, str] = {}
         for r in rows:
             dom = r.get("domain_id")
             if not dom:
                 continue
             counts[dom] = counts.get(dom, 0) + 1
+            named = (r.get("deck_title") or "").strip()
+            if named:
+                titles.setdefault(dom, named)
             stamp = r.get("created_at")
             if stamp and (dom not in newest or str(stamp) > str(newest[dom])):
                 newest[dom] = stamp
         return [
             StudioSet(
                 domain_id=d,
-                title=f"{title_of.get(d) or 'Set'} — {n} {noun}{'' if n == 1 else 's'}",
+                title=titles.get(d)
+                or f"{title_of.get(d) or 'Set'} — {n} {noun}{'' if n == 1 else 's'}",
                 domain_title=title_of.get(d),
                 count=n,
                 created_at=newest.get(d),
@@ -614,7 +634,7 @@ async def studio_media(
         ]
 
     flashcards = _by_domain(
-        (client.table("flashcards").select("domain_id, created_at")
+        (client.table("flashcards").select("domain_id, created_at, deck_title")
          .eq("module_id", module_id).eq("user_id", user.id).execute()).data or [],
         "card",
     )
@@ -627,8 +647,26 @@ async def studio_media(
             "question",
         )
 
+    exam_rows = (
+        client.table("practice_exams")
+        .select("id, title, total_points, duration_minutes, created_at")
+        .eq("module_id", module_id).eq("user_id", user.id)
+        .order("created_at", desc=True).execute()
+    ).data or []
+    exams = [
+        StudioExam(
+            id=e["id"],
+            title=e.get("title") or "Practice Exam",
+            question_count=e.get("total_points") or 0,
+            duration_minutes=e.get("duration_minutes") or 0,
+            created_at=e.get("created_at"),
+        )
+        for e in exam_rows
+    ]
+
     return StudioMedia(
-        lectures=lectures, flashcards=flashcards, quizzes=quizzes, practice=practice,
+        lectures=lectures, flashcards=flashcards, quizzes=quizzes,
+        practice=practice, exams=exams,
     )
 
 

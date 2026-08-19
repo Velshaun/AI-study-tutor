@@ -116,9 +116,14 @@ export default function ImportedExamsCard({ moduleId }) {
         open={showImport}
         moduleId={moduleId}
         onClose={() => setShowImport(false)}
-        onDone={(set) => {
+        onDone={(imported) => {
           invalidate()
-          toast.success(`Imported ${set.question_count} questions`)
+          const exams = imported.exams?.length || 0
+          toast.success(
+            exams > 1
+              ? `Imported ${exams} exams · ${imported.question_count} questions`
+              : `Imported ${imported.question_count} questions`,
+          )
         }}
       />
     </div>
@@ -150,10 +155,28 @@ function ImportModal({ open, moduleId, onClose, onDone }) {
     <Modal open={open} title="Import practice exam" onClose={close}>
       {result ? (
         <div className="space-y-4 text-center">
-          <p className="text-sm text-pri">
-            Imported <span className="font-semibold">{result.question_count}</span>{' '}
-            questions from {result.source_name}.
-          </p>
+          <div className="space-y-2 text-sm text-pri">
+            <p>
+              Imported <span className="font-semibold">{result.question_count}</span>{' '}
+              question{result.question_count === 1 ? '' : 's'} from{' '}
+              {result.source_name}.
+            </p>
+            {/* A file holding several papers becomes several exams, each sat
+                on its own — so say which ones arrived. */}
+            {result.exams?.length > 1 && (
+              <ul className="space-y-1 text-left text-xs text-sec">
+                {result.exams.map((e) => (
+                  <li key={e.id}>
+                    {e.title} · {e.question_count} questions
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="text-xs text-sec">
+              {result.exams?.length === 1 ? 'It is' : 'They are'} in Practice
+              Exams under Generated media.
+            </p>
+          </div>
           <button onClick={close} className="btn-primary w-full">
             Done
           </button>
@@ -161,8 +184,8 @@ function ImportModal({ open, moduleId, onClose, onDone }) {
       ) : (
         <div className="space-y-4">
           <p className="text-sm text-sec">
-            Upload a practice-exam PDF. We&rsquo;ll extract its questions and
-            answer key so you can mix them into your exams.
+            Upload a practice-exam PDF. The questions come across exactly as
+            written, and a file holding several papers becomes several exams.
           </p>
           <button
             onClick={() => fileInput.current?.click()}

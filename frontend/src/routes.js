@@ -18,6 +18,8 @@ export const ROUTES = {
   practice: '/practice/:moduleId',
   // Practice Exam Mode (§6.4) is domain-scoped: per-question feedback + Why Card.
   practiceMode: '/practice-mode/:domainId',
+  // A stored exam — generated or imported — opened by id.
+  examRun: '/exam/:examId',
   reviewLater: '/review-later/:domainId',
   // Beyond §5.2's list: the §5.6b per-domain Q&A review screen. Reached from
   // the module/lecture screens once those are built.

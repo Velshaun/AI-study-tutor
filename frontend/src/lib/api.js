@@ -260,6 +260,15 @@ export const api = {
     apiFetch(`/practice-exam/imported/${batchId}`, { method: 'DELETE' }),
   generateExam: (body) =>
     apiFetch('/practice-exam/generate', { method: 'POST', body }),
+  // One stored exam with its questions — generated or imported, same shape.
+  exam: (examId, signal) => apiFetch(`/practice-exam/${examId}`, { signal }),
+  deleteExam: (examId) => apiFetch(`/practice-exam/${examId}`, { method: 'DELETE' }),
+  deleteFlashcardDeck: (domainId) =>
+    apiFetch(`/flashcards/deck/${domainId}`, { method: 'DELETE' }),
+  deletePracticeSet: (domainId) =>
+    apiFetch(`/practice/${domainId}/questions`, { method: 'DELETE' }),
+  deleteLecture: (lectureId) =>
+    apiFetch(`/lectures/${lectureId}`, { method: 'DELETE' }),
   submitExam: (examId, answers) =>
     apiFetch(`/practice-exam/${examId}/submit`, { method: 'POST', body: { answers } }),
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -42,9 +43,11 @@ from app.services import exam_catalog, exam_profile, schema_features
 from app.services.ai_service import (
     MAX_QUIZ_QUESTIONS,
     GenerationError,
+    explain_imported_questions,
     gather_domain_content,
     generate_quiz,
     parse_imported_exam,
+    parse_imported_exams,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,6 +77,18 @@ class ImportedSet(BaseModel):
     is_favourite: bool = False
     created_at: datetime | None = None
     questions: list[ImportedQuestion] = Field(default_factory=list)
+
+
+class ImportResult(BaseModel):
+    """What an uploaded PDF turned into.
+
+    One entry per exam found in the file: a PDF holding three papers produces
+    three exams, each sat independently.
+    """
+
+    exams: list[PracticeExam] = Field(default_factory=list)
+    question_count: int = 0
+    source_name: str = ""
 
 
 class GenerateRequest(BaseModel):
@@ -178,15 +193,134 @@ def _preferred_difficulty(user_id: str) -> str:
 # ============================================================================
 # Import
 # ============================================================================
-@router.post("/import", response_model=ImportedSet,
+def _words(text: str) -> set[str]:
+    return {w for w in re.split(r"[^a-z0-9]+", (text or "").lower()) if len(w) > 2}
+
+
+def _titled(title: str, stem: str) -> str:
+    """Name an imported paper, adding the filename only when it says something.
+
+    "Practice Exam 2" alone doesn't say where it came from, so the file's name
+    supplies the publisher — but only if the heading isn't already carrying it.
+    Compared word-wise, since "professor-messer-practice" and "Professor Messer
+    Practice Exam 1" are the same words punctuated differently.
+    """
+    if not stem:
+        return title[:200]
+    stem_words = _words(stem)
+    if stem_words and stem_words <= _words(title):
+        return title[:200]
+    return f"{stem} — {title}"[:200]
+
+
+def _letter_index(label: str, options: list[dict[str, Any]]) -> int:
+    """Position of the labelled option, defaulting to the first."""
+    wanted = (label or "").strip().upper()[:1]
+    for i, option in enumerate(options):
+        if (option.get("label") or "").strip().upper()[:1] == wanted:
+            return i
+    return 0
+
+
+def _store_imported_exam(
+    *, module_id: str, user_id: str, title: str, questions: list[dict[str, Any]],
+    subject: str,
+) -> PracticeExam:
+    """Turn one transcribed paper into a practice exam the runner can sit.
+
+    Written to `practice_exams`/`practice_questions` — the same tables a
+    generated exam uses — so it behaves identically everywhere: same flow, same
+    reveal, same delete. Questions the paper didn't explain are explained here,
+    once, at import: the learner shouldn't be able to tell which is which.
+    """
+    client = _client()
+
+    # Which questions still need a rationale, and per-option lines (a printed
+    # explanation covers the answer, never each distractor).
+    to_explain = [
+        {"index": i, "question_text": q["question_text"], "options": q["options"],
+         "correct_option": q.get("correct_option")}
+        for i, q in enumerate(questions)
+    ]
+    try:
+        written = explain_imported_questions(to_explain, subject=subject)
+    except GenerationError as exc:
+        logger.warning("Could not explain imported questions: %s", exc)
+        written = {}
+
+    duration = exam_profile.exam_duration_minutes(len(questions))
+    exam_row = client.table("practice_exams").insert({
+        "module_id": module_id,
+        "user_id": user_id,
+        "title": title[:200],
+        "duration_minutes": duration,
+        "total_points": len(questions),
+    }).execute().data[0]
+
+    built: list[ExamQuestion] = []
+    for i, q in enumerate(questions):
+        options = q["options"]
+        extra = written.get(i, {})
+        per_option = list(extra.get("option_explanations") or [])
+        per_option += [""] * (len(options) - len(per_option))
+        built.append(ExamQuestion(
+            index=i,
+            question=q["question_text"],
+            options=[o["text"] for o in options],
+            # An unmarked answer falls to whatever the explainer worked out,
+            # which is the first option only when nothing else is known.
+            correct_index=_letter_index(q.get("correct_option"), options),
+            # The paper's own rationale wins; ours fills the gap.
+            explanation=q.get("explanation") or extra.get("explanation") or "",
+            option_explanations=per_option[:len(options)],
+            origin="imported",
+        ))
+
+    client.table("practice_questions").insert(schema_features.strip_unsupported(
+        "practice_questions",
+        [
+            {
+                "exam_id": exam_row["id"],
+                "kind": "mcq",
+                "prompt": q.question,
+                "options": _options_payload(q),
+                "correct_index": q.correct_index,
+                "expected_answer": q.explanation,
+                "points": 1,
+                "position": q.index,
+                "terms": q.terms,
+            }
+            for q in built
+        ],
+        "terms",
+    )).execute()
+
+    return PracticeExam(
+        id=exam_row["id"],
+        module_id=module_id,
+        title=exam_row["title"],
+        question_count=len(built),
+        duration_minutes=duration,
+        questions=built,
+        created_at=exam_row.get("created_at"),
+    )
+
+
+@router.post("/import", response_model=ImportResult,
              status_code=status.HTTP_201_CREATED)
 async def import_exam(
     module_id: str = Form(...),
     file: UploadFile = File(...),
     user: AuthUser = Depends(get_current_user),
-) -> ImportedSet:
-    """Upload a practice-exam PDF; extract its questions with Gemini and save."""
-    _own_module(module_id, user.id)
+) -> ImportResult:
+    """Turn an uploaded practice-exam PDF into exams the learner can sit.
+
+    The questions are transcribed exactly as printed — wording, choices, order
+    and marked answer — and a file holding several papers becomes several exams
+    rather than one long one. Answer keys and printed rationales are stripped
+    out of the question text and surface only after an answer is committed.
+    """
+    module = _own_module(module_id, user.id)
 
     data = await file.read()
     if not data:
@@ -200,13 +334,26 @@ async def import_exam(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
     try:
-        parsed = parse_imported_exam(text)
+        papers = parse_imported_exams(text)
     except GenerationError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
 
-    batch_id = str(uuid4())
     source_name = file.filename or "Imported exam"
-    rows = [
+    stem = source_name.rsplit(".", 1)[0].strip()
+    subject = module.get("detected_subject") or module.get("title") or "this subject"
+
+    exams: list[PracticeExam] = []
+    for paper in papers:
+        title = _titled(paper["title"], stem)
+        exams.append(_store_imported_exam(
+            module_id=module_id, user_id=user.id, title=title,
+            questions=paper["questions"], subject=subject,
+        ))
+
+    # Also kept as an imported set, which is what the "mix real past-paper
+    # questions into a generated exam" toggle draws on.
+    batch_id = str(uuid4())
+    _client().table("imported_practice_questions").insert([
         {
             "user_id": user.id,
             "module_id": module_id,
@@ -215,19 +362,16 @@ async def import_exam(
             "question_text": q["question_text"],
             "options": q["options"],
             "correct_option": q["correct_option"] or None,
-            "why_summary": q["why_summary"] or None,
+            "why_summary": q.get("explanation") or None,
         }
-        for q in parsed
-    ]
-    inserted = _client().table("imported_practice_questions").insert(rows).execute()
-    saved = inserted.data or rows
+        for paper in papers
+        for q in paper["questions"]
+    ]).execute()
 
-    return ImportedSet(
-        batch_id=batch_id,
+    return ImportResult(
+        exams=exams,
+        question_count=sum(e.question_count for e in exams),
         source_name=source_name,
-        question_count=len(saved),
-        is_favourite=False,
-        questions=[_to_imported(r) for r in saved],
     )
 
 

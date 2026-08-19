@@ -578,6 +578,37 @@ async def review_later(
     return [_row_to_question(r, flagged=True) for r in rows]
 
 
+@router.delete("/{domain_id}/questions", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_question_set(
+    domain_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> None:
+    """Delete a domain's practice set, and the review flags pointing at it.
+
+    Flags live in the polymorphic review_later table, which has no foreign key
+    to lean on — so they are cleared here rather than left dangling.
+    """
+    _own_domain(domain_id, user.id)
+    client = _client()
+    rows = (
+        client.table("practice_questions").select("id")
+        .eq("domain_id", domain_id).is_("exam_id", "null").execute()
+    ).data or []
+    if not rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No practice set to delete.")
+
+    ids = [r["id"] for r in rows]
+    for start in range(0, len(ids), 100):
+        chunk = ids[start:start + 100]
+        client.table("review_later").delete().eq("user_id", user.id).eq(
+            "item_type", REVIEW_ITEM_TYPE
+        ).in_("item_id", chunk).execute()
+
+    client.table("practice_questions").delete().eq(
+        "domain_id", domain_id
+    ).is_("exam_id", "null").execute()
+
+
 @router.post("/questions/{question_id}/flag", status_code=status.HTTP_204_NO_CONTENT)
 async def flag_question(
     question_id: str,

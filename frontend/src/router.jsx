@@ -37,6 +37,7 @@ const LecturePlayer = lazy(() => import('./pages/LecturePlayer'))
 const Flashcards = lazy(() => import('./pages/Flashcards'))
 const Quizzes = lazy(() => import('./pages/Quizzes'))
 const PracticeExam = lazy(() => import('./pages/PracticeExam'))
+const ExamRun = lazy(() => import('./pages/ExamRun'))
 const PracticeMode = lazy(() => import('./pages/PracticeMode'))
 const ReviewLater = lazy(() => import('./pages/ReviewLater'))
 const QAReview = lazy(() => import('./pages/QAReview'))
@@ -106,6 +107,7 @@ export const routeConfig = [
               { path: ROUTES.quizzes, element: <Quizzes /> },
               { path: ROUTES.practice, element: <PracticeExam /> },
               { path: ROUTES.practiceMode, element: <PracticeMode /> },
+              { path: ROUTES.examRun, element: <ExamRun /> },
               { path: ROUTES.reviewLater, element: <ReviewLater /> },
               { path: ROUTES.qaReview, element: <QAReview /> },
               { path: ROUTES.groups, element: <Groups /> },

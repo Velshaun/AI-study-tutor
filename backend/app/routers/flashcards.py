@@ -159,10 +159,11 @@ async def generate(
             "back": c["back"],
             "difficulty": difficulty,
             "terms": c.get("terms") or [],
+            "deck_title": c.get("deck_title") or "",
         }
         for c in cards
     ]
-    rows = schema_features.strip_unsupported("flashcards", rows, "terms")
+    rows = schema_features.strip_unsupported("flashcards", rows, "terms", "deck_title")
     inserted = _client().table("flashcards").insert(rows).execute()
     return [_to_card(r) for r in (inserted.data or [])]
 
@@ -239,6 +240,28 @@ async def import_deck(
     client.table("flashcards").insert(rows).execute()
 
     return ImportResult(domain_id=domain_id, domain_title=name, count=len(rows))
+
+
+@router.delete("/deck/{domain_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_deck(
+    domain_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> None:
+    """Delete a whole deck — every card the domain holds.
+
+    Cards have no deck row of their own, so a deck is exactly "this domain's
+    cards"; the domain itself stays, since it may carry lectures and quizzes.
+    """
+    client = _client()
+    existing = (
+        client.table("flashcards").select("id")
+        .eq("domain_id", domain_id).eq("user_id", user.id).limit(1).execute()
+    ).data
+    if not existing:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No deck to delete.")
+    client.table("flashcards").delete().eq("domain_id", domain_id).eq(
+        "user_id", user.id
+    ).execute()
 
 
 @router.get("/{domain_id}", response_model=list[Flashcard])

@@ -175,8 +175,15 @@ FLASHCARD_SCHEMA: dict[str, Any] = {
                 "required": ["front", "back", "terms"],
             },
         },
+        "deck_title": {
+            "type": "string",
+            "description": (
+                "A short descriptive name for this deck, naming what it covers "
+                "— e.g. 'Core CLI Commands'. Not a generic label."
+            ),
+        },
     },
-    "required": ["cards"],
+    "required": ["cards", "deck_title"],
 }
 
 
@@ -265,6 +272,7 @@ def _generate_flashcard_batch(
     except Exception as exc:  # noqa: BLE001
         raise GenerationError(quota_hint(exc) or f"Flashcard generation failed: {exc}") from exc
 
+    deck_title = (data.get("deck_title") or "").strip()[:120]
     cards = []
     for card in data.get("cards", [])[:count]:
         front = (card.get("front") or "").strip()
@@ -274,6 +282,9 @@ def _generate_flashcard_batch(
                 "front": front[:500],
                 "back": back[:1000],
                 "terms": clean_terms(card.get("terms"), front, back),
+                # The model names the deck it just wrote; every card carries it,
+                # since a deck is only ever read as a domain-scoped set.
+                "deck_title": deck_title,
             })
     if not cards:
         raise GenerationError("No usable flashcards were produced.")
@@ -464,6 +475,252 @@ IMPORTED_SCHEMA: dict[str, Any] = {
     },
     "required": ["questions"],
 }
+
+
+MULTI_EXAM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "exams": {
+            "type": "array",
+            "description": (
+                "One entry per practice exam in the document. A file holding "
+                "'Practice Exam 1' and 'Practice Exam 2' yields two entries."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": (
+                            "The exam's name as printed (e.g. 'Practice Exam 2'), "
+                            "including the publisher where the document gives one. "
+                            "Describe it briefly if it is unnamed."
+                        ),
+                    },
+                    "questions": IMPORTED_SCHEMA["properties"]["questions"],
+                },
+                "required": ["title", "questions"],
+            },
+        },
+    },
+    "required": ["exams"],
+}
+
+# Explanations are written for this many imported questions per call.
+EXPLAIN_IMPORTED_BATCH = 8
+
+IMPORT_RULES = (
+    "Extract the questions EXACTLY as written. This is transcription, not "
+    "authoring:\n"
+    "- Keep the original wording of every question and every answer choice, "
+    "including their order. Do not rephrase, shorten, correct or improve "
+    "anything.\n"
+    "- options: each choice as {label, text}, label being its letter and text "
+    "the wording without the letter prefix.\n"
+    "- correct_option: the label the document marks as correct — an answer key, "
+    "a highlighted or starred choice, 'Answer: C'. If the document does not say, "
+    "return an empty string. Never guess.\n"
+    "- explanation: the document's own rationale for the answer, if it prints "
+    "one. Empty string if not. Do not write your own.\n"
+    "- Strip answer keys, 'Correct answer:' lines, explanation blocks and any "
+    "other reveal out of question_text and out of the option text. They must not "
+    "appear in the question itself — the learner sees those only after "
+    "answering.\n"
+    "- Skip anything that is not a real multiple-choice question: headers, "
+    "instructions, page numbers, marketing copy, standalone answer-key tables.\n"
+)
+
+
+def parse_imported_exams(pdf_text: str) -> list[dict[str, Any]]:
+    """Split a practice-exam PDF into its exams and transcribe each one.
+
+    A single file often holds several papers ("Practice Exam 1", "Practice Exam
+    2"). They are kept apart so a learner can sit them independently, which is
+    what the document intends.
+
+    Returns ``[{title, questions:[{question_text, options, correct_option,
+    explanation}]}]``.
+    """
+    if not settings.gemini_api_key:
+        raise GenerationError("GEMINI_API_KEY is not configured.")
+
+    from google.genai import types
+
+    excerpt = (pdf_text or "").strip()[: settings.max_extract_chars]
+    if len(excerpt) < 40:
+        raise GenerationError("The PDF had too little text to parse.")
+
+    prompt = (
+        "You are extracting practice-exam questions from a study document.\n\n"
+        "First, decide how many separate exams the document contains. Papers are "
+        "usually separated by a heading such as 'Practice Exam 2', 'Exam B' or "
+        "'Test 3'. Return one entry per exam and never merge two into one. If "
+        "the document is a single exam, return exactly one entry.\n\n"
+        f"{IMPORT_RULES}\n"
+        f"--- DOCUMENT TEXT ---\n{excerpt}"
+    )
+
+    try:
+        response = _generate(
+            "import-split",
+            model=settings.gemini_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=MULTI_EXAM_SCHEMA,
+                temperature=0.1,  # faithful transcription, no invention
+            ),
+        )
+        data = json.loads(response.text)
+    except json.JSONDecodeError as exc:
+        raise GenerationError(f"Model returned invalid JSON: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise GenerationError(
+            quota_hint(exc) or f"Could not parse the PDF: {exc}"
+        ) from exc
+
+    exams = []
+    for index, exam in enumerate(data.get("exams", []), start=1):
+        questions = _clean_imported(exam.get("questions"))
+        if not questions:
+            continue
+        title = (exam.get("title") or "").strip()[:200] or f"Practice Exam {index}"
+        exams.append({"title": title, "questions": questions})
+
+    if not exams:
+        raise GenerationError(
+            "No multiple-choice questions were found in that PDF."
+        )
+    return exams
+
+
+def _clean_imported(raw: Any) -> list[dict[str, Any]]:
+    """Validate transcribed questions, dropping anything unusable."""
+    out = []
+    for q in raw or []:
+        text = (q.get("question_text") or "").strip()
+        options = [
+            {"label": (o.get("label") or "").strip()[:4],
+             "text": (o.get("text") or "").strip()[:500]}
+            for o in (q.get("options") or [])
+            if (o.get("text") or "").strip()
+        ]
+        if not text or len(options) < 2:
+            continue
+        out.append({
+            "question_text": text[:1500],
+            "options": options,
+            "correct_option": (q.get("correct_option") or "").strip()[:4],
+            "explanation": (q.get("explanation") or "").strip()[:1000],
+        })
+    return out
+
+
+EXPLAIN_IMPORTED_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "questions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer",
+                              "description": "The question's index, echoed back."},
+                    "explanation": {
+                        "type": "string",
+                        "description": "Why the correct answer is correct.",
+                    },
+                    "option_explanations": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "One line per option, in the given order: why that "
+                            "option is correct, or why it is wrong."
+                        ),
+                    },
+                },
+                "required": ["index", "explanation", "option_explanations"],
+            },
+        },
+    },
+    "required": ["questions"],
+}
+
+
+def explain_imported_questions(
+    questions: list[dict[str, Any]], *, subject: str = "this subject",
+) -> dict[int, dict[str, Any]]:
+    """Write the explanations an imported paper didn't print.
+
+    Keyed by the question's position. A paper that supplies its own rationale
+    keeps it — this only fills what's missing, so an imported exam reads like a
+    generated one once answered.
+    """
+    if not questions:
+        return {}
+    if not settings.gemini_api_key:
+        raise GenerationError("GEMINI_API_KEY is not configured.")
+
+    from google.genai import types
+
+    out: dict[int, dict[str, Any]] = {}
+    for start in range(0, len(questions), EXPLAIN_IMPORTED_BATCH):
+        batch = questions[start:start + EXPLAIN_IMPORTED_BATCH]
+        listing = []
+        for q in batch:
+            options = "\n".join(
+                f"    {o['label']}. {o['text']}" for o in q["options"]
+            )
+            listing.append(
+                f"[{q['index']}] {q['question_text']}\n{options}\n"
+                f"    Correct: {q.get('correct_option') or 'unstated'}"
+            )
+
+        prompt = (
+            f"A learner is sitting a {subject} practice exam. For each question "
+            "below, explain the answer.\n\n"
+            "- explanation: why the correct option is correct, in two or three "
+            "sentences.\n"
+            "- option_explanations: one line for EVERY option, in the order "
+            "given — for the correct one why it is right, for each wrong one "
+            "what makes it wrong.\n"
+            "- Where the correct option is unstated, work it out and explain the "
+            "one that is actually correct.\n"
+            "- Echo back each question's index exactly.\n"
+            "- Plain text, British spelling, no markdown.\n\n"
+            f"--- QUESTIONS ---\n" + "\n\n".join(listing)
+        )
+
+        try:
+            response = _generate(
+                "import-explain",
+                model=settings.gemini_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=EXPLAIN_IMPORTED_SCHEMA,
+                    temperature=0.3,
+                ),
+            )
+            data = json.loads(response.text)
+        except Exception as exc:  # noqa: BLE001 — a paper without rationale is
+            # still a usable paper; the exam just carries fewer explanations.
+            logger.warning("imported explanation batch failed: %s", exc)
+            continue
+
+        for item in data.get("questions", []):
+            try:
+                index = int(item.get("index"))
+            except (TypeError, ValueError):
+                continue
+            out[index] = {
+                "explanation": (item.get("explanation") or "").strip()[:1000],
+                "option_explanations": [
+                    str(e).strip()[:400]
+                    for e in (item.get("option_explanations") or [])
+                ],
+            }
+    return out
 
 
 def parse_imported_exam(pdf_text: str) -> list[dict[str, Any]]:

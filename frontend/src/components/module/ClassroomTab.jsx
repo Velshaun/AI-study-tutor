@@ -14,7 +14,11 @@ import { useNavigate } from 'react-router-dom'
 
 import GeneratePreferencesModal from './GeneratePreferencesModal'
 import ModuleKpis from './ModuleKpis'
+import SwipeToDelete from '../study/SwipeToDelete'
+import { useConfirm } from '../../hooks/useConfirm'
 import { useGeneration } from '../../hooks/useGeneration'
+import { usePlayer } from '../../hooks/usePlayer'
+import { useToast } from '../../hooks/useToast'
 import { api } from '../../lib/api'
 import { formatClock } from '../../lib/format'
 import { path } from '../../routes'
@@ -196,10 +200,45 @@ function GenerateNew({ moduleId, domains, examCount }) {
 
 function GeneratedMedia({ moduleId }) {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const confirm = useConfirm()
+  const toast = useToast()
+  const player = usePlayer()
   const { data, isPending } = useQuery({
     queryKey: ['studio', moduleId],
     queryFn: ({ signal }) => api.studioMedia(moduleId, signal),
   })
+
+  /**
+   * Delete one generated item, once the learner has confirmed.
+   *
+   * The tile goes immediately and the list refetches behind it; a failure puts
+   * it back by refetching, since the server is the authority on what survived.
+   */
+  async function remove({ label, run, playingId }) {
+    const ok = await confirm({
+      title: `Delete this ${label}?`,
+      message: 'This cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
+
+    // Deleting the lecture that's playing would leave the player pointing at
+    // audio that no longer exists, so it's dismissed first.
+    if (playingId && player?.lecture?.id === playingId) player.close()
+
+    try {
+      await run()
+      toast.success(`${label[0].toUpperCase()}${label.slice(1)} deleted`)
+    } catch (e) {
+      toast.error(e?.message || `Could not delete that ${label}.`)
+    } finally {
+      queryClient.invalidateQueries({ queryKey: ['studio', moduleId] })
+      queryClient.invalidateQueries({ queryKey: ['module', moduleId] })
+      queryClient.invalidateQueries({ queryKey: ['module-stats', moduleId] })
+    }
+  }
 
   if (isPending) {
     return (
@@ -214,9 +253,13 @@ function GeneratedMedia({ moduleId }) {
   const lectures = data?.lectures ?? []
   const flashcards = data?.flashcards ?? []
   const quizzes = data?.quizzes ?? []
+  // Domain practice sets and whole exams — generated or imported from a PDF —
+  // are the same thing to a learner, so they share a subsection.
   const practice = data?.practice ?? []
+  const exams = data?.exams ?? []
   const empty =
-    !lectures.length && !flashcards.length && !quizzes.length && !practice.length
+    !lectures.length && !flashcards.length && !quizzes.length &&
+    !practice.length && !exams.length
 
   return (
     <section className="space-y-4">
@@ -224,74 +267,135 @@ function GeneratedMedia({ moduleId }) {
 
       {empty ? (
         <p className="card text-center text-sm text-sec">
-          Nothing generated yet. Use “Generate new” above to build your first
-          lecture, deck or quiz.
+          Nothing generated yet. Use “Generate” above to build your first
+          lecture, deck, quiz or practice exam.
         </p>
       ) : (
         <>
           <Group label="Lectures" show={lectures.length > 0}>
             {lectures.map((l) => (
-              <MediaRow
+              <SwipeToDelete
                 key={l.id}
-                Icon={Mic}
-                title={l.title}
-                subtitle={scope([
-                  l.domain_title,
-                  l.duration_secs ? formatClock(l.duration_secs) : 'Audio',
-                  when(l.created_at),
-                ])}
-                onOpen={() => navigate(path('lecture', { id: l.id }))}
-                action="play"
-              />
+                label="lecture"
+                onDelete={() =>
+                  remove({
+                    label: 'lecture',
+                    playingId: l.id,
+                    run: () => api.deleteLecture(l.id),
+                  })
+                }
+              >
+                <MediaRow
+                  Icon={Mic}
+                  title={l.title}
+                  subtitle={scope([
+                    l.domain_title,
+                    l.duration_secs ? formatClock(l.duration_secs) : 'Audio',
+                    when(l.created_at),
+                  ])}
+                  onOpen={() => navigate(path('lecture', { id: l.id }))}
+                  action="play"
+                />
+              </SwipeToDelete>
             ))}
           </Group>
 
           <Group label="Flashcard Decks" show={flashcards.length > 0}>
             {flashcards.map((f) => (
-              <MediaRow
+              <SwipeToDelete
                 key={f.domain_id}
-                Icon={Layers}
-                title={f.title || `${f.domain_title || 'Deck'} — ${f.count} cards`}
-                subtitle={scope([
-                  f.domain_title,
-                  `${f.count} card${f.count === 1 ? '' : 's'}`,
-                  when(f.created_at),
-                ])}
-                onOpen={() => navigate(path('flashcards', { domainId: f.domain_id }))}
-              />
+                label="deck"
+                onDelete={() =>
+                  remove({
+                    label: 'deck',
+                    run: () => api.deleteFlashcardDeck(f.domain_id),
+                  })
+                }
+              >
+                <MediaRow
+                  Icon={Layers}
+                  title={f.title || `${f.domain_title || 'Deck'} — ${f.count} cards`}
+                  subtitle={scope([
+                    f.domain_title,
+                    `${f.count} card${f.count === 1 ? '' : 's'}`,
+                    when(f.created_at),
+                  ])}
+                  onOpen={() => navigate(path('flashcards', { domainId: f.domain_id }))}
+                />
+              </SwipeToDelete>
             ))}
           </Group>
 
           <Group label="Quizzes" show={quizzes.length > 0}>
             {quizzes.map((q) => (
-              <MediaRow
+              <SwipeToDelete
                 key={q.id}
-                Icon={CheckCircle2}
-                title={q.title}
-                subtitle={scope([
-                  q.domain_title,
-                  `${q.question_count} question${q.question_count === 1 ? '' : 's'}`,
-                  q.score != null ? `${Math.round(q.score)}%` : null,
-                  when(q.created_at),
-                ])}
-                onOpen={() => navigate(path('quizzes', { domainId: q.domain_id }))}
-              />
+                label="quiz"
+                onDelete={() =>
+                  remove({ label: 'quiz', run: () => api.deleteQuiz(q.id) })
+                }
+              >
+                <MediaRow
+                  Icon={CheckCircle2}
+                  title={q.title}
+                  subtitle={scope([
+                    q.domain_title,
+                    `${q.question_count} question${q.question_count === 1 ? '' : 's'}`,
+                    q.score != null ? `${Math.round(q.score)}%` : null,
+                    when(q.created_at),
+                  ])}
+                  onOpen={() => navigate(path('quizzes', { domainId: q.domain_id }))}
+                />
+              </SwipeToDelete>
             ))}
           </Group>
 
-          <Group label="Practice Exams" show={practice.length > 0}>
+          <Group
+            label="Practice Exams"
+            show={practice.length > 0 || exams.length > 0}
+          >
+            {exams.map((e) => (
+              <SwipeToDelete
+                key={e.id}
+                label="practice exam"
+                onDelete={() =>
+                  remove({ label: 'practice exam', run: () => api.deleteExam(e.id) })
+                }
+              >
+                <MediaRow
+                  Icon={ClipboardList}
+                  title={e.title}
+                  subtitle={scope([
+                    `${e.question_count} question${e.question_count === 1 ? '' : 's'}`,
+                    e.duration_minutes ? `${e.duration_minutes} min` : null,
+                    when(e.created_at),
+                  ])}
+                  onOpen={() => navigate(path('examRun', { examId: e.id }))}
+                />
+              </SwipeToDelete>
+            ))}
             {practice.map((p) => (
-              <MediaRow
+              <SwipeToDelete
                 key={p.domain_id}
-                Icon={ClipboardList}
-                title={p.title || `${p.domain_title || 'Practice'} — ${p.count} questions`}
-                subtitle={scope([
-                  p.domain_title,
-                  `${p.count} question${p.count === 1 ? '' : 's'}`,
-                  when(p.created_at),
-                ])}
-                onOpen={() => navigate(path('practiceMode', { domainId: p.domain_id }))}
-              />
+                label="practice set"
+                onDelete={() =>
+                  remove({
+                    label: 'practice set',
+                    run: () => api.deletePracticeSet(p.domain_id),
+                  })
+                }
+              >
+                <MediaRow
+                  Icon={ClipboardList}
+                  title={p.title || `${p.domain_title || 'Practice'} — ${p.count} questions`}
+                  subtitle={scope([
+                    p.domain_title,
+                    `${p.count} question${p.count === 1 ? '' : 's'}`,
+                    when(p.created_at),
+                  ])}
+                  onOpen={() => navigate(path('practiceMode', { domainId: p.domain_id }))}
+                />
+              </SwipeToDelete>
             ))}
           </Group>
         </>
