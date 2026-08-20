@@ -41,6 +41,7 @@ supabase/migrations/   timestamped, idempotent, safe to re-run
 | `extraction` | PDF, text, audio, **image (Gemini vision)**, **video (frames + narration)** |
 | `pipeline` | Ingestion, and the guard that stops it destroying study content |
 | `performance` | Rolling per-domain strength, adaptive weighting, attempt records |
+| `jobs` | The durable queue: claim, checkpoint, resume, retry-failed |
 | `schema_features` | Probes for optional columns so the API can deploy ahead of a migration |
 
 ---
@@ -160,6 +161,24 @@ measurement. `POST /practice-exam/{id}/answer` reveals one question at a time,
 once answered — one read, no model call, the same trade practice mode already
 makes. The runner holds the styling back until the answer lands, or a locked
 question flashes every option as wrong for the length of the round trip.
+
+**Work that outlives a deploy needs a table, not a BackgroundTask.** A
+FastAPI background task runs in the web process and dies with it — fine for a
+generation the learner is watching, useless for importing a playlist across
+several redeploys. `jobs` + `job_items` make the work a row. A job whose worker
+stops heartbeating is *reclaimed*, and only its unfinished items re-run, so an
+interrupted import continues rather than starting again.
+
+**Claiming has to be SQL.** The backend reaches Postgres through PostgREST,
+which cannot express `FOR UPDATE SKIP LOCKED`, so `claim_job` and
+`claim_job_item` are database functions. Only one worker runs today; they are
+written for N because the alternative is finding out under load that a second
+worker means rewriting the claim path.
+
+**A job's tallies are derived, never incremented.** Counters nudged per item
+drift the moment anything is retried, and this is the number the learner
+watches. Partial success is the designed outcome: a job with failures still
+succeeded, and only one where nothing worked is a failure.
 
 **Polymorphic tables follow the `review_later` precedent** — `item_type` +
 `item_id`, no FK — where the referent lives in one of several tables. That's
@@ -302,7 +321,8 @@ All twelve features from the August audit are shipped. Latest work, newest first
 `20260817000000` exam length · `20260817010000` dead links ·
 `20260818000000` interactive terms · `20260819000000` deck titles ·
 `20260820000000` study attempts · `20260821000000` tutor messages ·
-`20260822000000` coverage maps · `20260823000000` domain performance
+`20260822000000` coverage maps · `20260823000000` domain performance ·
+`20260824000000` job queue
 
 Applied through the Supabase **Management API** with a personal access token
 (`POST /v1/projects/{ref}/database/query`). The service-role key cannot run DDL,
