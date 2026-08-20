@@ -126,8 +126,23 @@ CATALOGUE: tuple[ExamSpec, ...] = (
                  ("Troubleshooting", 28.0),
              )),
     ExamSpec("CompTIA CySA+", 85, 165, ("cs0-003", "cs0-004"),
-             ("cysa+", "cybersecurity analyst+")),
-    ExamSpec("CompTIA PenTest+", 90, 165, ("pt0-003", "pt0-002"), ("pentest+",)),
+             ("cysa+", "cybersecurity analyst+"),
+             # CS0-003 exam objectives, checked 20 Aug 2026.
+             domains=(
+                 ("Security Operations", 33.0),
+                 ("Vulnerability Management", 30.0),
+                 ("Incident Response and Management", 20.0),
+                 ("Reporting and Communication", 17.0),
+             )),
+    ExamSpec("CompTIA PenTest+", 90, 165, ("pt0-003", "pt0-002"), ("pentest+",),
+             # PT0-003 exam objectives, checked 20 Aug 2026.
+             domains=(
+                 ("Engagement Management", 13.0),
+                 ("Reconnaissance and Enumeration", 21.0),
+                 ("Vulnerability Discovery and Analysis", 17.0),
+                 ("Attacks and Exploits", 35.0),
+                 ("Post-exploitation and Lateral Movement", 14.0),
+             )),
     ExamSpec("CompTIA SecurityX (CASP+)", 90, 165, ("cas-005", "cas-004"),
              ("securityx", "casp+")),
     ExamSpec("CompTIA Cloud+", 90, 90, ("cv0-004", "cv0-003"), ("cloud+",)),
@@ -198,7 +213,18 @@ CATALOGUE: tuple[ExamSpec, ...] = (
              )),
     ExamSpec("Cisco CCNP ENCOR", 100, 120, ("350-401",), ("encor",),
              published=False),
-    ExamSpec("(ISC)² CISSP", 150, 180, (), ("cissp",)),
+    ExamSpec("(ISC)² CISSP", 150, 180, (), ("cissp",),
+             # CISSP exam outline effective 15 April 2024, checked 20 Aug 2026.
+             domains=(
+                 ("Security and Risk Management", 16.0),
+                 ("Asset Security", 10.0),
+                 ("Security Architecture and Engineering", 13.0),
+                 ("Communication and Network Security", 13.0),
+                 ("Identity and Access Management (IAM)", 13.0),
+                 ("Security Assessment and Testing", 12.0),
+                 ("Security Operations", 13.0),
+                 ("Software Development Security", 10.0),
+             )),
     ExamSpec("(ISC)² SSCP", 125, 180, (), ("sscp",)),
     ExamSpec("(ISC)² Certified in Cybersecurity", 100, 120, (),
              ("certified in cybersecurity",)),
@@ -209,7 +235,15 @@ CATALOGUE: tuple[ExamSpec, ...] = (
     # --- Service management / project ---------------------------------------
     ExamSpec("ITIL 4 Foundation", 40, 60, (), ("itil 4 foundation", "itil foundation"),
              pass_pct=65.0),
-    ExamSpec("PMP", 180, 230, (), ("pmp", "project management professional")),
+    ExamSpec("PMP", 180, 230, (), ("pmp", "project management professional"),
+             # PMP Examination Content Outline as rebalanced 9 July 2026,
+             # checked 20 Aug 2026. The long-standing split was 42/50/8, so a
+             # stale copy here would be badly wrong rather than slightly wrong.
+             domains=(
+                 ("People", 33.0),
+                 ("Process", 41.0),
+                 ("Business Environment", 26.0),
+             )),
     ExamSpec("CAPM", 150, 180, (), ("capm",)),
     # --- Admissions tests ---------------------------------------------------
     ExamSpec("LSAT", 76, 140, (), ("lsat",), published=False),
