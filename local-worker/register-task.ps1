@@ -55,10 +55,15 @@ function Get-WorkerLeaf {
       duplicate worker that does not exist — the parent never runs main(), and
       the poll rate stays at one claim per interval. A worker is therefore a
       matching process that is not the parent of another matching process.
+
+      Returned with a leading comma so that a single worker stays an array.
+      PowerShell unwraps a one-element array on return, and .Count on a bare
+      CimInstance is $null rather than 1 — which is how one healthy worker read
+      as no worker at all.
     #>
     $all = Get-WorkerProcess
-    $parents = $all | ForEach-Object { $_.ParentProcessId }
-    @($all | Where-Object { $parents -notcontains $_.ProcessId })
+    $parents = @($all | ForEach-Object { $_.ParentProcessId })
+    ,@($all | Where-Object { $parents -notcontains $_.ProcessId })
 }
 
 Write-Host "`nChecking this machine can actually run the worker" -ForegroundColor Cyan
@@ -154,7 +159,7 @@ if ($existing -and -not $Force) {
 # help: once orphaned, Task Scheduler no longer counts it as an instance.
 $ErrorActionPreference = 'Continue'
 schtasks /End /TN $TaskName 2>&1 | Out-Null
-$stray = Get-WorkerProcess
+$stray = @(Get-WorkerProcess)
 if ($stray.Count -gt 0) {
     $stray | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Ok "Stopped a worker that was already running"
@@ -174,12 +179,19 @@ Write-Host "`nStarting it now so you don't have to log out and back in" -Foregro
 $ErrorActionPreference = 'Continue'
 schtasks /Run /TN $TaskName | Out-Null
 $ErrorActionPreference = 'Stop'
-# Long enough for the interpreter to import the backend before we look. Four
-# seconds was not, and the script reported a worker that had simply not finished
-# starting — which reads as a failure when nothing is wrong.
-Start-Sleep -Seconds 12
 
-$running = Get-WorkerLeaf
+# Wait for it to appear rather than sleeping a fixed amount. This backend takes
+# about twelve seconds to import, and any constant picked near that is a coin
+# toss — the script reported a failure for a worker that was simply still
+# starting. Polling reports success as soon as it is true, and only gives up
+# after long enough to mean something.
+$running = @()
+$deadline = (Get-Date).AddSeconds(45)
+while ((Get-Date) -lt $deadline) {
+    $running = @(Get-WorkerLeaf)
+    if ($running.Count -ge 1) { break }
+    Start-Sleep -Seconds 2
+}
 if ($running.Count -eq 1) {
     Ok "Worker is running (pid $($running[0].ProcessId))"
 } elseif ($running.Count -gt 1) {
