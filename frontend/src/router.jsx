@@ -33,6 +33,7 @@ const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Login = lazy(() => import('./pages/Login'))
 const Onboarding = lazy(() => import('./pages/Onboarding'))
 const ModuleDetail = lazy(() => import('./pages/ModuleDetail'))
+const ImportSources = lazy(() => import('./pages/ImportSources'))
 const LecturePlayer = lazy(() => import('./pages/LecturePlayer'))
 const Flashcards = lazy(() => import('./pages/Flashcards'))
 const Quizzes = lazy(() => import('./pages/Quizzes'))
@@ -103,6 +104,7 @@ export const routeConfig = [
             children: [
               { path: ROUTES.dashboard, element: <Dashboard /> },
               { path: ROUTES.module, element: <ModuleDetail /> },
+              { path: ROUTES.importSources, element: <ImportSources /> },
               { path: ROUTES.flashcards, element: <Flashcards /> },
               { path: ROUTES.quizzes, element: <Quizzes /> },
               { path: ROUTES.practice, element: <PracticeExam /> },

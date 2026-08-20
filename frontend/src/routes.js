@@ -11,6 +11,8 @@ export const ROUTES = {
   login: '/login',
   onboarding: '/onboarding',
   module: '/module/:id',
+  // Paste-and-stage import, module-scoped: it adds material to one module.
+  importSources: '/module/:id/import',
   lecture: '/lecture/:id',
   flashcards: '/flashcards/:domainId',
   quizzes: '/quizzes/:domainId',

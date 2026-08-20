@@ -227,6 +227,18 @@ export const api = {
     apiFetch(`/modules/${id}`, { method: 'PATCH', body }),
   deleteModule: (id) => apiFetch(`/modules/${id}`, { method: 'DELETE' }),
 
+  // Importing pasted material. The work runs in the worker, so these return
+  // a job to watch rather than the finished result — JobsProvider picks it up
+  // over Realtime and the browser is free to close.
+  detectImport: (text) =>
+    apiFetch('/import/detect', { method: 'POST', body: { text } }),
+  importPaste: (moduleId, items) =>
+    apiFetch('/import/paste', { method: 'POST', body: { module_id: moduleId, items } }),
+  importJobs: (moduleId, signal) =>
+    apiFetch(`/import/jobs/${moduleId}`, { signal }),
+  retryImport: (jobId) =>
+    apiFetch(`/import/jobs/${jobId}/retry`, { method: 'POST' }),
+
   // Sources & processing pipeline
   sources: (moduleId, signal) => apiFetch(`/sources/${moduleId}`, { signal }),
   moduleStatus: (moduleId, signal) =>

@@ -1,6 +1,7 @@
 import {
   Camera,
   ChevronRight,
+  ClipboardPaste,
   FileSpreadsheet,
   FolderOpen,
   Images,
@@ -9,9 +10,11 @@ import {
   Upload,
 } from 'lucide-react'
 import { useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import Modal from '../Modal'
 import { useAddSourceToModule } from '../../hooks/useModuleUpload'
+import { path } from '../../routes'
 import {
   DOCUMENT_ACCEPT,
   IMAGE_ACCEPT,
@@ -39,6 +42,7 @@ import {
  * to the flashcard importer instead.
  */
 export default function AddSourceSheet({ open, moduleId, onClose, onImportCsv }) {
+  const navigate = useNavigate()
   // One input, retargeted per route. The `accept` list (and `capture`) is what
   // decides which app a phone opens, and setting it at click time keeps that
   // decision in the handler rather than spraying inputs across the markup.
@@ -183,6 +187,19 @@ export default function AddSourceSheet({ open, moduleId, onClose, onImportCsv })
           title="CSV (Flashcards)"
           hint="Import a Quizlet or two-column CSV as a deck"
           onClick={() => onImportCsv?.()}
+        />
+
+        {/* Pasting needs room to stage several sources and correct their
+            labels, so it leaves the sheet for a screen of its own rather than
+            becoming a fourth cramped option here. */}
+        <SourceRoute
+          Icon={ClipboardPaste}
+          title="Paste material"
+          hint="Exported flashcards, captions or a past paper"
+          onClick={() => {
+            onClose?.()
+            navigate(path('importSources', { id: moduleId }))
+          }}
         />
 
         {error && (

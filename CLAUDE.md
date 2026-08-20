@@ -42,6 +42,7 @@ supabase/migrations/   timestamped, idempotent, safe to re-run
 | `pipeline` | Ingestion, and the guard that stops it destroying study content |
 | `performance` | Rolling per-domain strength, adaptive weighting, attempt records |
 | `ingest` | The parse boundary: pasted material in, canonical records out |
+| `imports` | Where a parse result is stored — source, deck, or exam |
 | `jobs` | The durable queue: claim, checkpoint, resume, retry-failed |
 | `schema_features` | Probes for optional columns so the API can deploy ahead of a migration |
 
@@ -172,6 +173,13 @@ that the exam row didn't — source file name, favourite flag, batch id — move
 onto `practice_exams`, because those are properties of a paper. The old table is
 kept empty and unread until a later migration drops it, so a missed reader is
 recoverable rather than fatal.
+
+**One import is one rebuild.** A batch of twenty pasted sources must
+re-derive the blueprint once, not twenty times — it costs a Gemini call and
+rewrites every domain. So the worker gained a *finaliser*: a hook that runs once
+after the last item of a job. It fires only when something landed, and only when
+what landed was source text, since a flashcard deck is its own locked domain and
+a pasted paper is an exam, and the domain map is derived from neither.
 
 **A parser converts; it never invents.** Every incoming format — a Quizlet
 export, a caption file, a block of exam questions — becomes the same two records
