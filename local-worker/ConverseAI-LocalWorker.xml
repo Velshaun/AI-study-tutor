@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Task definition for the local transcript worker.
+
+  Registered by register-task.ps1, which fills in the __PLACEHOLDER__ values —
+  don't edit those by hand, and don't register this file directly.
+
+  Written as XML rather than assembled from schtasks flags because the four
+  settings that actually decide whether this survives a week on a laptop are not
+  reachable any other way:
+
+    StopIfGoingOnBatteries / DisallowStartIfOnBatteries
+        Both default to true. On a laptop that means the worker dies the moment
+        it is unplugged and refuses to start until it is plugged back in.
+
+    ExecutionTimeLimit
+        Defaults to 3 days, after which Windows terminates the task. This is a
+        poll loop that is supposed to run for months. PT0S means no limit.
+
+    MultipleInstancesPolicy
+        IgnoreNew, so the repetition below is a no-op while the worker is
+        healthy and a restart when it is not.
+
+  The program is pythonw.exe rather than python.exe: it creates no console, so
+  there is no window to hide and nothing to flash on screen at logon.
+
+  This file is stored as UTF-8 so it reads and diffs like the rest of the repo.
+  Task Scheduler requires UTF-16 for /XML, and rejects the file if the declared
+  encoding and the actual bytes disagree — so register-task.ps1 rewrites the
+  declaration as it writes the UTF-16 copy it actually registers.
+-->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Fetches YouTube transcripts for ConverseAI from this machine's residential IP, because YouTube refuses them from datacentre IPs. Claims only import_youtube jobs; everything else stays on Railway.</Description>
+    <URI>\ConverseAI Local Worker</URI>
+  </RegistrationInfo>
+
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>__USER__</UserId>
+      <!-- Every 10 minutes forever. With IgnoreNew this does nothing while the
+           worker is alive, and restarts it within 10 minutes if it has died. -->
+      <Repetition>
+        <Interval>PT10M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </LogonTrigger>
+  </Triggers>
+
+  <Principals>
+    <Principal id="Author">
+      <UserId>__USER__</UserId>
+      <!-- InteractiveToken: runs as you, when you are logged in, and needs no
+           stored password. "Run whether logged on or not" would start it at
+           boot instead, but requires saving your Windows password. -->
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+
+  <Actions Context="Author">
+    <Exec>
+      <Command>__PYTHONW__</Command>
+      <Arguments>worker.py</Arguments>
+      <!-- backend/, so load_dotenv() finds backend/.env walking up from here. -->
+      <WorkingDirectory>__BACKEND__</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

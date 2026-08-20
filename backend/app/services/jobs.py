@@ -147,17 +147,45 @@ def add_items(job_id: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 # --- claiming ---------------------------------------------------------------
-def claim(worker: str) -> dict[str, Any] | None:
-    """Take the next job, or reclaim one whose worker stopped heartbeating."""
+# Set once the database has been probed: whether `claim_job` accepts a kind
+# filter. None means "not yet asked".
+_KINDS_SUPPORTED: bool | None = None
+
+
+def claim(worker: str, kinds: list[str] | None = None) -> dict[str, Any] | None:
+    """Take the next job, or reclaim one whose worker stopped heartbeating.
+
+    `kinds` limits the claim to work this worker can actually do. Falls back to
+    claiming anything if the database hasn't got the filter yet, so the worker
+    can deploy ahead of the migration — the same tolerance `schema_features`
+    gives the API. The fallback is the old behaviour, not a failure.
+    """
+    global _KINDS_SUPPORTED
     if not available():
         return None
+
+    args: dict[str, Any] = {"p_worker": worker, "p_stale_after": STALE_AFTER}
+    if kinds and _KINDS_SUPPORTED is not False:
+        args["p_kinds"] = kinds
+
     try:
-        result = _client().rpc(
-            "claim_job", {"p_worker": worker, "p_stale_after": STALE_AFTER},
-        ).execute()
+        result = _client().rpc("claim_job", args).execute()
     except Exception as exc:  # noqa: BLE001
+        if "p_kinds" in args:
+            # Almost certainly the pre-filter signature. Note it and fall back
+            # once, rather than idling forever against a database that simply
+            # hasn't been migrated.
+            _KINDS_SUPPORTED = False
+            logger.warning(
+                "claim_job has no kind filter yet, so this worker will claim "
+                "any kind until the migration is applied: %s", exc,
+            )
+            return claim(worker)
         logger.warning("Could not claim a job: %s", exc)
         return None
+
+    if "p_kinds" in args:
+        _KINDS_SUPPORTED = True
 
     rows = result.data or []
     if not rows:

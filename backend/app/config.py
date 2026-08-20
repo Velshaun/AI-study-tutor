@@ -100,6 +100,18 @@ class Settings:
         self.worker_item_concurrency: int = int(
             os.getenv("WORKER_ITEM_CONCURRENCY", "5")
         )
+        # Which job kinds this worker may claim. Empty means all of them, which
+        # is what a single-worker deployment wants and what this was before.
+        #
+        # It exists because YouTube refuses transcript requests from datacentre
+        # IPs, so those items are fetched by a worker on a residential machine
+        # while everything else stays on Railway. Two workers, one queue, and
+        # the split is expressed here rather than in the handler registry: a
+        # worker that claims a job it cannot handle *fails* it rather than
+        # putting it back, so "not my kind" has to mean "never claimed".
+        self.worker_kinds: list[str] = [
+            k.strip() for k in os.getenv("WORKER_KINDS", "").split(",") if k.strip()
+        ]
         # Polling is adaptive: brisk while there is work, a slow heartbeat once
         # the queue has been quiet. Never zero — jobs are queued by things other
         # than a user action, and a failed job needs picking up eventually.

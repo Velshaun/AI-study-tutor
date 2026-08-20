@@ -45,9 +45,24 @@ from app.services import jobs
 # it a second time and catch a different class. See the class docstring.
 from app.services.jobs import PermanentFailure
 
+# A log file, if one is asked for. Railway wants stdout and gets it; a worker
+# started by Task Scheduler through `pythonw.exe` has no console at all, so
+# without this it runs completely unobservably. Rotating rather than appending
+# forever: this one is nobody's job to tidy up.
+_LOG_FILE = os.getenv("WORKER_LOG_FILE", "").strip()
+_handlers: list[logging.Handler] = [logging.StreamHandler()]
+if _LOG_FILE:
+    from logging.handlers import RotatingFileHandler
+
+    _handlers.append(
+        RotatingFileHandler(_LOG_FILE, maxBytes=2_000_000, backupCount=3,
+                            encoding="utf-8")
+    )
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=_handlers,
 )
 logger = logging.getLogger("worker")
 
@@ -157,9 +172,15 @@ class Worker:
             )
             return
 
+        # The kinds are logged because a typo in WORKER_KINDS is otherwise
+        # invisible: the worker starts, polls happily, and claims nothing.
         logger.info(
-            "Worker %s started. Item concurrency %d, polling %.0fs busy / %.0fs idle.",
-            self.name, settings.worker_item_concurrency,
+            "Worker %s started. Taking %s. Item concurrency %d, "
+            "polling %.0fs busy / %.0fs idle.",
+            self.name,
+            ", ".join(settings.worker_kinds) if settings.worker_kinds
+            else "every job kind",
+            settings.worker_item_concurrency,
             settings.worker_poll_busy_secs, settings.worker_poll_idle_secs,
         )
 
@@ -190,7 +211,7 @@ class Worker:
         """Claim a job and run it, or return False having found nothing."""
         self.housekeeping()
 
-        job = jobs.claim(self.name)
+        job = jobs.claim(self.name, settings.worker_kinds)
         if not job:
             return False
 
