@@ -43,6 +43,8 @@ supabase/migrations/   timestamped, idempotent, safe to re-run
 | `performance` | Rolling per-domain strength, adaptive weighting, attempt records |
 | `ingest` | The parse boundary: pasted material in, canonical records out |
 | `imports` | Where a parse result is stored — source, deck, or exam |
+| `youtube` | Link parsing, playlist listing, search — the Data API half |
+| `domain_assign` | Files one source under exactly one domain, with confidence |
 | `jobs` | The durable queue: claim, checkpoint, resume, retry-failed |
 | `schema_features` | Probes for optional columns so the API can deploy ahead of a migration |
 
@@ -173,6 +175,27 @@ that the exam row didn't — source file name, favourite flag, batch id — move
 onto `practice_exams`, because those are properties of a paper. The old table is
 kept empty and unread until a later migration drops it, so a missed reader is
 recoverable rather than fatal.
+
+**A source is filed under exactly one domain.** The primary. A lecture that
+touches four topics is *about* one of them, and spreading it across all four
+would report coverage in three domains it only mentions — the same mistake
+`coverage`'s aggregator exists to avoid one level up. The confidence is recorded
+on the row and never surfaced: where the fit is poor the model still picks the
+best one, and a later pass revisits the weak ones. Asking a learner to file
+their own material costs the whole point of the feature; a wrong assignment
+costs a video under the wrong heading.
+
+**Pasting a YouTube link is the primary door, not search.** A transcript needs
+only a video id, so pasting works with no API key and no quota. Search costs a
+hundred quota units against a free tier that allows about a hundred a day across
+every learner — so it is the convenience, and the app degrades to paste-only
+rather than breaking. The one asymmetry: a pasted *video* works keyless, a
+pasted *playlist* does not, because listing it goes through the Data API.
+
+**A playlist grows its own job.** Its first item is the listing, which appends a
+child item per video to the job it is already part of. A playlist's length isn't
+knowable until it has been listed, and the queue would rather grow than hold
+three hundred videos in memory to enqueue at once.
 
 **One import is one rebuild.** A batch of twenty pasted sources must
 re-derive the blueprint once, not twenty times — it costs a Gemini call and
@@ -376,7 +399,8 @@ All twelve features from the August audit are shipped. Latest work, newest first
 `20260820000000` study attempts · `20260821000000` tutor messages ·
 `20260822000000` coverage maps · `20260823000000` domain performance ·
 `20260824000000` job queue · `20260825000000` question provenance ·
-`20260826000000` retire imported questions
+`20260826000000` retire imported questions ·
+`20260827000000` source domain assignment
 
 Applied through the Supabase **Management API** with a personal access token
 (`POST /v1/projects/{ref}/database/query`). The service-role key cannot run DDL,

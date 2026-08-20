@@ -1,6 +1,7 @@
 """Importing study material into a module.
 
     POST /import/paste          stage a batch of pasted sources as one job
+    POST /import/youtube        a pasted video/playlist link, or a search
     GET  /import/jobs/{module}  what's importing, and what recently did
     POST /import/jobs/{id}/retry  re-queue only the items that failed
 
@@ -23,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import ingest, import_jobs, jobs
+from app.services import ingest, import_jobs, jobs, youtube
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,88 @@ async def detect_type(
         would_be=result.kind,
         note=result.note,
     )
+
+
+class YouTubeRequest(BaseModel):
+    module_id: str
+    # Either a pasted link…
+    url: str | None = None
+    # …or a search. `query` is the exam or course name; instructor narrows it.
+    query: str | None = Field(default=None, max_length=200)
+    instructor: str | None = Field(default=None, max_length=120)
+    # Playlists by default: a course is a series, and someone searching for one
+    # wants the series rather than whichever single video ranks highest.
+    playlist: bool = True
+
+
+@router.post("/youtube", response_model=ImportJob,
+             status_code=status.HTTP_202_ACCEPTED)
+async def import_youtube(
+    payload: YouTubeRequest,
+    user: AuthUser = Depends(get_current_user),
+) -> ImportJob:
+    """Import a video or playlist, by link or by search.
+
+    The link door needs no API key and no quota, which is why it is tried first
+    and why the app stays usable when search is exhausted for the day.
+    """
+    _own_module(payload.module_id, user.id)
+    if not jobs.available():
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Imports aren't available on this deployment yet.",
+        )
+
+    title = None
+    target = youtube.parse_target(payload.url or "")
+
+    if not target:
+        if payload.url:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "That doesn't look like a YouTube video or playlist link.",
+            )
+        if not (payload.query or "").strip():
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "Paste a YouTube link, or give a course name to search for.",
+            )
+        try:
+            found = youtube.search(
+                payload.query, instructor=payload.instructor,
+                playlist=payload.playlist,
+            )
+        except youtube.QuotaExhausted as exc:
+            # 429 rather than 502: this is a limit that resets, and the message
+            # points at the door that still works.
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS, str(exc),
+            ) from exc
+        except youtube.YouTubeError as exc:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+        if not found:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                "Nothing came back for that. Try different words, or paste a link.",
+            )
+        target = {"kind": found["kind"], "id": found["id"]}
+        title = found.get("title")
+
+    if target["kind"] == "playlist" and not title:
+        try:
+            title = youtube.playlist_title(target["id"])
+        except youtube.YouTubeError:
+            # Listing needs the key too, so the job will fail with a clear
+            # reason. Naming it isn't worth failing the request over.
+            title = "YouTube playlist"
+
+    job = import_jobs.enqueue_youtube_import(
+        module_id=payload.module_id, user_id=user.id, target=target, title=title,
+    )
+    if not job:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Could not queue that import.")
+    logger.info("Queued YouTube import %s (%s %s)", job["id"], target["kind"], target["id"])
+    return _to_job(job, [])
 
 
 @router.post("/paste", response_model=ImportJob,

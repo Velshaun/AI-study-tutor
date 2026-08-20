@@ -50,14 +50,20 @@ def _provenance(rows: list[dict[str, Any]], table: str) -> list[dict[str, Any]]:
 
 def store_reference(
     *, module_id: str, user_id: str, title: str, text: str,
+    source_type: str = ORIGIN,
 ) -> dict[str, Any]:
-    """Keep pasted prose as a source, indistinguishable from an upload."""
+    """Keep prose as a source, indistinguishable from an upload.
+
+    `source_type` is what the Sources list shows and what a learner reads to
+    remember where something came from — so a transcript says `youtube` rather
+    than inheriting the word `pasted` from the code path it happened to take.
+    """
     row = {
         "user_id": user_id,
         "module_id": module_id,
         "filename": (title or "Pasted material")[:MAX_TITLE_CHARS],
         "storage_path": "",
-        "source_type": ORIGIN,
+        "source_type": source_type,
         "extracted_text": text,
         "char_count": len(text),
         # Already parsed by definition — there are no bytes to extract from, so

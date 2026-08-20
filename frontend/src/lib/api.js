@@ -232,6 +232,11 @@ export const api = {
   // over Realtime and the browser is free to close.
   detectImport: (text) =>
     apiFetch('/import/detect', { method: 'POST', body: { text } }),
+  // A pasted YouTube link, or a search. The link door needs no API key, which
+  // is why it's tried first and why the app survives the search quota running
+  // out.
+  importYouTube: (moduleId, body) =>
+    apiFetch('/import/youtube', { method: 'POST', body: { module_id: moduleId, ...body } }),
   importPaste: (moduleId, items) =>
     apiFetch('/import/paste', { method: 'POST', body: { module_id: moduleId, items } }),
   importJobs: (moduleId, signal) =>

@@ -8,6 +8,7 @@ import {
   RotateCcw,
   Trash2,
   Upload,
+  Video,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
@@ -151,6 +152,8 @@ export default function ImportSources() {
         Import material
       </PageTitle>
 
+      <YouTubeDoor moduleId={moduleId} />
+
       {/* --- paste --------------------------------------------------------- */}
       <section className="card space-y-3">
         <textarea
@@ -283,6 +286,110 @@ export default function ImportSources() {
         </section>
       )}
     </div>
+  )
+}
+
+/**
+ * Bring in a video or a whole course.
+ *
+ * Pasting a link is the primary path and deliberately listed first: it needs no
+ * API key and no quota, so it keeps working when search has hit its daily limit.
+ * Search is the convenience on top, and says so when it runs out rather than
+ * looking broken.
+ */
+function YouTubeDoor({ moduleId }) {
+  const toast = useToast()
+  const queryClient = useQueryClient()
+  const [url, setUrl] = useState('')
+  const [query, setQuery] = useState('')
+  const [instructor, setInstructor] = useState('')
+  const [playlist, setPlaylist] = useState(true)
+
+  const bring = useMutation({
+    mutationFn: (body) => api.importYouTube(moduleId, body),
+    onSuccess: (job) => {
+      setUrl(''); setQuery(''); setInstructor('')
+      queryClient.invalidateQueries({ queryKey: ['import-jobs', moduleId] })
+      toast.success(
+        job.kind === 'import_youtube'
+          ? 'Fetching transcripts — you can leave this screen.'
+          : 'Import started.',
+      )
+    },
+    onError: (e) => toast.error(e?.message || 'Could not start that import.'),
+  })
+
+  return (
+    <section className="card space-y-3">
+      <p className="flex items-center gap-2 text-sm font-semibold text-pri">
+        <Video size={16} className="text-accent2" aria-hidden="true" />
+        From YouTube
+      </p>
+      <p className="text-xs text-sec">
+        We read the transcript, not the video — so you don&rsquo;t have to watch
+        hours of it.
+      </p>
+
+      <div className="flex gap-2">
+        <input
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder="Paste a video or playlist link"
+          className="input flex-1"
+        />
+        <button
+          onClick={() => bring.mutate({ url })}
+          disabled={!url.trim() || bring.isPending}
+          className="btn-secondary px-4"
+        >
+          Add
+        </button>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <span className="h-px flex-1 bg-border" aria-hidden="true" />
+        <span className="text-[11px] uppercase tracking-wider text-sec">or search</span>
+        <span className="h-px flex-1 bg-border" aria-hidden="true" />
+      </div>
+
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Exam or course name"
+        className="input w-full"
+      />
+      <div className="flex gap-2">
+        <input
+          value={instructor}
+          onChange={(e) => setInstructor(e.target.value)}
+          placeholder="Instructor (optional)"
+          className="input flex-1"
+        />
+        <button
+          onClick={() => setPlaylist((p) => !p)}
+          aria-pressed={playlist}
+          className={`min-h-11 shrink-0 rounded-lg px-3 text-xs font-medium transition-colors ${
+            playlist ? 'bg-accent text-white' : 'bg-surface2 text-sec'
+          }`}
+        >
+          {playlist ? 'Playlist' : 'Single video'}
+        </button>
+      </div>
+      <button
+        onClick={() => bring.mutate({ query, instructor, playlist })}
+        disabled={!query.trim() || bring.isPending}
+        className="btn-secondary w-full"
+      >
+        {bring.isPending ? (
+          <>
+            <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+            Looking…
+          </>
+        ) : (
+          'Search and import'
+        )}
+      </button>
+    </section>
   )
 }
 

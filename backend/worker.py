@@ -115,6 +115,8 @@ def _register_import_handlers() -> None:
 
     HANDLERS[import_jobs.PASTE_KIND] = import_jobs.handle_paste_item
     FINALISERS[import_jobs.PASTE_KIND] = import_jobs.finalise_import
+    HANDLERS[import_jobs.YOUTUBE_KIND] = import_jobs.handle_youtube_item
+    FINALISERS[import_jobs.YOUTUBE_KIND] = import_jobs.finalise_import
 
 
 _register_import_handlers()

@@ -85,6 +85,13 @@ class Settings:
         self.openai_voice_marcus: str = os.getenv("OPENAI_TTS_VOICE_MARCUS", "onyx")
         self.openai_voice_sophia: str = os.getenv("OPENAI_TTS_VOICE_SOPHIA", "nova")
 
+        # --- YouTube -------------------------------------------------------
+        # Only the *search* door needs this. Pasting a video link works without
+        # it, which is why paste is the primary path: the free tier allows about
+        # a hundred searches a day across every learner, and the app has to stay
+        # usable when that runs out.
+        self.youtube_api_key: str = os.getenv("YOUTUBE_API_KEY", "")
+
         # --- Background worker ---------------------------------------------
         # How many items of one job run at once. Transcript fetches are the
         # reason this is configurable: the ceiling that keeps YouTube happy is
