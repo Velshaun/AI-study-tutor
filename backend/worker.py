@@ -139,8 +139,36 @@ def _register_import_handlers() -> None:
 _register_import_handlers()
 
 
+# How many upstream refusals in a row before a job stops taking new work.
+#
+# The failure that motivated this refused 103 videos in seconds once YouTube
+# blocked the IP — three imports written off, and each rejected request making
+# the block worse. Three is enough to tell a blocked IP from one video with an
+# odd problem, and cheap enough that almost nothing is wasted finding out.
+BLOCKED_STREAK_LIMIT = 3
+
+
+def _looks_blocked(exc: Exception) -> bool:
+    """Whether a transient failure was upstream refusing us, not us failing.
+
+    Asks the exception type rather than matching on message text, so it stays
+    true when the wording changes. `TransientExtractionError` is raised for
+    exactly this: rate limits and IP blocks, as distinct from a video that has
+    no captions.
+    """
+    try:
+        from app.services.extraction import TransientExtractionError
+
+        return isinstance(exc, TransientExtractionError)
+    except ImportError:  # pragma: no cover
+        return False
+
+
 class Worker:
     def __init__(self) -> None:
+        # Consecutive upstream refusals. Reset by any success or any failure
+        # that wasn't a refusal, so it only ever counts a genuine run.
+        self.blocked_streak = 0
         # Identifies the claim in the jobs table. The hostname is what Railway
         # shows, so a stuck job can be traced to the container that held it.
         self.name = f"{socket.gethostname()}:{os.getpid()}"
@@ -233,6 +261,10 @@ class Worker:
     def run_job(self, job: dict[str, Any], handler: ItemHandler) -> None:
         job_id = job["id"]
         beat = self.start_heartbeat(job_id)
+        # Each job gets a fresh streak: a block that stopped the last one has
+        # had at least the visibility timeout to clear before this one starts.
+        self.blocked_streak = 0
+        paused = False
         try:
             with ThreadPoolExecutor(
                 max_workers=max(1, settings.worker_item_concurrency)
@@ -242,6 +274,22 @@ class Worker:
                     # Top the pool up rather than batching: an item that lands
                     # early frees its slot immediately, so a slow transcript
                     # never holds four others behind it.
+                    if self.blocked_streak >= BLOCKED_STREAK_LIMIT:
+                        # Upstream is refusing us. Stop claiming, and leave the
+                        # remaining items pending rather than failing them:
+                        # they are fine, and this is not the moment to ask
+                        # again. The job keeps its claim but stops
+                        # heartbeating, so `claim_job` reclaims it once the
+                        # visibility timeout lapses and it resumes from here —
+                        # which doubles as the backoff.
+                        logger.warning(
+                            "Job %s: %d upstream refusals in a row. Pausing; "
+                            "the rest stays queued and resumes on reclaim.",
+                            job_id, self.blocked_streak,
+                        )
+                        paused = True
+                        break
+
                     if jobs.is_cancelled(job_id):
                         # Checked before claiming rather than after: a cancelled
                         # job should stop taking new work immediately, and
@@ -268,6 +316,13 @@ class Worker:
                 # stale and the next worker resumes it from the first item that
                 # never ran — which is the whole point of the design.
                 logger.info("Stopping mid-job %s; it will be resumed.", job_id)
+                return
+
+            if paused:
+                # Same shape, different reason: not finished, not failed, just
+                # not now. Closing it here would mark a playlist "succeeded"
+                # with most of it never attempted, and `Retry Failed` would have
+                # nothing to retry because those items never failed.
                 return
 
             if jobs.is_cancelled(job_id):
@@ -304,12 +359,20 @@ class Worker:
         try:
             result = handler(job, item)
             jobs.complete_item(item["id"], result or {})
+            self.blocked_streak = 0
         except PermanentFailure as exc:
             logger.info("Item %s permanently failed: %s", item["id"], exc)
             jobs.fail_item(item["id"], str(exc), permanent=True)
+            self.blocked_streak = 0
         except Exception as exc:  # noqa: BLE001
             logger.warning("Item %s failed: %s", item["id"], exc)
             jobs.fail_item(item["id"], str(exc), permanent=False)
+            # Counted, so the loop above can stop rather than march through the
+            # rest of the playlist. See BLOCKED_STREAK_LIMIT.
+            if _looks_blocked(exc):
+                self.blocked_streak += 1
+            else:
+                self.blocked_streak = 0
 
     # --- heartbeat and housekeeping ----------------------------------------
     def start_heartbeat(self, job_id: str) -> threading.Event:

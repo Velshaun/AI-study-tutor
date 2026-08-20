@@ -21,6 +21,8 @@ import io
 import logging
 import mimetypes
 import re
+import threading
+import time
 from html.parser import HTMLParser
 
 import httpx
@@ -198,11 +200,40 @@ def _transcript_error(exc: Exception) -> ExtractionError:
     return ExtractionError(f"No transcript available for this video: {exc}")
 
 
+# Transcript fetches are paced, process-wide.
+#
+# Measured on 20 Aug 2026: a playlist import fetched 42 transcripts in 62
+# seconds from a residential IP, and YouTube blocked it. Everything after —
+# 103 videos across three imports — failed, and the block outlived the run.
+#
+# This is a lock rather than a per-thread delay because the limit belongs to the
+# IP, not to the worker thread: five threads each politely waiting two seconds
+# still make five requests at once. `WORKER_ITEM_CONCURRENCY` therefore controls
+# how much work is in flight, and this controls how fast YouTube is actually
+# asked, which are different questions.
+_YT_GATE = threading.Lock()
+_YT_LAST = 0.0
+
+
+def _wait_for_youtube_turn() -> None:
+    global _YT_LAST
+    with _YT_GATE:
+        gap = settings.youtube_min_interval_secs
+        if gap <= 0:
+            return
+        wait = _YT_LAST + gap - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _YT_LAST = time.monotonic()
+
+
 def extract_youtube(url: str) -> str:
     """Fetch a video's transcript as plain text."""
     video_id = parse_youtube_id(url)
     if not video_id:
         raise ExtractionError("Could not parse a YouTube video id from that URL.")
+
+    _wait_for_youtube_turn()
 
     try:
         from youtube_transcript_api import YouTubeTranscriptApi

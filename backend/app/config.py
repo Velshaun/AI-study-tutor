@@ -112,6 +112,16 @@ class Settings:
         self.worker_kinds: list[str] = [
             k.strip() for k in os.getenv("WORKER_KINDS", "").split(",") if k.strip()
         ]
+        # Minimum gap between YouTube transcript requests, process-wide.
+        #
+        # Not a guess: 42 fetches in 62 seconds got a residential IP blocked,
+        # and the block outlasted the import. Two seconds is ~30/minute, well
+        # under the rate that tripped it, and a 97-video playlist still finishes
+        # in about three minutes — which is nothing next to an import that fails
+        # entirely and leaves the IP unusable for hours.
+        self.youtube_min_interval_secs: float = float(
+            os.getenv("YOUTUBE_MIN_INTERVAL_SECS", "2.0")
+        )
         # Polling is adaptive: brisk while there is work, a slow heartbeat once
         # the queue has been quiet. Never zero — jobs are queued by things other
         # than a user action, and a failed job needs picking up eventually.
