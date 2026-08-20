@@ -458,7 +458,7 @@ All twelve features from the August audit are shipped. Latest work, newest first
 `20260824000000` job queue · `20260825000000` question provenance ·
 `20260826000000` retire imported questions ·
 `20260827000000` source domain assignment ·
-`20260828000000` worker kinds — **written, NOT yet applied**
+`20260828000000` worker kinds
 
 Applied through the Supabase **Management API** with a personal access token
 (`POST /v1/projects/{ref}/database/query`). The service-role key cannot run DDL,
@@ -506,6 +506,20 @@ group_shared_domains, group_domain_views, coverage_maps, exam_attempts`
   takes one directly), or transcripts fetched somewhere that isn't a datacentre.
   Until then the paste door is the working one, and the failures correctly say
   "couldn't reach it" rather than blaming the videos.
+- **A rebuild can flatten a module's exam weights, and nothing notices.**
+  Observed 20 Aug 2026 on the live LPI module: two `process_module` runs a few
+  minutes apart over the same six sources produced `17.95/23.08/23.08/20.51/
+  15.38` the first time — LPI's published weights, expressed out of 39 — and a
+  flat `20/20/20/20/20` the second. Both sum to 100, both look reasonable, and
+  the second is wrong. The weights were restored by hand from the recorded
+  values.
+
+  This matters more than a one-off, because the finaliser rebuilds on *every*
+  import: adding one source can silently re-derive the blueprint worse than it
+  was, and `exam_profile` allocates questions by those weights. Nothing compares
+  a new blueprint against the old one, and nothing prefers `exam_catalog`'s
+  published weights over a fresh model answer when the catalogue has them. Worth
+  fixing before the next import feature, not after.
 - **HEIC is accepted but untested on a real iPhone.** iOS usually converts to
   JPEG on pick, so it rarely arrives; if it does, Gemini may reject it.
 - **"Add a screen recording" is a picker, not a recorder** — the web can't start
