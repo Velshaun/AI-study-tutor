@@ -117,6 +117,12 @@ Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" |
   Where-Object { $_.CommandLine -like '*worker.py*' }
 ```
 
+**Two processes is correct, not a duplicate.** A venv on Windows installs
+`pythonw.exe` as a launcher that re-execs the real interpreter as a child with
+the same command line, so one worker appears twice. The parent never runs the
+poll loop — the log has a single `started` line per launch, and claims arrive
+one per poll interval rather than two.
+
 The log's first line names what it claims, so a typo in `WORKER_KINDS` is
 visible immediately rather than presenting as a worker that polls forever and
 never picks anything up:

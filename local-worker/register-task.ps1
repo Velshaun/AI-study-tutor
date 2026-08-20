@@ -36,6 +36,31 @@ $template = Join-Path $here 'ConverseAI-LocalWorker.xml'
 function Fail($message) { Write-Host "  x $message" -ForegroundColor Red; exit 1 }
 function Ok($message)   { Write-Host "  + $message" -ForegroundColor Green }
 
+function Get-WorkerProcess {
+    <#
+      Every pythonw.exe running worker.py, including the venv launcher stub.
+      Use this to stop things — killing the stub as well is correct.
+    #>
+    @(Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" |
+      Where-Object { $_.CommandLine -like '*worker.py*' })
+}
+
+function Get-WorkerLeaf {
+    <#
+      Just the processes actually running the poll loop.
+
+      A venv on Windows (Python 3.14 here) installs pythonw.exe as a launcher
+      that re-execs the real interpreter as a child with the same command line,
+      so one worker shows up as two processes. Counting raw processes reports a
+      duplicate worker that does not exist — the parent never runs main(), and
+      the poll rate stays at one claim per interval. A worker is therefore a
+      matching process that is not the parent of another matching process.
+    #>
+    $all = Get-WorkerProcess
+    $parents = $all | ForEach-Object { $_.ParentProcessId }
+    @($all | Where-Object { $parents -notcontains $_.ProcessId })
+}
+
 Write-Host "`nChecking this machine can actually run the worker" -ForegroundColor Cyan
 
 if (-not (Test-Path $pythonw)) {
@@ -123,9 +148,20 @@ if ($existing -and -not $Force) {
     if ($reply -notmatch '^[Yy]') { Write-Host "  Left alone."; exit 0 }
 }
 
+# Clear any worker that is already running before replacing the definition.
+# /F on a running task does not stop it — it detaches it, so the old pythonw
+# keeps polling while /Run starts a second one. MultipleInstancesPolicy cannot
+# help: once orphaned, Task Scheduler no longer counts it as an instance.
+$ErrorActionPreference = 'Continue'
+schtasks /End /TN $TaskName 2>&1 | Out-Null
+$stray = Get-WorkerProcess
+if ($stray.Count -gt 0) {
+    $stray | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Ok "Stopped a worker that was already running"
+}
+
 # /F replaces an existing definition rather than erroring. Native stderr is left
 # alone for the reason above; the exit code is what decides.
-$ErrorActionPreference = 'Continue'
 schtasks /Create /TN $TaskName /XML $built /F | Out-Null
 $created = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
@@ -138,12 +174,20 @@ Write-Host "`nStarting it now so you don't have to log out and back in" -Foregro
 $ErrorActionPreference = 'Continue'
 schtasks /Run /TN $TaskName | Out-Null
 $ErrorActionPreference = 'Stop'
-Start-Sleep -Seconds 4
+# Long enough for the interpreter to import the backend before we look. Four
+# seconds was not, and the script reported a worker that had simply not finished
+# starting — which reads as a failure when nothing is wrong.
+Start-Sleep -Seconds 12
 
-$running = @(Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" |
-             Where-Object { $_.CommandLine -like '*worker.py*' })
-if ($running.Count -gt 0) {
+$running = Get-WorkerLeaf
+if ($running.Count -eq 1) {
     Ok "Worker is running (pid $($running[0].ProcessId))"
+} elseif ($running.Count -gt 1) {
+    # Two workers double-poll and race for jobs. SKIP LOCKED keeps them from
+    # claiming the same one, so this wastes quota rather than corrupting
+    # anything — but it is still wrong, and silent unless counted.
+    Write-Host "  ! $($running.Count) workers are running; there should be one." -ForegroundColor Yellow
+    Write-Host "    Run .\stop-worker.ps1 then re-run this script." -ForegroundColor Yellow
 } else {
     Write-Host "  ! No pythonw.exe running worker.py yet." -ForegroundColor Yellow
     Write-Host "    Check $logFile, or run this to see the error in a console:" -ForegroundColor Yellow
