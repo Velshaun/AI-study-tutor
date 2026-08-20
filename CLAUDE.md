@@ -163,6 +163,16 @@ once answered — one read, no model call, the same trade practice mode already
 makes. The runner holds the styling back until the answer lands, or a locked
 question flashes every option as wrong for the length of the round trip.
 
+**An imported paper is an exam, and only an exam.** Importing a PDF always
+wrote real `practice_exams` and `practice_questions` rows — and then wrote every
+question a second time into `imported_practice_questions`, which three readers
+used: the imported-sets card, the past-paper mix in generation, and the exam
+length fallback. Two shapes for one idea. The duplicate is gone; what it held
+that the exam row didn't — source file name, favourite flag, batch id — moved
+onto `practice_exams`, because those are properties of a paper. The old table is
+kept empty and unread until a later migration drops it, so a missed reader is
+recoverable rather than fatal.
+
 **A parser converts; it never invents.** Every incoming format — a Quizlet
 export, a caption file, a block of exam questions — becomes the same two records
 at the `ingest` boundary, so nothing downstream learns where material came from.
@@ -357,7 +367,8 @@ All twelve features from the August audit are shipped. Latest work, newest first
 `20260818000000` interactive terms · `20260819000000` deck titles ·
 `20260820000000` study attempts · `20260821000000` tutor messages ·
 `20260822000000` coverage maps · `20260823000000` domain performance ·
-`20260824000000` job queue · `20260825000000` question provenance
+`20260824000000` job queue · `20260825000000` question provenance ·
+`20260826000000` retire imported questions
 
 Applied through the Supabase **Management API** with a personal access token
 (`POST /v1/projects/{ref}/database/query`). The service-role key cannot run DDL,

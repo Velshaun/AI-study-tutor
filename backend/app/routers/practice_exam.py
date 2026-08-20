@@ -407,29 +407,68 @@ async def import_exam(
             questions=paper["questions"], subject=subject,
         ))
 
-    # Also kept as an imported set, which is what the "mix real past-paper
-    # questions into a generated exam" toggle draws on.
     batch_id = str(uuid4())
-    _client().table("imported_practice_questions").insert([
-        {
-            "user_id": user.id,
-            "module_id": module_id,
+    # The papers are already real exams with real questions — that was the point
+    # of writing them to the same tables a generated exam uses. There is no
+    # second copy any more: the batch id and the source file's name go onto the
+    # exam rows themselves, which is where a paper's own properties belong.
+    if exams:
+        _client().table("practice_exams").update({
+            "origin": "imported_pdf",
             "import_batch_id": batch_id,
             "source_name": source_name,
-            "question_text": q["question_text"],
-            "options": q["options"],
-            "correct_option": q["correct_option"] or None,
-            "why_summary": q.get("explanation") or None,
-        }
-        for paper in papers
-        for q in paper["questions"]
-    ]).execute()
+        }).in_("id", [e.id for e in exams]).execute()
+        _client().table("practice_questions").update({
+            "origin": "imported_pdf",
+            "import_batch_id": batch_id,
+        }).in_("exam_id", [e.id for e in exams]).execute()
 
     return ImportResult(
         exams=exams,
         question_count=sum(e.question_count for e in exams),
         source_name=source_name,
     )
+
+
+def _imported_rows(exams: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The questions of some imported exams, wearing the set list's shape.
+
+    The sets list groups by import batch and shows a source file's name — both
+    now properties of the exam row rather than of every question, so each
+    question is handed the two fields its exam carries. One query for the lot.
+    """
+    if not exams:
+        return []
+    by_exam = {e["id"]: e for e in exams}
+    questions = (
+        _client().table("practice_questions").select("*")
+        .in_("exam_id", list(by_exam)).order("position").execute()
+    ).data or []
+
+    rows: list[dict[str, Any]] = []
+    for q in questions:
+        exam = by_exam.get(q.get("exam_id")) or {}
+        options = q.get("options") or []
+        rows.append({
+            **q,
+            "question_text": q.get("prompt") or "",
+            "options": [
+                {"label": o.get("label"), "text": o.get("text")}
+                if isinstance(o, dict) else {"label": LETTERS[i], "text": str(o)}
+                for i, o in enumerate(options)
+            ],
+            "correct_option": (
+                LETTERS[q["correct_index"]]
+                if isinstance(q.get("correct_index"), int)
+                and 0 <= q["correct_index"] < len(LETTERS) else None
+            ),
+            "why_summary": q.get("expected_answer") or None,
+            "import_batch_id": exam.get("import_batch_id") or q.get("import_batch_id"),
+            "source_name": exam.get("source_name"),
+            "is_favourite": exam.get("is_favourite"),
+            "created_at": exam.get("created_at") or q.get("created_at"),
+        })
+    return rows
 
 
 def _to_imported(row: dict[str, Any]) -> ImportedQuestion:
@@ -449,11 +488,12 @@ async def list_imported(
 ) -> list[ImportedSet]:
     """Imported question sets for a module, grouped by import batch."""
     _own_module(module_id, user.id)
-    rows = (
-        _client().table("imported_practice_questions").select("*")
+    exams = (
+        _client().table("practice_exams").select("*")
         .eq("module_id", module_id).eq("user_id", user.id)
-        .order("created_at").execute()
+        .eq("origin", "imported_pdf").order("created_at").execute()
     ).data or []
+    rows = _imported_rows(exams)
 
     sets: dict[str, ImportedSet] = {}
     for r in rows:
@@ -477,26 +517,27 @@ async def favourite_imported(
     batch_id: str,
     user: AuthUser = Depends(get_current_user),
 ) -> ImportedSet:
-    """Toggle a set's favourite flag (stored across the set's rows)."""
+    """Toggle a set's favourite flag — one field on the exam, not every row."""
     client = _client()
-    rows = (
-        client.table("imported_practice_questions").select("*")
+    exams = (
+        client.table("practice_exams").select("*")
         .eq("import_batch_id", batch_id).eq("user_id", user.id).execute()
     ).data or []
-    if not rows:
+    if not exams:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Imported set not found.")
 
-    new_value = not bool(rows[0].get("is_favourite"))
-    client.table("imported_practice_questions").update(
-        {"is_favourite": new_value}
-    ).eq("import_batch_id", batch_id).eq("user_id", user.id).execute()
+    new_value = not bool(exams[0].get("is_favourite"))
+    client.table("practice_exams").update({"is_favourite": new_value}).eq(
+        "import_batch_id", batch_id
+    ).eq("user_id", user.id).execute()
 
+    rows = _imported_rows([{**e, "is_favourite": new_value} for e in exams])
     return ImportedSet(
         batch_id=batch_id,
-        source_name=rows[0].get("source_name") or "Imported exam",
+        source_name=exams[0].get("source_name") or "Imported exam",
         question_count=len(rows),
         is_favourite=new_value,
-        created_at=rows[0].get("created_at"),
+        created_at=exams[0].get("created_at"),
         questions=[_to_imported(r) for r in rows],
     )
 
@@ -506,15 +547,16 @@ async def delete_imported(
     batch_id: str,
     user: AuthUser = Depends(get_current_user),
 ) -> None:
-    """Delete a whole imported set."""
+    """Delete a whole imported set — the exams, and their questions with them."""
     client = _client()
     existing = (
-        client.table("imported_practice_questions").select("id")
-        .eq("import_batch_id", batch_id).eq("user_id", user.id).limit(1).execute()
-    ).data
+        client.table("practice_exams").select("id")
+        .eq("import_batch_id", batch_id).eq("user_id", user.id).execute()
+    ).data or []
     if not existing:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Imported set not found.")
-    client.table("imported_practice_questions").delete().eq(
+    # practice_questions cascades from practice_exams, so this is the whole set.
+    client.table("practice_exams").delete().eq(
         "import_batch_id", batch_id
     ).eq("user_id", user.id).execute()
 
@@ -699,10 +741,12 @@ async def generate_exam(
 
     # 1. Imported share — real past-paper questions, up to half the exam.
     if payload.include_imported:
-        imported_rows = (
-            client.table("imported_practice_questions").select("*")
-            .eq("module_id", payload.module_id).eq("user_id", user.id).execute()
+        imported_exams = (
+            client.table("practice_exams").select("*")
+            .eq("module_id", payload.module_id).eq("user_id", user.id)
+            .eq("origin", "imported_pdf").execute()
         ).data or []
+        imported_rows = _imported_rows(imported_exams)
         random.shuffle(imported_rows)
         take = min(len(imported_rows), total // 2)
         for row in imported_rows[:take]:

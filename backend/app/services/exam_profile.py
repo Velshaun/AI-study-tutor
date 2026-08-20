@@ -58,17 +58,29 @@ def module_for_domain(domain_id: str, user_id: str) -> str | None:
 
 
 def _largest_imported_batch(module_id: str, user_id: str) -> int:
-    """Question count of the biggest imported past paper for this module."""
-    rows = (
-        get_supabase().table("imported_practice_questions")
-        .select("import_batch_id")
-        .eq("module_id", module_id).eq("user_id", user_id).execute()
+    """Question count of the biggest imported past paper for this module.
+
+    Read from the exams themselves now rather than from a second copy of their
+    questions. An imported paper has always *been* an exam — the duplicate table
+    this used to count was the thing that didn't belong.
+    """
+    client = get_supabase()
+    exams = (
+        client.table("practice_exams").select("id, import_batch_id")
+        .eq("module_id", module_id).eq("user_id", user_id)
+        .eq("origin", "imported_pdf").execute()
     ).data or []
-    if not rows:
+    if not exams:
         return 0
+
+    rows = (
+        client.table("practice_questions").select("exam_id")
+        .in_("exam_id", [e["id"] for e in exams]).execute()
+    ).data or []
+    batch_of = {e["id"]: e.get("import_batch_id") or e["id"] for e in exams}
     sizes: dict[str, int] = {}
     for r in rows:
-        batch = r.get("import_batch_id") or "_ungrouped"
+        batch = batch_of.get(r.get("exam_id"), "_ungrouped")
         sizes[batch] = sizes.get(batch, 0) + 1
     return max(sizes.values())
 
