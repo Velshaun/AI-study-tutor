@@ -242,6 +242,14 @@ class Worker:
                     # Top the pool up rather than batching: an item that lands
                     # early frees its slot immediately, so a slow transcript
                     # never holds four others behind it.
+                    if jobs.is_cancelled(job_id):
+                        # Checked before claiming rather than after: a cancelled
+                        # job should stop taking new work immediately, and
+                        # whatever is already in flight is left to finish rather
+                        # than abandoned half-written.
+                        logger.info("Job %s was cancelled; taking no more items.",
+                                    job_id)
+                        break
                     while len(running) < settings.worker_item_concurrency:
                         item = jobs.claim_item(job_id)
                         if not item:
@@ -260,6 +268,13 @@ class Worker:
                 # stale and the next worker resumes it from the first item that
                 # never ran — which is the whole point of the design.
                 logger.info("Stopping mid-job %s; it will be resumed.", job_id)
+                return
+
+            if jobs.is_cancelled(job_id):
+                # No finaliser and no re-close. Rebuilding the study plan from a
+                # part-finished import is the one outcome cancelling was meant
+                # to avoid, and the job already carries its own final status.
+                logger.info("Job %s finished as cancelled.", job_id)
                 return
 
             finalise = FINALISERS.get(job.get("kind") or "")
@@ -320,10 +335,19 @@ class Worker:
         """Periodic tidying that has no other home.
 
         The worker's tick is the only thing in this system that runs on a
-        schedule, so timed cleanup lives here rather than in pg_cron. Empty
-        until the staging table it will sweep exists.
+        schedule, so timed work lives here rather than in pg_cron.
+
+        Study-plan rebuilds owed after a learner deleted sources are the one
+        thing here so far. They are a deadline in a column rather than a queued
+        job, so this is a scan, and a scan is all a debounce needs: whatever is
+        past its deadline has finished being changed.
         """
-        return
+        try:
+            from app.services import rebuild_queue
+
+            rebuild_queue.run_due()
+        except Exception:  # noqa: BLE001 — housekeeping never fails a tick
+            logger.exception("Scheduled rebuild scan failed")
 
 
 if __name__ == "__main__":

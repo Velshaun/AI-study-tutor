@@ -13,7 +13,8 @@ import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import Modal from '../Modal'
-import { useAddSourceToModule } from '../../hooks/useModuleUpload'
+import { api } from '../../lib/api'
+import { useAddSourceToModule, useModuleUpload } from '../../hooks/useModuleUpload'
 import { path } from '../../routes'
 import {
   DOCUMENT_ACCEPT,
@@ -41,6 +42,16 @@ import {
  * CSVs never run the ingestion pipeline: picked anywhere here, they are handed
  * to the flashcard importer instead.
  */
+/**
+ * `moduleId` is optional. Without one the same sheet serves the dashboard,
+ * where every route creates the module as its first act — which is what the
+ * dashboard's file picker already did, so nothing new is being committed to.
+ *
+ * Sharing the component rather than reimplementing four of the seven routes is
+ * the point: the dashboard offered files and camera while the module offered
+ * seven ways in, so the fastest way to import a playlist was to create a module
+ * from something else first.
+ */
 export default function AddSourceSheet({ open, moduleId, onClose, onImportCsv }) {
   const navigate = useNavigate()
   // One input, retargeted per route. The `accept` list (and `capture`) is what
@@ -50,7 +61,11 @@ export default function AddSourceSheet({ open, moduleId, onClose, onImportCsv })
   const depth = useRef(0)
   const [dragging, setDragging] = useState(false)
   const [error, setError] = useState(null)
-  const upload = useAddSourceToModule(moduleId)
+  // Two hooks, one of which is inert: hooks cannot be called conditionally, and
+  // the unused one costs nothing until its mutate is called.
+  const addToModule = useAddSourceToModule(moduleId)
+  const createModule = useModuleUpload()
+  const upload = moduleId ? addToModule : createModule
 
   function pick(files) {
     setError(null)
@@ -186,19 +201,52 @@ export default function AddSourceSheet({ open, moduleId, onClose, onImportCsv })
           Icon={FileSpreadsheet}
           title="CSV (Flashcards)"
           hint="Import a Quizlet or two-column CSV as a deck"
-          onClick={() => onImportCsv?.()}
+          onClick={async () => {
+            if (moduleId) {
+              onImportCsv?.()
+              return
+            }
+            onClose?.()
+            try {
+              const created = await api.createModule()
+              // ?csv=1 opens the importer on arrival, so the dashboard route
+              // ends in the same place the in-module one starts.
+              navigate(`${path('module', { id: created.id })}?csv=1`)
+            } catch {
+              // As above.
+            }
+          }}
         />
 
         {/* Pasting needs room to stage several sources and correct their
             labels, so it leaves the sheet for a screen of its own rather than
-            becoming a fourth cramped option here. */}
+            becoming a fourth cramped option here.
+
+            Named for the doors it opens rather than for the gesture: "Paste
+            material" read as somewhere to put text, so the YouTube half went
+            unnoticed — and a pasted *playlist* is the single highest-value
+            thing this screen does. */}
         <SourceRoute
           Icon={ClipboardPaste}
-          title="Paste material"
-          hint="Exported flashcards, captions or a past paper"
-          onClick={() => {
+          title="Paste URL or YouTube"
+          hint="A video or playlist link, flashcards, captions or a past paper"
+          onClick={async () => {
             onClose?.()
-            navigate(path('importSources', { id: moduleId }))
+            if (moduleId) {
+              navigate(path('importSources', { id: moduleId }))
+              return
+            }
+            // From the dashboard there is nowhere to paste into yet. Creating
+            // the module here is the same commitment the file routes make, and
+            // the pipeline names it from whatever lands.
+            try {
+              const created = await api.createModule()
+              navigate(path('importSources', { id: created.id }))
+            } catch {
+              // The screen it would have opened is the only thing lost; the
+              // sheet has already closed, so a toast would be shouting into an
+              // empty room. The learner can try again.
+            }
           }}
         />
 

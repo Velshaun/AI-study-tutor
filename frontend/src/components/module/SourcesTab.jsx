@@ -1,5 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { FileText, Loader2, Trash2, Upload } from 'lucide-react'
+import {
+  ChevronDown, FileText, ListVideo, Loader2, Trash2, Upload,
+} from 'lucide-react'
 import { useRef, useState } from 'react'
 
 import EmptyState from '../EmptyState'
@@ -14,6 +16,7 @@ import {
 } from '../../lib/uploads'
 import SourceIcon from './SourceIcon'
 import { api } from '../../lib/api'
+import { groupSources, summariseSources } from '../../lib/imports'
 
 
 
@@ -25,13 +28,26 @@ import { api } from '../../lib/api'
 export default function SourcesTab({ moduleId, sources }) {
   const queryClient = useQueryClient()
   const confirm = useConfirm()
+  const toast = useToast()
+
+  // Both deletions land on the same invalidation, and both leave the server to
+  // schedule the study-plan rebuild — it debounces by sixty seconds, so
+  // clearing out four videos costs one rebuild rather than four.
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['sources', moduleId] })
+    queryClient.invalidateQueries({ queryKey: ['module', moduleId] })
+  }
 
   const remove = useMutation({
     mutationFn: (id) => api.deleteSource(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['sources', moduleId] })
-      queryClient.invalidateQueries({ queryKey: ['module', moduleId] })
-    },
+    onSuccess: refresh,
+    onError: (e) => toast.error(e?.message || 'Could not remove that source.'),
+  })
+
+  const removeGroup = useMutation({
+    mutationFn: (key) => api.deleteSourceGroup(moduleId, key),
+    onSuccess: refresh,
+    onError: (e) => toast.error(e?.message || 'Could not remove that playlist.'),
   })
 
   async function confirmRemove(source) {
@@ -43,6 +59,24 @@ export default function SourcesTab({ moduleId, sources }) {
     })
     if (ok) remove.mutate(source.id)
   }
+
+  async function confirmRemoveGroup(group) {
+    const count = group.sources.length
+    const ok = await confirm({
+      title: 'Remove this playlist?',
+      // The count is the whole warning. "Remove playlist?" on something holding
+      // ninety-seven transcripts reads like removing one thing.
+      message:
+        `All ${count} video${count === 1 ? '' : 's'} from "${group.title}" ` +
+        'will be removed from this module. Your study plan will rebuild ' +
+        'without them.',
+      confirmLabel: `Remove ${count} video${count === 1 ? '' : 's'}`,
+      danger: true,
+    })
+    if (ok) removeGroup.mutate(group.key)
+  }
+
+  const { rows } = groupSources(sources)
 
   return (
     <div className="space-y-4">
@@ -57,32 +91,126 @@ export default function SourcesTab({ moduleId, sources }) {
         />
       ) : (
         <ul className="space-y-2">
-          {sources.map((s) => {
-            return (
-              <li
-                key={s.id}
-                className="flex items-center gap-3 rounded-xl border border-border bg-surface px-3 py-3"
-              >
-                <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-surface2 text-sec">
-                  <SourceIcon source={s} size={17} aria-hidden="true" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm text-pri">{s.filename}</p>
-                  <SourceStatus source={s} />
-                </div>
-                <button
-                  onClick={() => confirmRemove(s)}
-                  aria-label="Remove source"
-                  className="btn-ghost size-11 shrink-0 rounded-full p-0 hover:text-warning"
-                >
-                  <Trash2 size={16} aria-hidden="true" />
-                </button>
-              </li>
-            )
-          })}
+          {rows.map((row) =>
+            row.kind === 'group' ? (
+              <PlaylistRow
+                key={row.key}
+                group={row}
+                onRemoveGroup={() => confirmRemoveGroup(row)}
+                onRemoveVideo={confirmRemove}
+              />
+            ) : (
+              <SourceRow
+                key={row.source.id}
+                source={row.source}
+                onRemove={() => confirmRemove(row.source)}
+              />
+            ),
+          )}
         </ul>
       )}
     </div>
+  )
+}
+
+/** One source on its own — an upload, a paste, a single video. */
+function SourceRow({ source, onRemove }) {
+  return (
+    <li className="flex items-center gap-3 rounded-xl border border-border bg-surface px-3 py-3">
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-surface2 text-sec">
+        <SourceIcon source={source} size={17} aria-hidden="true" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm text-pri">{source.filename}</p>
+        <SourceStatus source={source} />
+      </div>
+      <button
+        onClick={onRemove}
+        aria-label="Remove source"
+        className="btn-ghost size-11 shrink-0 rounded-full p-0 hover:text-warning"
+      >
+        <Trash2 size={16} aria-hidden="true" />
+      </button>
+    </li>
+  )
+}
+
+/**
+ * A playlist: one row that opens.
+ *
+ * Importing one used to add a `user_files` row per video, so a 97-video course
+ * pushed every PDF the learner had uploaded off the screen. It is one thing
+ * they added, and it reads as one thing here — the same shape the import screen
+ * already uses, so a playlist looks the same wherever it appears.
+ *
+ * Collapsed by default, which is the opposite of the import screen and right
+ * for the opposite reason: there, the point is watching progress; here, the
+ * point is everything *else* in the list.
+ */
+const VISIBLE_ROWS = 6
+const ROW_HEIGHT_PX = 44
+
+function PlaylistRow({ group, onRemoveGroup, onRemoveVideo }) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <li className="overflow-hidden rounded-xl border border-border bg-surface">
+      <div className="flex items-center gap-3 px-3 py-3">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="flex min-w-0 flex-1 items-center gap-3 text-left"
+        >
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-accent/10 text-accent2">
+            <ListVideo size={17} aria-hidden="true" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm text-pri">{group.title}</span>
+            <span className="block text-xs text-sec">{summariseSources(group)}</span>
+          </span>
+          <ChevronDown
+            size={16}
+            aria-hidden="true"
+            className={`shrink-0 text-sec transition-transform ${open ? 'rotate-180' : ''}`}
+          />
+        </button>
+        <button
+          onClick={onRemoveGroup}
+          aria-label={`Remove the playlist ${group.title}`}
+          className="btn-ghost size-11 shrink-0 rounded-full p-0 hover:text-warning"
+        >
+          <Trash2 size={16} aria-hidden="true" />
+        </button>
+      </div>
+
+      {open && (
+        <ul
+          className="overflow-y-auto border-t border-border"
+          style={{ maxHeight: `${VISIBLE_ROWS * ROW_HEIGHT_PX}px` }}
+        >
+          {group.sources.map((video) => (
+            <li
+              key={video.id}
+              className="flex items-center gap-2 px-3 py-2 pl-6 text-xs"
+            >
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-pri">{video.filename}</p>
+                <SourceStatus source={video} />
+              </div>
+              {/* Removing one video without losing the other ninety-six. */}
+              <button
+                onClick={() => onRemoveVideo(video)}
+                aria-label={`Remove ${video.filename}`}
+                className="btn-ghost size-9 shrink-0 rounded-full p-0 hover:text-warning"
+              >
+                <Trash2 size={14} aria-hidden="true" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </li>
   )
 }
 

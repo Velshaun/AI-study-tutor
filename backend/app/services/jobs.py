@@ -331,6 +331,48 @@ def finish(job_id: str, *, error: str | None = None) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
+def cancel(job_id: str) -> bool:
+    """Stop a job, and everything of it that hasn't started.
+
+    Pending items become `skipped` rather than `cancelled`: they are individual
+    units of work that will not now run, and `skipped` is the status the schema
+    already has for that. Items *running* are left alone — the worker checks the
+    job before it writes anything back, and killing a row out from under a
+    thread in flight is how a half-written source appears.
+
+    Anything already succeeded stays. A cancelled import keeps what it managed,
+    which is the same promise `retry_failed` makes from the other direction.
+    """
+    if not available():
+        return False
+    client = _client()
+    client.table("job_items").update({"status": "skipped"}).eq(
+        "job_id", job_id
+    ).eq("status", "pending").execute()
+    client.table("jobs").update({
+        "status": "cancelled",
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", job_id).execute()
+    _recount(job_id)
+    logger.info("Cancelled job %s", job_id)
+    return True
+
+
+def is_cancelled(job_id: str) -> bool:
+    """Whether a job has been cancelled since it was claimed.
+
+    Read by the worker between items, so a cancel lands within one item rather
+    than at the end of the whole job.
+    """
+    if not available():
+        return False
+    rows = (
+        _client().table("jobs").select("status").eq("id", job_id).limit(1).execute()
+    ).data or []
+    return bool(rows) and rows[0].get("status") == "cancelled"
+
+
 def retry_failed(job_id: str, *, transient_only: bool = False) -> int:
     """Re-queue a job's failed items, and the job with them.
 

@@ -24,6 +24,7 @@ import CsvFlashcardImportModal from '../components/module/CsvFlashcardImportModa
 import ImportedExamsCard from '../components/module/ImportedExamsCard'
 import SourcesTab from '../components/module/SourcesTab'
 import PageTitle from '../components/PageTitle'
+import { useGoBack } from '../hooks/useGoBack'
 import ErrorBanner from '../components/ErrorBanner'
 import { useConfirm } from '../hooks/useConfirm'
 import { useToast } from '../hooks/useToast'
@@ -47,17 +48,26 @@ const TABS = ['sources', 'chat', 'classroom']
 export default function ModuleDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
+  // Unguarded navigate(-1) walks out of the app when this page was the
+  // first one opened — a shared link, or a refresh.
+  const goBack = useGoBack(ROUTES.dashboard)
   const toast = useToast()
   const queryClient = useQueryClient()
   // ?tab= lets another screen land on the right tab — the lecture player sends
   // an unopenable lecture back to Classroom, where its tile is.
   const [search] = useSearchParams()
   const requested = search.get('tab')
+  // Arriving from the dashboard's CSV route, which had to create this module
+  // before it had anywhere to put a deck.
+  const wantsCsv = search.get('csv') === '1'
   const [tab, setTab] = useState(() =>
     TABS.includes(requested) ? requested : 'sources',
   )
   const [showAdd, setShowAdd] = useState(false)
-  const [showCsv, setShowCsv] = useState(false)
+  // Seeded from the URL rather than synced in an effect: the repo's
+  // react-hooks rules forbid setState in an effect body, and this only ever
+  // matters on the first render anyway.
+  const [showCsv, setShowCsv] = useState(wantsCsv)
 
   const rename = useMutation({
     mutationFn: (title) => api.renameModule(id, title),
@@ -134,7 +144,7 @@ export default function ModuleDetail() {
   return (
     <div className="space-y-6 pb-28 md:pb-32">
       <PageTitle
-        onBack={() => navigate(-1)}
+        onBack={goBack}
         onRename={(title) => rename.mutate(title)}
         subtitle={
           module.detected_subject ||

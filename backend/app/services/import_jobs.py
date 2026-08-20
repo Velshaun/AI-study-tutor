@@ -21,7 +21,9 @@ import logging
 from typing import Any
 
 from app.database import get_supabase
-from app.services import domain_assign, ingest, imports, jobs, youtube
+from app.services import (
+    domain_assign, ingest, imports, jobs, schema_features, youtube,
+)
 from app.services.jobs import PermanentFailure
 from app.services.extraction import (
     ExtractionError,
@@ -113,11 +115,18 @@ def handle_youtube_item(job: dict[str, Any], item: dict[str, Any]) -> dict[str, 
         raise PermanentFailure(str(exc)) from exc
 
     jobs.checkpoint_item(item["id"], {"stage": "filing", "chars": len(transcript)})
-    module = module_of(module_id, user_id) or {}
-    assignment = domain_assign.assign(
-        module_id=module_id, user_id=user_id, title=title, text=transcript,
-        subject=module.get("title") or "this subject",
-    )
+    chosen = (job.get("payload") or {}).get("domain_id")
+    if chosen:
+        # The learner confirmed this before anything was fetched. Re-deriving it
+        # per video would let one playlist scatter across four domains, and
+        # would silently overrule an answer they were shown and agreed to.
+        assignment = {"domain_id": chosen, "confidence": 1.0, "low_confidence": False}
+    else:
+        module = module_of(module_id, user_id) or {}
+        assignment = domain_assign.assign(
+            module_id=module_id, user_id=user_id, title=title, text=transcript,
+            subject=module.get("title") or "this subject",
+        )
 
     stored = imports.store_reference(
         module_id=module_id, user_id=user_id, title=title, text=transcript,
@@ -125,7 +134,10 @@ def handle_youtube_item(job: dict[str, Any], item: dict[str, Any]) -> dict[str, 
     )
     if stored.get("source_id"):
         domain_assign.apply_to_source(stored["source_id"], assignment)
-        _tag_source(stored["source_id"], batch_id, payload.get("parent_source_id"))
+        _tag_source(
+            stored["source_id"], batch_id, payload.get("parent_source_id"),
+            payload.get("playlist_title"),
+        )
 
     return {
         "kind": "reference", "video_id": video_id, "title": title,
@@ -163,6 +175,10 @@ def _expand_playlist(
                 "target_kind": "video",
                 "video_id": v["video_id"],
                 "title": v["title"],
+                # Carried down so each stored source knows which playlist it
+                # belongs to. Without it the Sources tab can only draw ninety
+                # -seven equal rows and bury everything else in the module.
+                "playlist_title": payload.get("title") or "YouTube playlist",
             },
         }
         for v in videos
@@ -172,18 +188,30 @@ def _expand_playlist(
             "note": f"Found {len(videos)} videos."}
 
 
-def _tag_source(source_id: str, batch_id: str, parent_source_id: str | None) -> None:
-    """Record which import a source came from, where the schema allows it."""
+def _tag_source(
+    source_id: str, batch_id: str, parent_source_id: str | None,
+    group_title: str | None = None,
+) -> None:
+    """Record which import a source came from, where the schema allows it.
+
+    `group_title` is what makes a playlist one row in the Sources tab rather
+    than one per video: `import_batch_id` says which import, and this says what
+    to call it. Its presence is also the signal to group at all — a source
+    without one is drawn on its own.
+    """
     if not domain_assign.available():
         return
     patch: dict[str, Any] = {"import_batch_id": batch_id}
     if parent_source_id:
         patch["parent_source_id"] = parent_source_id
+    if group_title and schema_features.has_column("user_files", "group_title"):
+        patch["group_title"] = group_title[:200]
     get_supabase().table("user_files").update(patch).eq("id", source_id).execute()
 
 
 def enqueue_youtube_import(
-    *, module_id: str, user_id: str, target: dict[str, str], title: str | None = None,
+    *, module_id: str, user_id: str, target: dict[str, str],
+    title: str | None = None, domain_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Queue a video or a playlist. A playlist starts as one item and grows."""
     from uuid import uuid4
@@ -204,7 +232,11 @@ def enqueue_youtube_import(
 
     return jobs.enqueue(
         user_id=user_id, module_id=module_id, kind=YOUTUBE_KIND,
-        payload={"batch_id": batch_id, "target": target, "title": title},
+        payload={"batch_id": batch_id, "target": target, "title": title,
+                 # Confirmed by the learner in the preview, before any of
+                 # this was queued. One playlist is one subject, so it is
+                 # decided once here rather than re-guessed per video.
+                 "domain_id": domain_id},
         items=items,
     )
 

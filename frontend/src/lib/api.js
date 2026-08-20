@@ -221,6 +221,20 @@ export const api = {
   createModule: (body = {}) => apiFetch('/modules', { method: 'POST', body }),
   // Does this material belong where it's about to go? `moduleId` omitted
   // asks whether it already has a home; supplied, whether it fits that one.
+  // What a pasted YouTube link actually is, and where it would be filed —
+  // answered before anything is queued, so the learner confirms first.
+  previewYouTube: (moduleId, url) =>
+    apiFetch('/import/youtube/preview', {
+      method: 'POST',
+      body: { module_id: moduleId, url },
+    }),
+  cancelImport: (jobId) =>
+    apiFetch(`/import/jobs/${jobId}/cancel`, { method: 'POST' }),
+  // Deletes every source of one playlist in a single request. A client-side
+  // loop over ninety-seven ids would be ninety-seven rebuild deadlines and a
+  // half-deleted playlist if it stopped partway.
+  deleteSourceGroup: (moduleId, groupKey) =>
+    apiFetch(`/sources/group/${moduleId}/${groupKey}`, { method: 'DELETE' }),
   subjectCheck: (texts, moduleId) =>
     apiFetch('/modules/subject-check', {
       method: 'POST',

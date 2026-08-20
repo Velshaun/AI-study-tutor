@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import coverage, storage
+from app.services import rebuild_queue, coverage, storage
 from app.services.extraction import classify_url
 from app.services.pipeline import process_module, sat_exam_domains
 
@@ -62,6 +62,11 @@ class SourceFile(BaseModel):
     download_url: str | None = None
     # First ~120 chars of the parsed text, for the "transcript ready" preview.
     preview: str | None = None
+    # Set together for sources imported as one playlist: the batch is the
+    # grouping key, the title is what the pill is called. Null on everything
+    # else, which is how the list knows to draw a source on its own.
+    group_key: str | None = None
+    group_title: str | None = None
 
 
 class ProcessResponse(BaseModel):
@@ -124,6 +129,8 @@ def _to_source(row: dict[str, Any], *, with_url: bool = False) -> SourceFile:
             storage.signed_url(row.get("storage_path") or "") if with_url else None
         ),
         preview=((row.get("extracted_text") or "").strip()[:120] or None),
+        group_key=(row.get("import_batch_id") if row.get("group_title") else None),
+        group_title=row.get("group_title"),
     )
 
 
@@ -373,9 +380,63 @@ async def delete_source_file(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Source not found.")
     storage.delete_source(file_id)
 
-    # The coverage map still describes text the learner no longer has. Mark it
-    # stale first so nothing reads it in the meantime, then rebuild without it.
-    module_id = rows[0].get("module_id")
-    if module_id:
-        coverage.mark_stale(module_id, user.id)
-        background.add_task(coverage.ensure, module_id, user.id, force=True)
+    _after_source_removed(rows[0].get("module_id"), user.id, background)
+
+
+def _after_source_removed(
+    module_id: str | None, user_id: str, background: BackgroundTasks,
+) -> None:
+    """What has to happen once a source is gone.
+
+    Two different things, on two different clocks. The coverage map describes
+    text the learner no longer has, so it is marked stale immediately and
+    recomputed in the background — nothing should read it in between.
+
+    The study plan is re-derived on a delay instead. Deleting four videos should
+    cost one rebuild, not four, and the three intermediate blueprints would each
+    briefly *be* the module's study plan. `rebuild_queue` holds a deadline that
+    every deletion pushes out; the worker rebuilds whatever is due.
+
+    Weights are not touched by either, and the rebuild says so explicitly rather
+    than trusting the freeze — deleting a video cannot change what a vendor
+    publishes.
+    """
+    if not module_id:
+        return
+    coverage.mark_stale(module_id, user_id)
+    background.add_task(coverage.ensure, module_id, user_id, force=True)
+    rebuild_queue.schedule(module_id, reason="a source was removed")
+
+
+@router.delete("/group/{module_id}/{group_key}",
+               status_code=status.HTTP_204_NO_CONTENT)
+async def delete_source_group(
+    module_id: str,
+    group_key: str,
+    background: BackgroundTasks,
+    user: AuthUser = Depends(get_current_user),
+) -> None:
+    """Delete every source imported as part of one playlist.
+
+    Its own endpoint rather than the client deleting ninety-seven ids in a loop:
+    that would be ninety-seven requests, ninety-seven coverage invalidations and
+    ninety-seven rebuild deadlines, and a half-finished loop would leave a
+    playlist that is partly gone with no way to say so.
+    """
+    _own_module(module_id, user.id)
+    rows = (
+        _client().table("user_files").select("id")
+        .eq("module_id", module_id).eq("user_id", user.id)
+        .eq("import_batch_id", group_key)
+        .execute()
+    ).data or []
+    if not rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "That playlist isn't here.")
+
+    for row in rows:
+        storage.delete_source(row["id"])
+    logger.info(
+        "Deleted %d source(s) of playlist %s from module %s",
+        len(rows), group_key, module_id,
+    )
+    _after_source_removed(module_id, user.id, background)

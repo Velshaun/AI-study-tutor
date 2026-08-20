@@ -130,3 +130,67 @@ export function formatRemaining(seconds) {
   const hours = Math.round(minutes / 6) / 10
   return `about ${hours} hours left`
 }
+
+/**
+ * The same regrouping, one layer further on: stored sources rather than queue
+ * items.
+ *
+ * A playlist import lands one `user_files` row per video, so the Sources tab
+ * drew ninety-seven rows and buried every PDF the learner had uploaded. The
+ * queue solved this for the import screen; the sources list needs the same
+ * answer, because it is the same fact — a playlist is one thing the learner
+ * added, however many rows it takes to store it.
+ *
+ * `group_key` is the import batch and `group_title` is what to call it. Sources
+ * without a title are drawn on their own, so nothing else changes shape.
+ */
+export function groupSources(sources = []) {
+  const groups = new Map()
+  const loose = []
+
+  for (const source of sources) {
+    if (!source?.group_key || !source?.group_title) {
+      loose.push(source)
+      continue
+    }
+    const existing = groups.get(source.group_key)
+    if (existing) {
+      existing.sources.push(source)
+    } else {
+      groups.set(source.group_key, {
+        key: source.group_key,
+        title: source.group_title,
+        sources: [source],
+      })
+    }
+  }
+
+  // Order is preserved from the incoming list, and a group sits where its first
+  // member did — so importing a playlist doesn't reshuffle everything above it.
+  const out = []
+  const placed = new Set()
+  for (const source of sources) {
+    if (source?.group_key && source?.group_title) {
+      if (placed.has(source.group_key)) continue
+      placed.add(source.group_key)
+      out.push({ kind: 'group', ...groups.get(source.group_key) })
+    } else {
+      out.push({ kind: 'source', source })
+    }
+  }
+  return { rows: out, groups: [...groups.values()], loose }
+}
+
+/** "97 videos · 4 still reading" — the line that stands for the whole group. */
+export function summariseSources(group) {
+  const total = group.sources.length
+  const pending = group.sources.filter(
+    (s) => s.status !== 'parsed' && s.status !== 'failed',
+  ).length
+  const failed = group.sources.filter((s) => s.status === 'failed').length
+
+  const parts = [`${total} video${total === 1 ? '' : 's'}`]
+  if (pending) parts.push(`${pending} still reading`)
+  if (failed) parts.push(`${failed} didn\u2019t work`)
+  return parts.join(' \u00b7 ')
+}

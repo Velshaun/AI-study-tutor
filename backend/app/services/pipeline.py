@@ -205,7 +205,7 @@ def _match_key(title: str) -> str:
 
 def write_domains(
     module_id: str, user_id: str, domains: list[dict[str, Any]],
-    *, force: bool = False,
+    *, force: bool = False, settle_weights: bool = True,
 ) -> dict[str, Any]:
     """Reconcile the module's AI-derived domains with a freshly extracted set.
 
@@ -384,7 +384,13 @@ def write_domains(
             module_id, len(protected), ", ".join(protected[:6]),
         )
 
-    weights_note = _settle_weights(module_id)
+    # Skipped when the rebuild was triggered by material changing rather than
+    # by material arriving. Deleting a video cannot change what a vendor
+    # publishes, so there is nothing to look up — and the freeze is not the
+    # right thing to lean on here: a provisional module would otherwise have its
+    # even split recomputed over a different number of domains, which is a
+    # weight change caused by a deletion. Exactly what must not happen.
+    weights_note = _settle_weights(module_id) if settle_weights else {"status": "skipped"}
 
     return {
         "weights": weights_note,
@@ -489,12 +495,18 @@ def _settle_weights(module_id: str) -> dict[str, Any]:
 # --- steps 2-8 --------------------------------------------------------------
 def process_module(
     module_id: str, user_id: str, *, force: bool = False,
+    settle_weights: bool = True,
 ) -> dict[str, Any]:
     """Run the full pipeline for one module. Safe to call in the background.
 
     ``force`` rebuilds the domain list outright, destroying generated content
     attached to domains that go away. Only pass it when the learner has
     explicitly confirmed — see ``write_domains``.
+
+    ``settle_weights=False`` leaves the exam weights entirely alone. Pass it for
+    a rebuild caused by material being *removed*: the plan needs re-deriving,
+    the weights do not, and they are a property of the exam rather than of the
+    sources — see ``exam_weights``.
     """
     logger.info("Pipeline starting for module %s", module_id)
     try:
@@ -538,7 +550,10 @@ def process_module(
         result, sources = extract_domains(combined, user_context)
 
         # step 7
-        written = write_domains(module_id, user_id, result["domains"], force=force)
+        written = write_domains(
+            module_id, user_id, result["domains"],
+            force=force, settle_weights=settle_weights,
+        )
         domain_count = written["domain_count"]
 
         # step 8

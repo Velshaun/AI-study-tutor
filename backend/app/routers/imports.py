@@ -24,7 +24,9 @@ from pydantic import BaseModel, Field
 
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import ingest, import_jobs, jobs, youtube
+from app.services import (
+    domain_assign, ingest, import_jobs, jobs, youtube,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +127,9 @@ class YouTubeRequest(BaseModel):
     # Playlists by default: a course is a series, and someone searching for one
     # wants the series rather than whichever single video ranks highest.
     playlist: bool = True
+    # Confirmed in the preview. Absent for the search door, which has no
+    # preview step yet, and for anything queued before the preview existed.
+    domain_id: str | None = None
 
 
 @router.post("/youtube", response_model=ImportJob,
@@ -190,6 +195,7 @@ async def import_youtube(
 
     job = import_jobs.enqueue_youtube_import(
         module_id=payload.module_id, user_id=user.id, target=target, title=title,
+        domain_id=payload.domain_id,
     )
     if not job:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Could not queue that import.")
@@ -265,6 +271,121 @@ def _to_job(row: dict[str, Any], items: list[dict[str, Any]]) -> ImportJob:
             for i in items
         ],
     )
+
+
+class YouTubePreview(BaseModel):
+    """What a pasted link turns out to be, before anything is queued."""
+
+    kind: str                      # 'video' | 'playlist'
+    target_id: str
+    title: str
+    video_count: int = 1
+    # The domain this looks like it belongs in, and everything it could be
+    # moved to. The learner confirms or corrects before a job exists.
+    domain_id: str | None = None
+    domain_title: str | None = None
+    domains: list[dict[str, str]] = Field(default_factory=list)
+    note: str = ""
+
+
+class PreviewRequest(BaseModel):
+    module_id: str
+    url: str
+
+
+@router.post("/youtube/preview", response_model=YouTubePreview)
+async def preview_youtube(
+    payload: PreviewRequest,
+    user: AuthUser = Depends(get_current_user),
+) -> YouTubePreview:
+    """Say what a link is, and where it would go, without queueing anything.
+
+    Importing used to start the moment a link was pasted, so the first time a
+    learner found out they had pasted the wrong playlist — or that a 97-video
+    course was about to be filed under one domain — was after it had been read.
+    A transcript is cheap to fetch and expensive to unpick from a module.
+
+    So identification happens first and costs nothing: a playlist listing is one
+    Data API call, and the domain is matched against titles the module already
+    has. Nothing is written until the learner confirms.
+    """
+    module = _own_module(payload.module_id, user.id)
+
+    target = youtube.parse_target(payload.url or "")
+    if not target:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "That doesn't look like a YouTube video or playlist link.",
+        )
+
+    title = ""
+    count = 1
+    if target["kind"] == "playlist":
+        try:
+            videos = youtube.list_playlist(target["id"])
+            count = len(videos)
+            title = youtube.playlist_title(target["id"]) or "YouTube playlist"
+        except youtube.QuotaExhausted as exc:
+            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc)) from exc
+        except youtube.YouTubeError as exc:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+        if not count:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                "That playlist has no videos we can read.",
+            )
+    else:
+        title = f"YouTube video {target['id']}"
+
+    rows = (
+        _client().table("domains").select("id, title, weight_pct, status")
+        .eq("module_id", payload.module_id).order("order_index").execute()
+    ).data or []
+    # Flashcard decks are their own locked, zero-weight domain and are not part
+    # of the blueprint, so they are not somewhere to file a transcript.
+    choices = [
+        {"id": d["id"], "title": d.get("title") or ""}
+        for d in rows
+        if (d.get("weight_pct") or 0) or d.get("status") != "locked"
+    ]
+
+    suggested = domain_assign.suggest_from_title(
+        title, choices, subject=module.get("title") or "",
+    )
+
+    return YouTubePreview(
+        kind=target["kind"],
+        target_id=target["id"],
+        title=title,
+        video_count=count,
+        domain_id=(suggested or {}).get("domain_id"),
+        domain_title=(suggested or {}).get("title"),
+        domains=choices,
+        note=(
+            f"{count} video{'s' if count != 1 else ''} will be read and filed "
+            "under one domain."
+            if target["kind"] == "playlist"
+            else "One transcript will be read and filed under one domain."
+        ),
+    )
+
+
+@router.post("/jobs/{job_id}/cancel", response_model=ImportJob)
+async def cancel_job(
+    job_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> ImportJob:
+    """Stop an import that's running. What already landed stays."""
+    job = jobs.get(job_id, user.id)
+    if not job:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Import not found.")
+    if job.get("status") in ("succeeded", "failed", "cancelled"):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "That import has already finished.",
+        )
+    jobs.cancel(job_id)
+    refreshed = jobs.get(job_id, user.id) or job
+    return _to_job(refreshed, jobs.items(job_id))
 
 
 @router.get("/jobs/{module_id}", response_model=list[ImportJob])

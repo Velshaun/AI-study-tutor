@@ -136,8 +136,17 @@ export default function AppLayout() {
 
         {/* Content. Bottom padding clears the mobile tab bar and the home
             indicator on iOS; removed once the bar moves to the side at md. */}
-        <main className="flex-1 pb-[calc(4.5rem+env(safe-area-inset-bottom))] md:pb-0">
-          <div className="mx-auto max-w-3xl px-5 py-8">
+        {/* `overflow-x-clip` rather than `hidden`: hidden creates a scroll
+            container, which breaks `position: sticky` on descendants — the
+            module tab bar among them. Clip contains the overflow without that
+            side effect.
+
+            Zooming shrinks the viewport in CSS pixels, so at 200% a phone is
+            ~190px wide and anything with an intrinsic minimum — a wide table,
+            a long unbroken filename — pushes the page sideways. min-w-0 lets
+            these flex children shrink below their content instead. */}
+        <main className="min-w-0 flex-1 overflow-x-clip pb-[calc(4.5rem+env(safe-area-inset-bottom))] md:pb-0">
+          <div className="mx-auto w-full min-w-0 max-w-3xl px-5 py-8">
             <Outlet />
           </div>
         </main>

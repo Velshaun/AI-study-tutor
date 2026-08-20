@@ -167,6 +167,68 @@ def assign(
                 "low_confidence": True}
 
 
+# Words that appear in half of all course titles and tell you nothing about
+# which domain something belongs to.
+_STOPWORDS = frozenset(
+    "the a an and or of to in for with on at by from is are how what why "
+    "part full course tutorial lesson video series complete guide intro "
+    "introduction beginners beginner exam prep training crash your you".split()
+)
+
+
+def _words(text: str) -> set[str]:
+    import re
+
+    return {
+        w for w in re.findall(r"[a-z0-9+#]{2,}", (text or "").lower())
+        if w not in _STOPWORDS
+    }
+
+
+def suggest_from_title(
+    title: str, choices: list[dict[str, str]], *, subject: str = "",
+) -> dict[str, Any] | None:
+    """The domain a title looks like it belongs to, before any text exists.
+
+    Used by the import preview, which runs *before* anything is fetched — so
+    there is no transcript to read and `assign` cannot help. This is word
+    overlap and nothing cleverer, deliberately: the learner is looking at the
+    answer and can change it, so a fast guess they correct beats a model call
+    they wait for.
+
+    Returns None rather than a coin flip when nothing overlaps. The preview then
+    shows no pre-selection, which is the honest state — "we don't know, you
+    pick" — rather than pointing at whichever domain happened to sort first.
+    """
+    if not choices:
+        return None
+
+    # The subject's own words are in every domain title of the module, so they
+    # carry no signal about which one — "Linux" in a Linux course matches
+    # everything.
+    noise = _words(subject)
+    target = _words(title) - noise
+    if not target:
+        return None
+
+    best = None
+    for choice in choices:
+        words = _words(choice.get("title") or "") - noise
+        if not words:
+            continue
+        overlap = len(target & words)
+        if overlap and (best is None or overlap > best[0]):
+            best = (overlap, choice)
+
+    if not best:
+        return None
+    return {
+        "domain_id": best[1]["id"],
+        "title": best[1].get("title") or "",
+        "overlap": best[0],
+    }
+
+
 def apply_to_source(source_id: str, assignment: dict[str, Any]) -> None:
     """Record the assignment on the source row, where the schema allows it."""
     if not available() or not assignment.get("domain_id"):

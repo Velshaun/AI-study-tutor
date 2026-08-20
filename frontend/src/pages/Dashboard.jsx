@@ -4,6 +4,7 @@ import { useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import ModuleCard from '../components/dashboard/ModuleCard'
+import AddSourceSheet from '../components/module/AddSourceSheet'
 import EmptyState from '../components/EmptyState'
 import PageTitle from '../components/PageTitle'
 import SectionHeader from '../components/SectionHeader'
@@ -37,7 +38,15 @@ export default function Dashboard() {
         : false,
   })
 
-  const openPicker = () => fileInput.current?.click()
+  // The full sheet, not a bare file picker. The dashboard used to offer files
+  // and the camera while a module offered seven ways in, so the quickest route
+  // to importing a playlist was to create a module out of something else first
+  // and then go looking. Same component both places, so they cannot drift.
+  const [showAdd, setShowAdd] = useState(false)
+  const openPicker = () => setShowAdd(true)
+
+  // Drag-and-drop still lands straight in the upload path — a dropped file has
+  // already answered the question the sheet exists to ask.
   const handleFiles = (files) => {
     const list = Array.from(files || [])
     if (list.length) upload.mutate(list)
@@ -132,6 +141,11 @@ export default function Dashboard() {
   return (
     <Shell onUpload={openPicker}>
       {hiddenInput}
+      <AddSourceSheet
+        open={showAdd}
+        moduleId={null}
+        onClose={() => setShowAdd(false)}
+      />
 
       {isEmpty ? (
         <UploadZone

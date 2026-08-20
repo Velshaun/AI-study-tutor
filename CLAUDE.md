@@ -267,6 +267,35 @@ is worse than no paper.
 The learner's label decides where material is filed; detection only pre-selects
 the pill and never overrides them.
 
+**Nothing is queued before the learner has seen what it is.** Pasting a link
+used to start the import on the spot, so the first time anyone discovered they
+had the wrong playlist — or that ninety-seven videos were about to be filed
+under one guessed domain — was after it had been read. A transcript is cheap to
+fetch and expensive to unpick from a module. `POST /import/youtube/preview`
+identifies the link, lists a playlist, and suggests a domain from title overlap
+alone, all without writing anything; the learner confirms or corrects, and only
+then is a job created. The confirmed domain rides on the job and overrules the
+per-video assignment, because one playlist is one subject and re-deciding it
+per video lets a course scatter across four domains.
+
+**Deleting sources rebuilds the plan on a deadline, not on a delete.** Removing
+four videos should cost one rebuild, and the three intermediate blueprints would
+each briefly *be* the module's study plan. `modules.rebuild_after` is a deadline
+every deletion pushes out; the worker's housekeeping rebuilds whatever is due.
+The debounce is a consequence of the shape rather than a mechanism — nothing to
+cancel, nothing lost to a redeploy. That rebuild passes `settle_weights=False`:
+deleting a video cannot change what a vendor publishes, and leaning on the
+freeze would still let a provisional module have its even split recomputed over
+a different number of domains, which is a weight change caused by a deletion.
+
+**A playlist is one row in the Sources tab too.** One import landed ninety-seven
+`user_files` rows and buried every PDF the learner had uploaded. `group_title`
+alongside the existing `import_batch_id` is the whole fix: the batch is the key,
+the title is what the pill is called, and its absence means draw this one on its
+own. Collapsed by default here and expanded by default on the import screen —
+opposite defaults for opposite reasons, since one screen is for watching
+progress and the other is for everything else in the list.
+
 **A playlist is one thing on screen, however many rows the queue holds.** The
 queue models it as one listing item plus a sibling per video, which is right for
 claiming and wrong for reading: twenty-two equal rows, the first of them "Found
@@ -508,7 +537,8 @@ All twelve features from the August audit are shipped. Latest work, newest first
 `20260824000000` job queue · `20260825000000` question provenance ·
 `20260826000000` retire imported questions ·
 `20260827000000` source domain assignment ·
-`20260828000000` worker kinds · `20260829000000` frozen exam weights
+`20260828000000` worker kinds · `20260829000000` frozen exam weights ·
+`20260830000000` playlist sources and debounced rebuild
 
 Applied through the Supabase **Management API** with a personal access token
 (`POST /v1/projects/{ref}/database/query`). The service-role key cannot run DDL,
