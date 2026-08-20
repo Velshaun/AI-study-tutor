@@ -217,6 +217,20 @@ is worse than no paper.
 The learner's label decides where material is filed; detection only pre-selects
 the pill and never overrides them.
 
+**A playlist is one thing on screen, however many rows the queue holds.** The
+queue models it as one listing item plus a sibling per video, which is right for
+claiming and wrong for reading: twenty-two equal rows, the first of them "Found
+21 videos". `lib/imports.js` regroups them under the playlist, six rows visible,
+scrolled to whichever video is being read. Expanded from the start, because the
+reason to watch an import is to see where it has got to.
+
+Time remaining is derived from the job's own throughput rather than a per-video
+constant, measured from `claimed_at` rather than `created_at` — time spent
+queued behind another import wasn't spent on videos, and counting it would make
+every estimate grow with the length of the queue. Under two finished items it
+says nothing: one item is a sample, not a rate, and a figure that appears
+instantly and then triples is worse than no figure.
+
 **Import progress is watched, not owned.** `GenerationProvider` holds its
 jobs in a promise the browser keeps open, which is precisely why it can't carry
 an import: close the tab and the promise dies with it. `JobsProvider` subscribes
@@ -250,6 +264,27 @@ which cannot express `FOR UPDATE SKIP LOCKED`, so `claim_job` and
 `claim_job_item` are database functions. Only one worker runs today; they are
 written for N because the alternative is finding out under load that a second
 worker means rewriting the claim path.
+
+**"Retrying won't help" is a claim about the source, not the attempt.** A
+production playlist failed all twenty-one videos in under ten seconds, and two
+separate mistakes had to line up for that to be filed the way it was.
+
+`PermanentFailure` lived in `worker.py`, which Railway starts as a script — so
+it is `__main__` there, and a handler reaching it through `from worker import
+PermanentFailure` imported the same file a second time and got a second class.
+The loop's `except PermanentFailure` matched nothing any handler raised, and
+every permanent failure was filed as transient. It lives in `services/jobs.py`
+now, which both sides import by the same name, so there is one class by
+construction. Anything a handler and the loop must agree on belongs in a module
+neither of them *is*.
+
+Repairing that alone would have made things worse, which is the more useful
+half. `extract_youtube` wrapped captions-disabled, video-gone and IP-blocked in
+one `ExtractionError`, and the handler called all of it permanent — so a
+corrected class identity would have written off a whole playlist over where the
+request happened to come from, with `Retry Failed` refusing to touch it.
+`TransientExtractionError` carries the distinction the library already draws out
+to the queue boundary, and nothing between them has to care.
 
 **A job's tallies are derived, never incremented.** Counters nudged per item
 drift the moment anything is retried, and this is the number the learner
@@ -369,6 +404,11 @@ Bugs the first layer could not have caught, and the later ones did:
   It was both: the environment is why it showed up there, and the coupling to
   animation completion is why it showed up at all. Removing the coupling makes
   the same harness step cleanly, which is the proof it was load-bearing.
+- An exception class defined in `worker.py` and imported by its handlers, which
+  is two classes when Railway runs the file as a script. Nothing failed loudly;
+  the failures were simply all filed under the wrong kind, and the only visible
+  symptom was a `failure_kind` column that read `transient` for twenty-one
+  videos that had been raised as permanent.
 - `loadChunk` reading `chunks` from state in the same tick `setChunks` was
   called, so a freshly opened lecture never got a `src`. Every visible symptom
   pointed elsewhere — the transcript scrubbed, the button flipped to "pause" —
@@ -435,6 +475,16 @@ group_shared_domains, group_domain_views, coverage_maps, exam_attempts`
 - **A pack over ~3M characters is still truncated** (60 chunks × 50k). It says
   so: `truncated` rides in the map, the verdict is told to mention it, and the
   assessment card prints which tail was left out.
+- **YouTube transcripts cannot be fetched from Railway.** YouTube blocks
+  datacentre IPs wholesale, and a hosted worker is exactly that. Measured on
+  20 Aug 2026: 0 of 21 videos from the same playlist succeeded from the worker,
+  4 of 4 succeeded from a laptop in the same minute, and the library named the
+  reason. Nothing in the import chain is at fault — expansion, waves, per-item
+  status, the finaliser threshold and `Retry Failed` were all exercised and all
+  behaved. It needs a residential or rotating proxy (`youtube-transcript-api`
+  takes one directly), or transcripts fetched somewhere that isn't a datacentre.
+  Until then the paste door is the working one, and the failures correctly say
+  "couldn't reach it" rather than blaming the videos.
 - **HEIC is accepted but untested on a real iPhone.** iOS usually converts to
   JPEG on pick, so it rarely arrives; if it does, Gemini may reject it.
 - **"Add a screen recording" is a picker, not a recorder** — the web can't start
