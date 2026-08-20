@@ -31,7 +31,9 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import coverage, dead_links, exam_catalog, exam_profile, tutor
+from app.services import (
+    coverage, dead_links, exam_catalog, exam_profile, subject_match, tutor,
+)
 from app.services.ai_service import GenerationError, discover_resources
 from app.services.link_check import validate_resources
 
@@ -392,6 +394,86 @@ async def create_module(
             status.HTTP_502_BAD_GATEWAY, "Could not create the module."
         )
     return _to_module(inserted.data[0])
+
+
+class SubjectCheckRequest(BaseModel):
+    """Material about to be filed, and optionally where it is being filed."""
+
+    # Filenames and any text already to hand. Filenames alone are usually
+    # enough — an exam code in "220-1102 objectives.pdf" is proof of identity,
+    # and asking before the upload beats asking after it.
+    texts: list[str] = Field(default_factory=list, max_length=50)
+    # Set when adding to an existing module; omitted when creating one.
+    module_id: str | None = None
+
+
+class SubjectCheckResponse(BaseModel):
+    relation: str
+    should_ask: bool
+    question: str = ""
+    material_label: str = ""
+    module_label: str = ""
+    module_id: str = ""
+    module_title: str = ""
+
+
+@router.post("/subject-check", response_model=SubjectCheckResponse)
+async def subject_check(
+    payload: SubjectCheckRequest,
+    user: AuthUser = Depends(get_current_user),
+) -> SubjectCheckResponse:
+    """Does this material belong where it is about to go?
+
+    Declared above `/{module_id}` so the literal path wins the match.
+
+    Two directions, one comparison. With `module_id`, it asks whether the
+    material fits that module — the mis-drop case. Without, it asks whether the
+    material already has a home among the learner's modules — the "you have a
+    Core 1 module and this is Core 2" case.
+
+    Answers `relation="unknown", should_ask=false` whenever there is no real
+    evidence, which is most of the time and is the point: this is a guard
+    against two specific mistakes, not a gate on every upload.
+    """
+    texts: list[str | None] = [t for t in payload.texts if t]
+
+    if payload.module_id:
+        module = _fetch_own(payload.module_id, user.id)
+        sources = (
+            _client().table("user_files").select("filename")
+            .eq("module_id", payload.module_id).limit(20).execute()
+        ).data or []
+        verdict = subject_match.against_module(
+            material_texts=texts,
+            module_id=payload.module_id,
+            module_title=module.get("title") or "",
+            module_texts=[f.get("filename") for f in sources],
+        )
+    else:
+        rows = (
+            _client().table("modules").select("id, title")
+            .eq("user_id", user.id).limit(100).execute()
+        ).data or []
+        verdict = subject_match.against_modules(
+            material_texts=texts, modules=rows,
+        )
+
+    if verdict.should_ask:
+        logger.info(
+            "Subject check: %s material against %r -> %s",
+            verdict.material_label or "unidentified",
+            verdict.module_title or "the learner's modules", verdict.relation,
+        )
+
+    return SubjectCheckResponse(
+        relation=verdict.relation,
+        should_ask=verdict.should_ask,
+        question=subject_match.question(verdict),
+        material_label=verdict.material_label,
+        module_label=verdict.module_label,
+        module_id=verdict.module_id,
+        module_title=verdict.module_title,
+    )
 
 
 @router.get("/{module_id}", response_model=ModuleDetail)

@@ -219,6 +219,13 @@ export const api = {
       method: 'DELETE',
     }),
   createModule: (body = {}) => apiFetch('/modules', { method: 'POST', body }),
+  // Does this material belong where it's about to go? `moduleId` omitted
+  // asks whether it already has a home; supplied, whether it fits that one.
+  subjectCheck: (texts, moduleId) =>
+    apiFetch('/modules/subject-check', {
+      method: 'POST',
+      body: { texts, module_id: moduleId ?? null },
+    }),
   renameModule: (id, title) =>
     apiFetch(`/modules/${id}`, { method: 'PATCH', body: { title } }),
   // The real exam's shape — practice sets size themselves from it.
