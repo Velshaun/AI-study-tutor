@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
 from app.services import (
-    domain_assign, ingest, import_jobs, jobs, youtube,
+    domain_assign, ingest, import_jobs, jobs, subject_match, youtube,
 )
 
 logger = logging.getLogger(__name__)
@@ -286,6 +286,9 @@ class YouTubePreview(BaseModel):
     domain_title: str | None = None
     domains: list[dict[str, str]] = Field(default_factory=list)
     note: str = ""
+    # Set when the playlist looks like it belongs to a different exam than
+    # this module. Empty the rest of the time, which is nearly always.
+    subject_warning: str = ""
 
 
 class PreviewRequest(BaseModel):
@@ -353,8 +356,19 @@ async def preview_youtube(
         title, choices, subject=module.get("title") or "",
     )
 
+    # The same comparison the upload paths make, at the one moment this path
+    # has an answer to compare: a Network+ course was imported into an LPI
+    # module because a pasted playlist never passed through this check, and
+    # forty-six transcripts had to be deleted by hand afterwards.
+    verdict = subject_match.against_module(
+        material_texts=[title],
+        module_id=payload.module_id,
+        module_title=module.get("title") or "",
+    )
+
     return YouTubePreview(
         kind=target["kind"],
+        subject_warning=subject_match.question(verdict) if verdict.should_ask else "",
         target_id=target["id"],
         title=title,
         video_count=count,

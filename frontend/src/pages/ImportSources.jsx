@@ -371,6 +371,12 @@ function Confirmation({ preview, domainId, onDomain, busy, onCancel, onConfirm }
         </select>
       </label>
 
+      {preview.subject_warning && (
+        <p className="rounded-lg bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning">
+          {preview.subject_warning}
+        </p>
+      )}
+
       {preview.note && <p className="text-xs text-sec">{preview.note}</p>}
 
       <div className="flex gap-2">
