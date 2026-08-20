@@ -259,6 +259,23 @@ several redeploys. `jobs` + `job_items` make the work a row. A job whose worker
 stops heartbeating is *reclaimed*, and only its unfinished items re-run, so an
 interrupted import continues rather than starting again.
 
+**Where a job runs is decided at claim time, not by who has a handler.**
+YouTube refuses transcripts to datacentre IPs, so they are fetched by a worker
+on a residential machine while everything else stays on Railway — the same
+`worker.py`, with `WORKER_KINDS` naming what it may take. Not a second program:
+resume, checkpoints, heartbeat reclaim and `Retry Failed` all already work, and
+an import queued while that machine is off simply waits.
+
+The filter had to go into `claim_job` rather than the handler registry, because
+a worker that claims a job it cannot handle does not put it back — it fails the
+job outright, deliberately, since an unknown kind is normally a deploy problem.
+So "not my kind" has to mean "never claimed". `claim_job`'s two-argument form is
+dropped rather than left beside the three-argument one: Postgres keeps both as
+overloads and PostgREST then cannot resolve which a request meant.
+
+A worker whose database lacks the filter falls back to claiming everything —
+what it did before — after one warning, so it can deploy ahead of the migration.
+
 **Claiming has to be SQL.** The backend reaches Postgres through PostgREST,
 which cannot express `FOR UPDATE SKIP LOCKED`, so `claim_job` and
 `claim_job_item` are database functions. Only one worker runs today; they are
@@ -440,7 +457,8 @@ All twelve features from the August audit are shipped. Latest work, newest first
 `20260822000000` coverage maps · `20260823000000` domain performance ·
 `20260824000000` job queue · `20260825000000` question provenance ·
 `20260826000000` retire imported questions ·
-`20260827000000` source domain assignment
+`20260827000000` source domain assignment ·
+`20260828000000` worker kinds — **written, NOT yet applied**
 
 Applied through the Supabase **Management API** with a personal access token
 (`POST /v1/projects/{ref}/database/query`). The service-role key cannot run DDL,
@@ -475,7 +493,10 @@ group_shared_domains, group_domain_views, coverage_maps, exam_attempts`
 - **A pack over ~3M characters is still truncated** (60 chunks × 50k). It says
   so: `truncated` rides in the map, the verdict is told to mention it, and the
   assessment card prints which tail was left out.
-- **YouTube transcripts cannot be fetched from Railway.** YouTube blocks
+- **YouTube transcripts are fetched locally, not from Railway.** Solved by the
+  `WORKER_KINDS` split above; `local-worker/` holds the Windows Task Scheduler
+  setup. Proven end to end on 20 Aug 2026 — a queued video was claimed by
+  `Macs-Computer`, read, stored and finalised. The original finding: YouTube blocks
   datacentre IPs wholesale, and a hosted worker is exactly that. Measured on
   20 Aug 2026: 0 of 21 videos from the same playlist succeeded from the worker,
   4 of 4 succeeded from a laptop in the same minute, and the library named the
