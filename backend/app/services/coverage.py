@@ -83,6 +83,18 @@ CHUNK_SCHEMA: dict[str, Any] = {
                             "questions from."
                         ),
                     },
+                    "material": {
+                        "type": "string",
+                        "description": (
+                            "teaching — explains, defines, or walks through the "
+                            "topic, so someone could learn it from this passage. "
+                            "assessment — practice questions, answer options, "
+                            "answer keys, or a mock exam. Judge what the passage "
+                            "IS, not what it is about: a question that names a "
+                            "concept is assessment even when its explanation "
+                            "says why an answer is right."
+                        ),
+                    },
                     "topics": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -92,7 +104,7 @@ CHUNK_SCHEMA: dict[str, Any] = {
                         ),
                     },
                 },
-                "required": ["index", "depth", "topics"],
+                "required": ["index", "depth", "topics", "material"],
             },
         },
     },
@@ -288,9 +300,16 @@ def _assess_chunk(
         depth = (item.get("depth") or "").strip().lower()
         if depth not in DEPTHS or depth == "none":
             depth = "mention"
+        # Anything the model doesn't label is treated as teaching: this only
+        # ever *lowers* a verdict, so the safe default is the one that leaves
+        # existing behaviour alone rather than the one that caps it.
+        material = (item.get("material") or "").strip().lower()
+        if material not in ("teaching", "assessment"):
+            material = "teaching"
         found.append({
             "index": index - 1,
             "depth": depth,
+            "material": material,
             "topics": [
                 str(t).strip()[:120]
                 for t in (item.get("topics") or []) if str(t).strip()
@@ -319,17 +338,47 @@ def _aggregate(
     aggregated: list[dict[str, Any]] = []
     for i, domain in enumerate(domains):
         entries = by_index.get(i, [])
+
+        # Questions test a domain; they do not teach it. A module whose only
+        # source is a practice-exam book genuinely spans every domain — every
+        # 50k chunk of a shuffled question bank does — and it reported thorough
+        # coverage of all five, so content readiness read as complete for a
+        # module holding nothing to learn from. Measured on the live A+ module:
+        # one 498,697-character source, 765 answer-option lines, 256 answer
+        # keys, five of five domains "well_covered".
+        #
+        # So depth is taken from the teaching material alone. Assessment
+        # establishes that a domain appears; it cannot establish that anyone
+        # could learn it here.
+        teaching = [e for e in entries if e.get("material") != "assessment"]
+        assessed = [e for e in entries if e.get("material") == "assessment"]
+
         depth = "none"
-        for entry in entries:
+        for entry in teaching:
             if DEPTHS.index(entry["depth"]) > DEPTHS.index(depth):
                 depth = entry["depth"]
 
-        if not entries or depth == "none":
+        # One "teaching" label against several "assessment" ones is a slip, not
+        # a section: a real textbook teaching a domain leaves that mark on more
+        # than one passage. The same instinct as "a bare mention is never
+        # coverage however often it recurs" — a lone contrary label is not
+        # evidence. Without this, one stray label out of eleven put every A+
+        # domain back to well_covered.
+        assessment_led = len(teaching) <= 1 and len(assessed) >= 2
+
+        if not entries:
+            coverage = "missing"
+        elif not teaching or assessment_led:
+            # Revisable, not learnable. Never "well_covered", however thoroughly
+            # the questions range across the domain.
+            coverage = "partial"
+            depth = depth if teaching else "none"
+        elif depth == "none":
             coverage = "missing"
         elif depth == "thorough":
             coverage = "well_covered"
         elif depth == "overview":
-            coverage = "well_covered" if len(entries) >= 2 else "partial"
+            coverage = "well_covered" if len(teaching) >= 2 else "partial"
         else:  # a mention, however many times
             coverage = "partial"
 
@@ -348,6 +397,12 @@ def _aggregate(
             "weight_pct": float(domain.get("weight_pct") or 0),
             "coverage": coverage,
             "depth": depth,
+            # Surfaced rather than inferred from the numbers: "partial" for a
+            # domain the sources only ever ask questions about needs a different
+            # sentence from "partial" because the textbook skims it.
+            "assessment_only": bool(entries) and not teaching,
+            "assessment_led": assessment_led,
+            "teaching_chunks": len(teaching),
             "topics": topics[:12],
             "sources": sorted({e["filename"] for e in entries})[:6],
             "chunk_hits": len(entries),

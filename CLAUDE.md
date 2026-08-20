@@ -69,6 +69,28 @@ against the blueprint on its own, and aggregates the findings into one stored
 map. The verdict is then a single cheap call over evidence rather than a
 sampled read, so it costs the same for 2MB as for 20KB.
 
+**Questions test a domain; they do not teach it.** The first live run of the
+coverage map, 20 Aug 2026, read 503,684 characters of the A+ module across 11
+chunks and reported all five domains `well_covered` at `thorough` depth. Its
+only source is Professor Messer's Core 1 *Practice Exams* — 765 answer-option
+lines, 256 answer keys, no teaching material at all. The map was not wrong about
+breadth: every 50k chunk of a shuffled question bank really does touch every
+domain. It was wrong about what that breadth meant, because the schema defined
+`thorough` as "taught well enough to answer exam questions from", and a question
+bank is exam questions.
+
+Each chunk now says whether the passage *teaches* or *assesses*, and depth is
+taken from the teaching material alone — assessment establishes that a domain
+appears, never that anyone could learn it there. A domain with no teaching
+behind it caps at `partial`, and the tutor says which kind of partial it is,
+because "add a study guide" and "add more of one" are different instructions.
+
+One stray `teaching` label among ten `assessment` ones is discounted, for the
+same reason a bare mention is never coverage however often it recurs: a lone
+contrary label is not evidence, and without that rule one slip out of eleven put
+every A+ domain back to `well_covered`. A genuine small textbook — one teaching
+chunk and no assessment — is not penalised.
+
 **Coverage is decided by the aggregator, not the model.** A model shown one
 chunk cannot judge breadth across a pack it never saw, so the rule lives in
 code: thorough anywhere wins; overview in two or more chunks wins; overview in
@@ -514,10 +536,6 @@ group_shared_domains, group_domain_views, coverage_maps, exam_attempts`
 
 - **`GET /attempts/open` has no consumer.** It's the ready-made feed for a
   "continue where you left off" covering quizzes and exams, not just lectures.
-- **The coverage map has never run against live Gemini.** Its pure logic has an
-  offline suite (56 checks), and the fallback path is verified against the real
-  Supabase, but no chunk has actually been sent — the migration isn't applied,
-  so `available()` is false everywhere. Layer 2 is owed once a token exists.
 - **A pack over ~3M characters is still truncated** (60 chunks × 50k). It says
   so: `truncated` rides in the map, the verdict is told to mention it, and the
   assessment card prints which tail was left out.

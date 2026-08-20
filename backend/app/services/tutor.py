@@ -327,20 +327,31 @@ def _note(entry: dict[str, Any]) -> str:
         f"{sources[0]}" if len(sources) == 1
         else f"{len(sources)} of your sources"
     )
-    passages = f"{hits} passage{'s' if hits != 1 else ''} of {where}"
+
+    # "Partial" because the sources only ever ask questions about this needs a
+    # different sentence from "partial" because a textbook skims it. The advice
+    # differs too: one wants teaching material, the other wants more of it.
+    if entry.get("assessment_led") or entry.get("assessment_only"):
+        return (
+            f"Practice questions on this appear across {hits} passage"
+            f"{'s' if hits != 1 else ''} of {where}, "
+            "but nothing in your sources teaches it — you can test yourself here "
+            "and not learn it. Worth adding a study guide or some lecture notes."
+        )
+    passages_text = f"{hits} passage{'s' if hits != 1 else ''} of {where}"
     depth = {
         "thorough": "Covered in depth",
         "overview": "Explained",
         "mention": "Only mentioned",
     }.get(entry.get("depth") or "", "Covered")
     if not topics:
-        return f"{depth} across {passages}."
+        return f"{depth} across {passages_text}."
 
     # Topics keep the case the material gave them: capitalising the list would
     # turn TCP/IP into Tcp/ip, which is worse than no capital at all.
     listed = ", ".join(topics[:4])
     more = f", and {len(topics) - 4} more" if len(topics) > 4 else ""
-    return f"{depth} across {passages}: {listed}{more}."
+    return f"{depth} across {passages_text}: {listed}{more}."
 
 
 def _verdict(
