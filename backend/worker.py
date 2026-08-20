@@ -54,6 +54,17 @@ ItemHandler = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 # {job kind: handler}. Import handlers register here as later phases add them.
 HANDLERS: dict[str, ItemHandler] = {}
 
+# {job kind: finaliser}. Run once, after every item of a job has been attempted
+# and before the job is closed.
+#
+# This exists for one reason: a multi-source import must trigger *one* module
+# rebuild, not one per source. Re-deriving the blueprint costs a Gemini call and
+# rewrites every domain, so doing it twenty times for a twenty-item paste would
+# be both expensive and destructive. A finaliser is where "and now, once,
+# rebuild" belongs.
+Finaliser = Callable[[dict[str, Any], list[dict[str, Any]]], None]
+FINALISERS: dict[str, Finaliser] = {}
+
 
 # --- permanent production health check --------------------------------------
 # NOT test scaffolding. Do not delete.
@@ -94,6 +105,19 @@ def handle_ping(job: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
 
 
 HANDLERS[PING_KIND] = handle_ping
+
+
+# --- import handlers ---------------------------------------------------------
+# Imported at the bottom so the module-level names above (PermanentFailure in
+# particular) exist by the time the handlers reference them.
+def _register_import_handlers() -> None:
+    from app.services import import_jobs
+
+    HANDLERS[import_jobs.PASTE_KIND] = import_jobs.handle_paste_item
+    FINALISERS[import_jobs.PASTE_KIND] = import_jobs.finalise_import
+
+
+_register_import_handlers()
 
 
 class PermanentFailure(RuntimeError):
@@ -220,6 +244,16 @@ class Worker:
                 # never ran — which is the whole point of the design.
                 logger.info("Stopping mid-job %s; it will be resumed.", job_id)
                 return
+
+            finalise = FINALISERS.get(job.get("kind") or "")
+            if finalise:
+                try:
+                    finalise(job, jobs.items(job_id))
+                except Exception:  # noqa: BLE001
+                    # The items are already stored and their statuses already
+                    # recorded. A finaliser that fails costs the rebuild, not
+                    # the import — so the job still closes on what it achieved.
+                    logger.exception("Finaliser failed for job %s", job_id)
 
             final = jobs.finish(job_id)
             logger.info(
