@@ -38,11 +38,16 @@ mean "never claimed".
 
 ## Setup
 
-One line in `backend/.env` (which is gitignored, so it stays on this machine):
+Two lines in `backend/.env` (which is gitignored, so they stay on this machine):
 
 ```
 WORKER_KINDS=import_youtube
+WORKER_LOG_FILE=C:\Users\you\ai-study-tutor\local-worker\worker.log
 ```
+
+The second is not optional in practice: the task runs `pythonw.exe`, which
+has no console, so without a log file a crash on startup looks exactly like
+a quiet queue. `register-task.ps1` refuses to register the task without it.
 
 The rest of what it needs is already there:
 
