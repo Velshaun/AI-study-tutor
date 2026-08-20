@@ -1,8 +1,11 @@
-import { CheckCheck, CheckCircle, Flag, Lightbulb, Loader2, XCircle } from 'lucide-react'
+import {
+  CheckCheck, CheckCircle, ChevronLeft, Flag, Lightbulb, Loader2, Lock, XCircle,
+} from 'lucide-react'
 import { useState } from 'react'
 
 import { planExpansions } from '../../lib/terms'
 import ErrorBanner from '../ErrorBanner'
+import QuestionNavigator from './QuestionNavigator'
 import TermSheet from './TermSheet'
 import TermText from './TermText'
 
@@ -17,6 +20,17 @@ import TermText from './TermText'
  *    Why Card. Nothing about the answer is known client-side until then — no
  *    peeking. Correct = green/✓, the wrong pick = red/✗, the rest dimmed.
  *  - Two confidence buttons animate in.
+ *
+ * Answering is forward-only, and going back is reading, not a second attempt.
+ * Unlike the quiz and exam runner, this one's answers are recorded on the
+ * server the moment they are given — there is no final submission to revise
+ * before. So Previous and the navigator take a learner back to re-read a
+ * question and its Why Card with the answer they gave still marked, and the
+ * options locked. Nothing there rewrites what was recorded.
+ *
+ * The navigator only offers questions this session actually answered. A resumed
+ * run knows its position and nothing else, so the ones answered yesterday stay
+ * shut rather than reopening as though they had never been answered.
  *
  * Two modes share the flow:
  *  - 'practice': LEFT = Flag for Review, RIGHT = Got It. One must be chosen.
@@ -46,14 +60,35 @@ export default function PracticeRunner({
   const [index, setIndex] = useState(() =>
     Math.min(attempt?.restored?.position ?? 0, Math.max(0, questions.length - 1)),
   )
-  const [selected, setSelected] = useState(null) // chosen label, e.g. 'B'
-  const [revealed, setRevealed] = useState(null) // AnswerResult once submitted
+  // What was answered, by question index. Practice mode records each answer on
+  // the server as it is given, so this is not the record — it is what lets a
+  // learner look back at one without the app having to ask for it again.
+  const [history, setHistory] = useState({}) // { [i]: { selected, revealed } }
+  // The pick on the live question, before it is submitted. Kept apart from
+  // `history` because it is the one thing here that is still changeable.
+  const [draft, setDraft] = useState(null) // chosen label, e.g. 'B'
+  // How far the run has got. Anything before this is answered and settled.
+  const [furthest, setFurthest] = useState(() =>
+    Math.min(attempt?.restored?.position ?? 0, Math.max(0, questions.length - 1)),
+  )
+  const [visited, setVisited] = useState(
+    () => new Set([Math.min(attempt?.restored?.position ?? 0, Math.max(0, questions.length - 1))]),
+  )
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
   const [openTerm, setOpenTerm] = useState(null)
 
   const count = Math.max(total || 0, questions.length)
   const q = questions[index]
+
+  // Looking back at something already answered. The answer stands: it went to
+  // the server when it was given, and nothing here rewrites it — going back is
+  // for reading the explanation again, not for a second attempt.
+  const reviewing = index < furthest
+  const past = history[index]
+  const selected = past ? past.selected : draft
+  const revealed = past ? past.revealed : null
+  const answers = Array.from({ length: count }, (_, i) => history[i]?.selected ?? null)
   // The learner has answered everything written so far. `index` is allowed to
   // sit one past the end while the server writes more: the next question
   // renders itself the moment it lands, with no effect to synchronise.
@@ -62,12 +97,12 @@ export default function PracticeRunner({
   if (!q && !caughtUp) return null
 
   async function submit() {
-    if (selected == null || submitting) return
+    if (reviewing || draft == null || submitting) return
     setSubmitting(true)
     setError(null)
     try {
-      const result = await onSubmit(q, selected)
-      setRevealed(result)
+      const result = await onSubmit(q, draft)
+      setHistory((seen) => ({ ...seen, [index]: { selected: draft, revealed: result } }))
     } catch (e) {
       setError(e?.message || 'Could not submit your answer.')
     } finally {
@@ -76,19 +111,34 @@ export default function PracticeRunner({
   }
 
   function advance() {
-    setSelected(null)
-    setRevealed(null)
+    setDraft(null)
     setError(null)
     // Stepping past the last written question is fine while the set is still
     // being written — the run parks on a waiting card until the next lands.
     if (index < questions.length - 1 || awaitingMore) {
       const to = index + 1
       setIndex(to)
+      setFurthest(to)
+      setVisited((seen) => new Set(seen).add(to))
       attempt?.save?.({ position: to, completed: to >= questions.length })
     } else {
       attempt?.save?.({ position: questions.length, completed: true })
       onComplete?.()
     }
+  }
+
+  /** Look at another question. Never changes what has been recorded.
+   *
+   *  Deliberately no `attempt.save`: the saved position is where the run is up
+   *  to, and wandering back to read question two must not mean resuming there
+   *  tomorrow.
+   */
+  function goTo(to) {
+    if (to < 0 || to > furthest || to === index) return
+    if (to !== furthest && !history[to]) return
+    setError(null)
+    setIndex(to)
+    setVisited((seen) => new Set(seen).add(to))
   }
 
   function flagForReview() {
@@ -131,9 +181,20 @@ export default function PracticeRunner({
         <div className="h-1.5 overflow-hidden rounded-full bg-surface2">
           <div
             className="h-full rounded-full bg-accent transition-[width] duration-300"
-            style={{ width: `${((index + (revealed ? 1 : 0)) / count) * 100}%` }}
+            style={{ width: `${((furthest + (revealed ? 1 : 0)) / count) * 100}%` }}
           />
         </div>
+        <QuestionNavigator
+          count={count}
+          index={index}
+          answers={answers}
+          visited={visited}
+          onJump={goTo}
+          // Only backwards, and only to questions this session actually holds
+          // the answer for. Forward is earned by answering, as it always was.
+          canJump={(i) => i === furthest || (i < furthest && Boolean(history[i]))}
+          locked
+        />
       </div>
 
       {/* Keyed, so changing question remounts this and replays the entrance.
@@ -161,7 +222,9 @@ export default function PracticeRunner({
                 terms={terms}
                 expand={optionExpand[i]}
                 onTerm={setOpenTerm}
-                onChoose={() => !revealed && !openTerm && setSelected(opt.label)}
+                onChoose={() =>
+                  !revealed && !reviewing && !openTerm && setDraft(opt.label)
+                }
               />
             ))}
           </div>
@@ -214,10 +277,30 @@ export default function PracticeRunner({
             {awaitingMore ? 'Finish here instead' : 'Finish'}
           </button>
         </div>
+      ) : reviewing ? (
+        <div className="space-y-2">
+          <p className="flex items-center justify-center gap-1.5 text-center text-xs text-sec">
+            <Lock size={12} aria-hidden="true" />
+            Answered already — this one is recorded and can&rsquo;t be changed.
+          </p>
+          <div className="flex gap-3">
+            <button
+              onClick={() => goTo(index - 1)}
+              disabled={index === 0 || !history[index - 1]}
+              className="btn-secondary min-h-11 shrink-0 px-4 disabled:opacity-40"
+            >
+              <ChevronLeft size={16} aria-hidden="true" />
+              Previous
+            </button>
+            <button onClick={() => goTo(furthest)} className="btn-primary min-h-11 flex-1">
+              Back to question {Math.min(furthest + 1, count)}
+            </button>
+          </div>
+        </div>
       ) : !revealed ? (
         <button
           onClick={submit}
-          disabled={selected == null || submitting}
+          disabled={draft == null || submitting}
           className="btn-primary min-h-11 w-full"
         >
           {submitting ? (
@@ -237,6 +320,19 @@ export default function PracticeRunner({
           onGotIt={gotIt}
           onNext={advance}
         />
+      )}
+
+      {/* The way into review from the live question. Below the actions rather
+          than beside them: answering is what this screen is for, and looking
+          back is the aside. */}
+      {!reviewing && !caughtUp && index > 0 && history[index - 1] && (
+        <button
+          onClick={() => goTo(index - 1)}
+          className="btn-ghost mx-auto min-h-11 text-xs"
+        >
+          <ChevronLeft size={14} aria-hidden="true" />
+          Review previous questions
+        </button>
       )}
 
       <TermSheet term={openTerm} onClose={() => setOpenTerm(null)} />

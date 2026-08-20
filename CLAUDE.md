@@ -132,6 +132,14 @@ weights, same runner — `kind='pre_assessment'` and `adaptive=false`, because a
 baseline weighted towards weaknesses the app hasn't observed yet would be
 measuring nothing twice.
 
+**Going back means something different in each runner, and the difference is
+where the answer lives.** A quiz or exam holds its answers on the client until
+one final submission, so revisiting is genuinely revisable — subject to the
+rule below. Practice mode posts each answer as it is given: there is no later
+submission to beat, so going back there is reading, not a second attempt. Its
+options come back locked, with the answer given still marked, and no Submit or
+Got It to press. Same navigator, different contract.
+
 **Answered and shown-the-answer are different states.** Collapsing them into
 one `locked` flag is what made back-navigation impossible to add coherently: an
 answer can only be revised while nobody has told you what the right one is. So
@@ -313,11 +321,10 @@ group_shared_domains, group_domain_views, coverage_maps, exam_attempts`
   a screen recording on a phone. Labelled honestly rather than promising it.
 - **`/practice/:moduleId`** (the standalone exam setup page) is now redundant:
   the Classroom's own Practice exams section generates and lists them. Delete it.
-- **`PracticeRunner` has no back control, deliberately.** It is a fifth runner
-  (practice mode, review later) and its answers are recorded as each is
-  submitted, so "revise before you submit" has nothing to attach to. Adding one
-  means deciding whether a revisited question can be re-answered and what that
-  does to what was already recorded. Not attempted.
+- **A resumed practice run can't review what it answered before.** The saved
+  attempt holds a position and nothing else, so the navigator shuts the earlier
+  questions rather than reopening them as though they were unanswered. Storing
+  the answers alongside the position would fix it.
 - **`POST /practice-exam/{id}/answer` has no consumer** now that exams defer
   feedback. `QuizRunner` still supports the per-question reveal it feeds, so
   the endpoint is the ready-made hook for a "check as you go" exam mode.
