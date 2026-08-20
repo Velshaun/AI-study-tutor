@@ -77,9 +77,23 @@ if ($envText -notmatch '(?m)^\s*WORKER_KINDS\s*=.*import_youtube') {
 }
 Ok "WORKER_KINDS claims import_youtube"
 
+# pythonw.exe has no console, so without a log file this worker runs completely
+# unobservably — a crash on startup would look identical to a quiet queue.
+$logFile = Join-Path $here 'worker.log'
+if ($envText -notmatch '(?m)^\s*WORKER_LOG_FILE\s*=\s*\S') {
+    Write-Host ""
+    Write-Host "  ! backend\.env has no WORKER_LOG_FILE line." -ForegroundColor Yellow
+    Write-Host "    The task runs pythonw.exe, which has no console, so without" -ForegroundColor Yellow
+    Write-Host "    this the worker leaves no trace at all. Add to backend\.env:" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "        WORKER_LOG_FILE=$logFile" -ForegroundColor White
+    Write-Host ""
+    Fail "Add that line, then re-run this script."
+}
+Ok "WORKER_LOG_FILE is set"
+
 # --- build the task definition ---------------------------------------------
 $account = "$env:USERDOMAIN\$env:USERNAME"
-$logFile = Join-Path $here 'worker.log'
 
 $xml = (Get-Content $template -Raw).
     Replace('__USER__',     $account).
@@ -99,21 +113,31 @@ Write-Host "  runs    : $pythonw worker.py"
 Write-Host "  in      : $backend"
 Write-Host "  log     : $logFile"
 
-$existing = schtasks /Query /TN $TaskName 2>$null
-if ($LASTEXITCODE -eq 0 -and -not $Force) {
+# Get-ScheduledTask rather than `schtasks /Query 2>$null`: in Windows
+# PowerShell 5.1, redirecting a native command's stderr wraps each line in an
+# ErrorRecord, which under ErrorActionPreference='Stop' terminates the script —
+# so asking whether a task exists would abort whenever it did not.
+$existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($existing -and -not $Force) {
     $reply = Read-Host "`n  A task called '$TaskName' already exists. Replace it? [y/N]"
     if ($reply -notmatch '^[Yy]') { Write-Host "  Left alone."; exit 0 }
 }
 
-# /F replaces an existing definition rather than erroring.
+# /F replaces an existing definition rather than erroring. Native stderr is left
+# alone for the reason above; the exit code is what decides.
+$ErrorActionPreference = 'Continue'
 schtasks /Create /TN $TaskName /XML $built /F | Out-Null
-if ($LASTEXITCODE -ne 0) { Fail "schtasks refused the task definition (exit $LASTEXITCODE)." }
+$created = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+if ($created -ne 0) { Fail "schtasks refused the task definition (exit $created)." }
 Ok "Task registered"
 
 Remove-Item $built -ErrorAction SilentlyContinue
 
 Write-Host "`nStarting it now so you don't have to log out and back in" -ForegroundColor Cyan
+$ErrorActionPreference = 'Continue'
 schtasks /Run /TN $TaskName | Out-Null
+$ErrorActionPreference = 'Stop'
 Start-Sleep -Seconds 4
 
 $running = @(Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" |
