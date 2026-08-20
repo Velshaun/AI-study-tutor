@@ -87,14 +87,44 @@ CATALOGUE: tuple[ExamSpec, ...] = (
                  ("Hardware and Network Troubleshooting", 28.0),
              )),
     ExamSpec("CompTIA A+ Core 2", 90, 90, ("220-1202", "220-1102"),
-             ("a+ core 2", "comptia a+ core 2"), pass_pct=78.0),
+             ("a+ core 2", "comptia a+ core 2"), pass_pct=78.0,
+             # 220-1202 exam objectives, checked 20 Aug 2026.
+             domains=(
+                 ("Operating Systems", 28.0),
+                 ("Security", 28.0),
+                 ("Software Troubleshooting", 23.0),
+                 ("Operational Procedures", 21.0),
+             )),
     ExamSpec("CompTIA A+", 90, 90, (), ("comptia a+",), pass_pct=75.0),
     ExamSpec("CompTIA Network+", 90, 90, ("n10-009", "n10-008"),
-             ("network+", "comptia network+"), pass_pct=80.0),
+             ("network+", "comptia network+"), pass_pct=80.0,
+             # N10-009 exam objectives, checked 20 Aug 2026.
+             domains=(
+                 ("Networking Concepts", 23.0),
+                 ("Network Implementation", 20.0),
+                 ("Network Operations", 19.0),
+                 ("Network Security", 14.0),
+                 ("Network Troubleshooting", 24.0),
+             )),
     ExamSpec("CompTIA Security+", 90, 90, ("sy0-701", "sy0-601"),
-             ("security+", "comptia security+"), pass_pct=83.0),
+             ("security+", "comptia security+"), pass_pct=83.0,
+             # SY0-701 exam objectives, checked 20 Aug 2026.
+             domains=(
+                 ("General Security Concepts", 12.0),
+                 ("Threats, Vulnerabilities, and Mitigations", 22.0),
+                 ("Security Architecture", 18.0),
+                 ("Security Operations", 28.0),
+                 ("Security Program Management and Oversight", 20.0),
+             )),
     ExamSpec("CompTIA Linux+", 90, 90, ("xk0-005", "xk0-006"),
-             ("linux+", "comptia linux+")),
+             ("linux+", "comptia linux+"),
+             # XK0-005 exam objectives, checked 20 Aug 2026.
+             domains=(
+                 ("System Management", 32.0),
+                 ("Security", 21.0),
+                 ("Scripting, Containers, and Automation", 19.0),
+                 ("Troubleshooting", 28.0),
+             )),
     ExamSpec("CompTIA CySA+", 85, 165, ("cs0-003", "cs0-004"),
              ("cysa+", "cybersecurity analyst+")),
     ExamSpec("CompTIA PenTest+", 90, 165, ("pt0-003", "pt0-002"), ("pentest+",)),
@@ -128,9 +158,23 @@ CATALOGUE: tuple[ExamSpec, ...] = (
     ExamSpec("LPIC-2", 60, 90, ("201-450", "202-450"), ("lpic-2", "lpic 2")),
     # --- Cloud --------------------------------------------------------------
     ExamSpec("AWS Certified Cloud Practitioner", 65, 90, ("clf-c02", "clf-c01"),
-             ("cloud practitioner",)),
+             ("cloud practitioner",),
+             # CLF-C02 exam guide, checked 20 Aug 2026.
+             domains=(
+                 ("Cloud Concepts", 24.0),
+                 ("Security and Compliance", 30.0),
+                 ("Cloud Technology and Services", 34.0),
+                 ("Billing, Pricing, and Support", 12.0),
+             )),
     ExamSpec("AWS Certified Solutions Architect - Associate", 65, 130,
-             ("saa-c03", "saa-c02"), ("solutions architect associate",)),
+             ("saa-c03", "saa-c02"), ("solutions architect associate",),
+             # SAA-C03 exam guide, checked 20 Aug 2026.
+             domains=(
+                 ("Design Secure Architectures", 30.0),
+                 ("Design Resilient Architectures", 26.0),
+                 ("Design High-Performing Architectures", 24.0),
+                 ("Design Cost-Optimized Architectures", 20.0),
+             )),
     ExamSpec("AWS Certified Developer - Associate", 65, 130, ("dva-c02",),
              ("aws developer associate",)),
     ExamSpec("AWS Certified SysOps Administrator - Associate", 65, 130,
@@ -142,7 +186,16 @@ CATALOGUE: tuple[ExamSpec, ...] = (
     ExamSpec("Google Associate Cloud Engineer", 50, 120, (),
              ("associate cloud engineer",), published=False),
     # --- Networking / security ----------------------------------------------
-    ExamSpec("Cisco CCNA", 100, 120, ("200-301",), ("ccna",), published=False),
+    ExamSpec("Cisco CCNA", 100, 120, ("200-301",), ("ccna",), published=False,
+             # 200-301 v1.1 exam topics, checked 20 Aug 2026.
+             domains=(
+                 ("Network Fundamentals", 20.0),
+                 ("Network Access", 20.0),
+                 ("IP Connectivity", 25.0),
+                 ("IP Services", 10.0),
+                 ("Security Fundamentals", 15.0),
+                 ("Automation and Programmability", 10.0),
+             )),
     ExamSpec("Cisco CCNP ENCOR", 100, 120, ("350-401",), ("encor",),
              published=False),
     ExamSpec("(ISC)² CISSP", 150, 180, (), ("cissp",)),
