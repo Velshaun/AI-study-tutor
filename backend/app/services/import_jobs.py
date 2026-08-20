@@ -22,7 +22,12 @@ from typing import Any
 
 from app.database import get_supabase
 from app.services import domain_assign, ingest, imports, jobs, youtube
-from app.services.extraction import ExtractionError, extract_youtube
+from app.services.jobs import PermanentFailure
+from app.services.extraction import (
+    ExtractionError,
+    TransientExtractionError,
+    extract_youtube,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +54,6 @@ def handle_paste_item(job: dict[str, Any], item: dict[str, Any]) -> dict[str, An
     if not text.strip():
         # Nothing to work with. Permanent by definition — retrying an empty
         # paste will always be empty.
-        from worker import PermanentFailure
-
         raise PermanentFailure("There was nothing in that paste to import.")
 
     jobs.checkpoint_item(item["id"], {"stage": "parsing", "chars": len(text)})
@@ -81,8 +84,6 @@ def handle_youtube_item(job: dict[str, Any], item: dict[str, Any]) -> dict[str, 
     isn't known until it has been listed, and holding two hundred videos in
     memory to enqueue them at once is the shape this queue exists to avoid.
     """
-    from worker import PermanentFailure
-
     payload = item.get("payload") or {}
     kind = payload.get("target_kind")
     module_id, user_id = job.get("module_id"), job.get("user_id")
@@ -99,9 +100,16 @@ def handle_youtube_item(job: dict[str, Any], item: dict[str, Any]) -> dict[str, 
     jobs.checkpoint_item(item["id"], {"stage": "fetching transcript"})
     try:
         transcript = extract_youtube(youtube.watch_url(video_id))
+    except TransientExtractionError:
+        # We couldn't reach YouTube — an IP block, most often, since a hosted
+        # worker looks exactly like the datacentre traffic YouTube refuses. The
+        # video is fine, so this stays retryable and `Retry Failed` will pick it
+        # up. Raised on rather than wrapped: the loop files anything it doesn't
+        # recognise as transient, which is what this is.
+        raise
     except ExtractionError as exc:
-        # A video with no captions will never have any. Retrying it forever
-        # would bury the transient failures that are worth retrying.
+        # A video with captions disabled will never have any. Retrying it
+        # forever would bury the transient failures that are worth retrying.
         raise PermanentFailure(str(exc)) from exc
 
     jobs.checkpoint_item(item["id"], {"stage": "filing", "chars": len(transcript)})
@@ -134,8 +142,6 @@ def _expand_playlist(
     job: dict[str, Any], item: dict[str, Any], payload: dict[str, Any],
 ) -> dict[str, Any]:
     """Turn a playlist into one child item per video, appended to this job."""
-    from worker import PermanentFailure
-
     playlist_id = payload.get("playlist_id")
     if not playlist_id:
         raise PermanentFailure("That link had no playlist in it.")

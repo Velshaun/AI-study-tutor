@@ -42,6 +42,23 @@ STALE_AFTER = "00:05:00"
 TERMINAL = ("succeeded", "failed", "cancelled")
 
 
+class PermanentFailure(RuntimeError):
+    """This item will never succeed — a video with no transcript, say.
+
+    Separated from an ordinary exception so `Retry Failed` can re-queue the
+    timeouts without also re-queueing the impossible.
+
+    It lives here rather than in `worker.py` because Railway starts the worker
+    as a script, which makes that file ``__main__``; a handler reaching it via
+    ``from worker import PermanentFailure`` imported the same file a second time
+    and got a *second* class. The loop's ``except PermanentFailure`` then matched
+    nothing a handler raised, and every permanent failure was filed as transient
+    — so `Retry Failed` would re-queue videos that can never have captions. A
+    module both sides import by the same name has one copy by construction.
+    """
+
+
+
 def _client():
     return get_supabase()
 

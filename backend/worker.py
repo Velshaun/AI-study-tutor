@@ -40,6 +40,10 @@ from typing import Any, Callable
 
 from app.config import settings
 from app.services import jobs
+# Defined in `jobs` rather than here on purpose: Railway runs this file as a
+# script, so a handler doing `from worker import PermanentFailure` would import
+# it a second time and catch a different class. See the class docstring.
+from app.services.jobs import PermanentFailure
 
 logging.basicConfig(
     level=logging.INFO,
@@ -108,8 +112,6 @@ HANDLERS[PING_KIND] = handle_ping
 
 
 # --- import handlers ---------------------------------------------------------
-# Imported at the bottom so the module-level names above (PermanentFailure in
-# particular) exist by the time the handlers reference them.
 def _register_import_handlers() -> None:
     from app.services import import_jobs
 
@@ -120,14 +122,6 @@ def _register_import_handlers() -> None:
 
 
 _register_import_handlers()
-
-
-class PermanentFailure(RuntimeError):
-    """This item will never succeed — a video with no transcript, say.
-
-    Separated from an ordinary exception so `Retry Failed` can re-queue the
-    timeouts without also re-queueing the impossible.
-    """
 
 
 class Worker:

@@ -65,6 +65,19 @@ class ExtractionError(RuntimeError):
     """A source could not be parsed into text."""
 
 
+class TransientExtractionError(ExtractionError):
+    """The source is fine; this attempt wasn't.
+
+    A subclass, so every existing ``except ExtractionError`` keeps catching it
+    and only the callers that retry need to look closer. The distinction earns
+    its place at the queue boundary: a video with captions disabled will never
+    have any, and re-queueing it forever buries the failures worth retrying —
+    but an IP block is a property of where we asked from, not of the video, and
+    filing it as permanent would write off a whole playlist that a later attempt
+    could read perfectly well.
+    """
+
+
 # --- helpers ----------------------------------------------------------------
 def parse_youtube_id(url: str) -> str | None:
     """Pull the 11-character video id out of any common YouTube URL shape."""
@@ -154,6 +167,37 @@ def extract_text_file(data: bytes) -> str:
     raise ExtractionError("Could not decode this file as text.")
 
 
+def _transcript_error(exc: Exception) -> ExtractionError:
+    """Decide whether a failed transcript fetch is worth attempting again.
+
+    YouTube blocks datacentre IPs wholesale, which is what a cloud-hosted worker
+    looks like — so the single most likely failure in production is precisely
+    the one that says nothing about the video. The library already draws this
+    line; the job queue just needs it not to be flattened on the way through.
+    """
+    blocked = ()
+    try:
+        from youtube_transcript_api import _errors as errors
+
+        blocked = tuple(
+            getattr(errors, name) for name in (
+                # Datacentre IP bans and rate limits — the same video read from
+                # elsewhere, or later, succeeds.
+                "RequestBlocked", "IpBlocked", "YouTubeRequestFailed",
+                # A token YouTube sometimes demands; the request, not the video.
+                "PoTokenRequired",
+            ) if hasattr(errors, name)
+        )
+    except ImportError:  # pragma: no cover — the fetch above would have raised
+        pass
+
+    if blocked and isinstance(exc, blocked):
+        return TransientExtractionError(
+            f"Could not reach YouTube for this video: {exc}"
+        )
+    return ExtractionError(f"No transcript available for this video: {exc}")
+
+
 def extract_youtube(url: str) -> str:
     """Fetch a video's transcript as plain text."""
     video_id = parse_youtube_id(url)
@@ -172,9 +216,7 @@ def extract_youtube(url: str) -> str:
             fetched = YouTubeTranscriptApi().fetch(video_id)
             snippets = [s.text for s in fetched]
     except Exception as exc:  # noqa: BLE001
-        raise ExtractionError(
-            f"No transcript available for this video: {exc}"
-        ) from exc
+        raise _transcript_error(exc) from exc
 
     text = normalise(" ".join(snippets))
     if not text:
