@@ -155,6 +155,49 @@ def _describe(counts: dict[str, int]) -> str:
     return ", ".join(f"{n} {table}" for table, n in sorted(counts.items()) if n)
 
 
+def sat_exam_domains(domain_ids: list[str]) -> set[str]:
+    """Domains whose questions appear in an exam the learner has already sat.
+
+    These cannot be deleted, by force or otherwise. `practice_questions.domain_id`
+    cascades, so removing the domain would take questions out of a paper that has
+    already been graded — leaving the attempt row intact (it lives on
+    `practice_exams`) while the paper it refers to loses questions. The score
+    survives and the evidence for it does not, which is the one outcome worse
+    than refusing the rebuild.
+
+    Nulling the attribution instead was considered and rejected: it keeps the
+    paper whole but silently detaches per-domain history, so a past attempt's
+    breakdown stops adding up to its own total.
+    """
+    if not domain_ids:
+        return set()
+    client = get_supabase()
+    try:
+        questions = (
+            client.table("practice_questions").select("domain_id, exam_id")
+            .in_("domain_id", domain_ids).not_.is_("exam_id", "null").execute()
+        ).data or []
+        exam_ids = list({q["exam_id"] for q in questions if q.get("exam_id")})
+        if not exam_ids:
+            return set()
+
+        sat = (
+            client.table("exam_attempts").select("exam_id")
+            .in_("exam_id", exam_ids).execute()
+        ).data or []
+        sat_ids = {a["exam_id"] for a in sat if a.get("exam_id")}
+        return {
+            q["domain_id"] for q in questions
+            if q.get("exam_id") in sat_ids and q.get("domain_id")
+        }
+    except Exception as exc:  # noqa: BLE001
+        # The table may not exist yet on a deployment without the migration.
+        # Failing closed would block every rebuild; failing open only loses the
+        # extra guard, and the content guard above still applies.
+        logger.warning("Could not check sat exams while guarding domains: %s", exc)
+        return set()
+
+
 def _match_key(title: str) -> str:
     """Loose identity for a domain, so a re-run recognises its own work."""
     return " ".join((title or "").lower().split())
@@ -182,6 +225,13 @@ def write_domains(
     domains holding content, and logs exactly what it destroyed. Callers are
     expected to have confirmed with the learner first.
 
+    One thing force cannot override: a domain whose questions appear in an exam
+    the learner has already sat. That paper has been graded, and the attempt is
+    the record of it. Deleting the domain would leave the score standing with
+    the questions behind it gone — see ``sat_exam_domains``. The rebuild carries
+    on; the delete is refused, and the domain comes back in ``sat_exam`` so the
+    caller can say which ones and why.
+
     User-authored domains (``source <> 'ai'``) are untouched either way.
     """
     client = get_supabase()
@@ -191,11 +241,14 @@ def write_domains(
         .eq("module_id", module_id).eq("source", "ai").execute()
     ).data or []
     with_content = _generated_content([d["id"] for d in existing])
+    # Refused even under force. Computed once for the whole module.
+    undeletable = sat_exam_domains([d["id"] for d in existing])
 
     fresh_by_key = {_match_key(d["title"]): d for d in domains}
     matched_keys: set[str] = set()
     updated = preserved = 0
     protected: list[str] = []
+    sat_exam: list[str] = []
 
     deletable: list[str] = []
     to_update: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -204,6 +257,27 @@ def write_domains(
     for row in existing:
         key = _match_key(row.get("title"))
         counts = with_content.get(row["id"])
+
+        # A sat exam outranks force. Handled before the content guard so the
+        # domain is kept and reported even when the learner asked for a wipe.
+        if row["id"] in undeletable:
+            fresh = fresh_by_key.get(key)
+            if fresh:
+                to_update.append((row, fresh))
+                matched_keys.add(key)
+                updated += 1
+            else:
+                to_preserve.append(row)
+                preserved += 1
+            sat_exam.append(row.get("title") or row["id"])
+            protected.append(row.get("title") or row["id"])
+            logger.warning(
+                "Ingestion guard: domain %s (%r) in module %s cannot be deleted — "
+                "its questions are in an exam that has already been sat. Kept "
+                "regardless of force.",
+                row["id"], row.get("title"), module_id,
+            )
+            continue
 
         if counts and not force:
             fresh = fresh_by_key.get(key)
@@ -311,6 +385,8 @@ def write_domains(
         "preserved": preserved,
         "deleted": len(deletable),
         "protected_domains": protected,
+        # Refused even under force — their questions are in a graded paper.
+        "sat_exam_domains": sat_exam,
     }
 
 

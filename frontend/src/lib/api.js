@@ -196,9 +196,6 @@ export const api = {
     apiFetch(`/modules/${moduleId}/coverage`, { signal }),
   refreshCoverage: (moduleId) =>
     apiFetch(`/modules/${moduleId}/coverage/refresh`, { method: 'POST' }),
-  // Per-domain exam readiness, weighted by each domain's share of the paper.
-  readiness: (moduleId, signal) =>
-    apiFetch(`/stats/readiness/${moduleId}`, { signal }),
   // Per-domain strength from everything the learner has been graded on. The
   // shown score is deliberately smoother than the last result — see the
   // backend's performance service.

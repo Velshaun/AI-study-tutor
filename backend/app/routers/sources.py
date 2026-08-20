@@ -36,7 +36,7 @@ from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
 from app.services import coverage, storage
 from app.services.extraction import classify_url
-from app.services.pipeline import process_module
+from app.services.pipeline import process_module, sat_exam_domains
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +217,11 @@ class DomainAtRisk(BaseModel):
     title: str
     # {'lectures': 1, 'practice_questions': 40, ...}
     counts: dict[str, int] = Field(default_factory=dict)
+    # True where this domain's questions are in an exam that has already been
+    # sat. A forced rebuild will refuse to delete it rather than leave a graded
+    # attempt pointing at a paper with questions missing — so the dialog can say
+    # "this one stays" instead of warning about a loss that won't happen.
+    protected: bool = False
 
 
 class ReprocessImpact(BaseModel):
@@ -239,10 +244,14 @@ async def reprocess_impact(
     from app.services.pipeline import domains_with_content
 
     at_risk = domains_with_content(module_id)
+    undeletable = sat_exam_domains([d["domain_id"] for d in at_risk])
     return ReprocessImpact(
         module_id=module_id,
         at_risk_domains=[
-            DomainAtRisk(domain_id=d["domain_id"], title=d["title"], counts=d["counts"])
+            DomainAtRisk(
+                domain_id=d["domain_id"], title=d["title"], counts=d["counts"],
+                protected=d["domain_id"] in undeletable,
+            )
             for d in at_risk
         ],
     )

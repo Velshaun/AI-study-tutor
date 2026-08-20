@@ -15,7 +15,8 @@ import ExamsSection from './ExamsSection'
 import GeneratePreferencesModal from './GeneratePreferencesModal'
 import ModuleKpis from './ModuleKpis'
 import PreAssessmentCard from './PreAssessmentCard'
-import ReadinessCard from './ReadinessCard'
+import ContentReadinessCard from './ContentReadinessCard'
+import LearnerReadinessCard from './LearnerReadinessCard'
 import { useGeneration } from '../../hooks/useGeneration'
 import { useToast } from '../../hooks/useToast'
 import { api } from '../../lib/api'
@@ -195,10 +196,13 @@ export default function ClassroomTab({ moduleId, domains, examCount = 40 }) {
         />
       )}
 
-      {/* Below the domains, not above them: the domain list is what a learner
-          navigates by, and a full per-domain breakdown standing in front of it
-          made the topics something to scroll past. */}
-      <ReadinessCard moduleId={moduleId} />
+      {/* Two measures, two sections, deliberately far apart and never added
+          together. One says go and find more material; the other says go and
+          study. The single blended score they replaced moved when either input
+          changed, so it could not answer either question. */}
+      <ContentReadinessCard moduleId={moduleId} />
+
+      <LearnerReadinessCard moduleId={moduleId} />
 
       <GenerateAll
         moduleId={moduleId}

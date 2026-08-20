@@ -964,6 +964,10 @@ class CoverageMap(BaseModel):
     available: bool = True
     status: str = "missing"
     stale: bool = True
+    # The share of the exam's weight the held material actually covers. This is
+    # *content* readiness: a property of the sources, not of the learner. It
+    # moves when material is added or removed and never when an exam is sat.
+    covered_pct: float | None = None
     domains: list[CoverageDomain] = Field(default_factory=list)
     chunk_count: int = 0
     chars_analysed: int = 0
@@ -978,11 +982,21 @@ def _to_coverage(module_id: str, state: str, row: dict[str, Any] | None) -> Cove
         return CoverageMap(module_id=module_id, available=False, status="unavailable")
     if not row:
         return CoverageMap(module_id=module_id, status="missing")
+    domains = [CoverageDomain(**d) for d in (row.get("domains") or [])]
+    # Half credit for partial, the same arithmetic the tutor's assessment uses —
+    # kept in Python rather than asked of a model, because evidence adds up.
+    covered = sum(
+        d.weight_pct if d.coverage == "well_covered"
+        else d.weight_pct * 0.5 if d.coverage == "partial"
+        else 0.0
+        for d in domains
+    )
     return CoverageMap(
         module_id=module_id,
         status=row.get("status") or "missing",
         stale=state != "ready",
-        domains=[CoverageDomain(**d) for d in (row.get("domains") or [])],
+        covered_pct=round(covered, 1) if domains else None,
+        domains=domains,
         chunk_count=row.get("chunk_count") or 0,
         chars_analysed=row.get("chars_analysed") or 0,
         source_count=row.get("source_count") or 0,

@@ -207,6 +207,28 @@ raises a toast that offers to open the result.
 **Pronunciation uses the Web Speech API, not server TTS.** Instant, free,
 offline in the PWA, and no round trip for a single word.
 
+**Content readiness and learner readiness are different axes and must never
+be one number.** Content readiness asks whether the app holds enough material
+to teach each domain — a property of the sources, from `coverage`. Learner
+readiness asks how the learner is performing — a property of the learner, from
+`performance`. The old `/stats/readiness` blended them, and its middle term was
+`answered / total` where `total` counted every *generated* practice question:
+adding sources raised the denominator and dropped the learner's score without
+them doing anything. Retired. The two live in separate cards, in separate
+sections, with opposite calls to action — go and find material, or go and
+study. Verified by their inputs: coverage reads `coverage_maps` + `user_files`,
+performance reads `exam_attempts` + `quizzes`, and the only table they share is
+`domains`, which is the blueprint both are measured against.
+
+**A sat exam outranks a forced rebuild.** `practice_questions.domain_id`
+cascades, so deleting a domain takes its questions out of any paper they appear
+in. `exam_attempts` lives on `practice_exams` and survives, which is the worst
+possible combination: the score stands and the questions behind it are gone.
+`sat_exam_domains()` refuses the delete even under `force=true`. Nulling the
+attribution instead was rejected — it keeps the paper whole while silently
+detaching per-domain history, so an attempt's breakdown stops adding up to its
+own total. An exam that exists but has never been sat is still deletable.
+
 **Untouched is not weak.** Readiness shows a dash for a domain nothing has been
 attempted in. Weights: quiz score 60%, practice answered 25%, lecture progress
 15% — a score is evidence, effort is effort — and self-flagged questions pull it
