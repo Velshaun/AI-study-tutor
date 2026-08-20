@@ -1,8 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  AlertTriangle,
+  Check,
+  ChevronDown,
   ClipboardList,
   FileText,
   Layers,
+  ListVideo,
   Loader2,
   Plus,
   RotateCcw,
@@ -10,13 +14,16 @@ import {
   Upload,
   Video,
 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import PageTitle from '../components/PageTitle'
 import { useJobs } from '../hooks/useJobs'
 import { useToast } from '../hooks/useToast'
 import { api } from '../lib/api'
+import {
+  estimateRemaining, formatRemaining, groupItems, isFinished, summarise,
+} from '../lib/imports'
 import { path } from '../routes'
 
 /**
@@ -417,11 +424,23 @@ function Disagreement({ type, suggestion }) {
   )
 }
 
+/**
+ * How many video rows the scroll area shows before it scrolls.
+ *
+ * Five or six is the point where the group still reads as a list you can take
+ * in, and the import as a whole still fits on a phone screen alongside whatever
+ * else is importing. A twenty-two-row playlist rendered in full pushed every
+ * other job, and the Import All button, off the bottom.
+ */
+const VISIBLE_ROWS = 6
+const ROW_HEIGHT_PX = 34
+
 function ImportRow({ job, onRetry }) {
   const done = job.completed_items || 0
   const failed = job.failed_items || 0
   const total = job.total_items || 0
   const running = job.status === 'queued' || job.status === 'running'
+  const { groups, loose } = groupItems(job.items || [])
 
   return (
     <div className="card space-y-2">
@@ -435,10 +454,10 @@ function ImportRow({ job, onRetry }) {
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium text-pri">
-            {running ? 'Importing…' : 'Import finished'}
+            {running ? 'Importing\u2026' : 'Import finished'}
           </p>
           <p className="text-xs text-sec">
-            {done} of {total} added{failed ? ` · ${failed} didn’t work` : ''}
+            {done} of {total} added{failed ? ` \u00b7 ${failed} didn\u2019t work` : ''}
           </p>
         </div>
         {failed > 0 && !running && (
@@ -449,30 +468,178 @@ function ImportRow({ job, onRetry }) {
         )}
       </div>
 
-      {job.items?.length > 0 && (
-        <div className="space-y-1 border-t border-border pt-2">
-          {job.items.map((item) => (
-            <div key={item.id} className="flex items-baseline gap-2 text-xs">
-              <span className="min-w-0 flex-1 truncate text-sec">{item.title}</span>
-              <span
-                className={
-                  item.status === 'succeeded'
-                    ? 'shrink-0 text-success'
-                    : item.status === 'failed'
-                      ? 'shrink-0 text-warning'
-                      : 'shrink-0 text-sec'
-                }
-              >
-                {item.status === 'succeeded'
-                  ? OUTCOME[item.result?.kind] || 'added'
-                  : item.status === 'failed'
-                    ? item.error || 'failed'
-                    : item.status}
-              </span>
-            </div>
+      {(groups.length > 0 || loose.length > 0) && (
+        <div className="space-y-2 border-t border-border pt-2">
+          {groups.map((group) => (
+            <Playlist key={group.id} group={group} job={job} running={running} />
+          ))}
+          {loose.map((item) => (
+            <ItemLine key={item.id} item={item} />
           ))}
         </div>
       )}
     </div>
   )
+}
+
+/**
+ * A playlist, drawn as the one thing the learner actually asked for.
+ *
+ * Expanded from the start, because the reason to watch a playlist import is to
+ * see which video it has got to \u2014 collapsed by default would hide the only
+ * moving part behind a tap. Collapsing stays available for when it has finished
+ * and you want the screen back.
+ */
+function Playlist({ group, job, running }) {
+  const [open, setOpen] = useState(true)
+  const finished = group.done + group.failed
+  const remaining = useRemaining({
+    claimedAt: job.claimed_at,
+    finished,
+    total: group.total,
+    live: running,
+  })
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-border">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex min-h-11 w-full items-center gap-2.5 px-3 py-2 text-left"
+      >
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent2">
+          <ListVideo size={14} aria-hidden="true" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-medium text-pri">
+            {group.title}
+          </span>
+          <span className="block text-[11px] text-sec">
+            {summarise(group)}
+            {remaining ? ` \u00b7 ${remaining}` : ''}
+          </span>
+        </span>
+        <ChevronDown
+          size={15}
+          aria-hidden="true"
+          className={`shrink-0 text-sec transition-transform ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+
+      {open && group.total > 0 && (
+        <VideoList videos={group.videos} activeIndex={group.activeIndex} />
+      )}
+    </div>
+  )
+}
+
+/**
+ * The scrolling list of videos, kept on whichever one is being read.
+ *
+ * `scrollIntoView` rather than a computed offset: row heights are the browser's
+ * to decide once a title wraps, and arithmetic over an assumed height drifts
+ * further with every wrapped title until it is centring the wrong row.
+ * `block: 'nearest'` leaves the scroll alone when the active row is already
+ * visible, so reading the list isn't fought by the next tick.
+ */
+function VideoList({ videos, activeIndex }) {
+  const activeRef = useRef(null)
+
+  useEffect(() => {
+    activeRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [activeIndex])
+
+  return (
+    <div
+      className="overflow-y-auto border-t border-border"
+      style={{ maxHeight: `${VISIBLE_ROWS * ROW_HEIGHT_PX}px` }}
+    >
+      {videos.map((video, index) => (
+        <ItemLine
+          key={video.id}
+          item={video}
+          rowRef={index === activeIndex ? activeRef : null}
+          index={index}
+        />
+      ))}
+    </div>
+  )
+}
+
+const STATE_STYLE = {
+  succeeded: 'text-success',
+  failed: 'text-warning',
+  running: 'text-accent2',
+}
+
+/** One source, whatever it came from \u2014 a video, or a pasted blob. */
+function ItemLine({ item, rowRef, index }) {
+  const state = item.status
+  const tone = STATE_STYLE[state] || 'text-sec'
+
+  return (
+    <div
+      ref={rowRef}
+      className="flex min-h-[34px] items-center gap-2 px-3 py-1.5 text-xs"
+    >
+      <span className={`flex w-4 shrink-0 justify-center ${tone}`}>
+        {state === 'succeeded' ? (
+          <Check size={12} aria-hidden="true" />
+        ) : state === 'failed' ? (
+          <AlertTriangle size={12} aria-hidden="true" />
+        ) : state === 'running' ? (
+          <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+        ) : (
+          <span className="text-[10px] tabular-nums text-sec">
+            {index == null ? '\u00b7' : index + 1}
+          </span>
+        )}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-sec">{item.title}</span>
+      <span className={`shrink-0 ${tone}`}>{itemLabel(item)}</span>
+    </div>
+  )
+}
+
+/**
+ * A failed item says why in one short phrase.
+ *
+ * The queue stores the library's full explanation \u2014 several paragraphs
+ * about proxies, in the case that actually happened \u2014 and putting that in a
+ * row makes the list unreadable. The distinction worth a learner's attention is
+ * whether it is worth trying again, which is the distinction the queue already
+ * records to decide what Retry Failed touches.
+ */
+function itemLabel(item) {
+  if (item.status === 'succeeded') return OUTCOME[item.result?.kind] || 'added'
+  if (item.status === 'failed') {
+    return item.failure_kind === 'transient'
+      ? 'couldn\u2019t reach it'
+      : 'no captions'
+  }
+  if (item.status === 'running') return 'reading\u2026'
+  if (isFinished(item)) return item.status
+  return 'waiting'
+}
+
+/**
+ * The remaining-time phrase, recomputed on a timer while the job runs.
+ *
+ * It ticks rather than being derived once because the estimate's whole value is
+ * that it falls: a figure frozen at "about 4 minutes" for four minutes is worse
+ * than no figure. The interval is cleared the moment the job stops running, so
+ * a finished import isn't holding a timer open on a screen nobody is watching.
+ */
+function useRemaining({ claimedAt, finished, total, live }) {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!live) return undefined
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [live])
+
+  if (!live) return ''
+  return formatRemaining(estimateRemaining({ claimedAt, finished, total, now }))
 }

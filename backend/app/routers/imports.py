@@ -60,6 +60,10 @@ class ImportJob(BaseModel):
     failed_items: int = 0
     error: str | None = None
     created_at: datetime | None = None
+    # When a worker actually picked it up. The remaining-time estimate is
+    # derived from this rather than `created_at`, so time spent queued behind
+    # another import doesn't make every video look slow.
+    claimed_at: datetime | None = None
     finished_at: datetime | None = None
     items: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -238,12 +242,19 @@ def _to_job(row: dict[str, Any], items: list[dict[str, Any]]) -> ImportJob:
         failed_items=row.get("failed_items") or 0,
         error=row.get("error"),
         created_at=row.get("created_at"),
+        claimed_at=row.get("claimed_at"),
         finished_at=row.get("finished_at"),
         items=[
             {
                 "id": i["id"],
                 "position": i.get("position"),
                 "status": i.get("status"),
+                # A playlist is one parent item and one child per video. Without
+                # this the UI can only draw a flat list of twenty-two rows and
+                # call it an import.
+                "parent_item_id": i.get("parent_item_id"),
+                "kind": i.get("kind"),
+                "updated_at": i.get("updated_at"),
                 "title": (i.get("payload") or {}).get("title"),
                 "content_type": (i.get("payload") or {}).get("content_type"),
                 "checkpoint": i.get("checkpoint") or {},
