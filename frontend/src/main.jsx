@@ -6,6 +6,7 @@ import { createBrowserRouter, RouterProvider } from 'react-router-dom'
 import ErrorBoundary from './components/ErrorBoundary'
 import { AuthProvider } from './context/AuthProvider'
 import { ConfirmProvider } from './context/ConfirmProvider'
+import { JobsProvider } from './context/JobsProvider'
 import { PlayerProvider } from './context/PlayerProvider'
 import { PreferencesProvider } from './context/PreferencesProvider'
 import { ToastProvider } from './context/ToastProvider'
@@ -38,9 +39,14 @@ createRoot(document.getElementById('root')).render(
               <ConfirmProvider>
                 {/* Above the router: audio must survive navigation so the
                     minimised bar keeps playing. */}
-                <PlayerProvider>
-                  <RouterProvider router={router} />
-                </PlayerProvider>
+                {/* Watches background imports over Realtime. Above the
+                    router so closing a screen — or the tab — never loses track
+                    of a job; the row outlives the browser either way. */}
+                <JobsProvider>
+                  <PlayerProvider>
+                    <RouterProvider router={router} />
+                  </PlayerProvider>
+                </JobsProvider>
               </ConfirmProvider>
             </ToastProvider>
           </PreferencesProvider>

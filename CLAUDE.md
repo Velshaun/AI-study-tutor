@@ -162,6 +162,21 @@ once answered — one read, no model call, the same trade practice mode already
 makes. The runner holds the styling back until the answer lands, or a locked
 question flashes every option as wrong for the length of the round trip.
 
+**Import progress is watched, not owned.** `GenerationProvider` holds its
+jobs in a promise the browser keeps open, which is precisely why it can't carry
+an import: close the tab and the promise dies with it. `JobsProvider` subscribes
+to the `jobs` table over Realtime instead, so the row outlives the browser and
+reopening the tab picks the job back up. It catches up with a fetch on mount as
+well as subscribing — a subscription only reports changes made *after* it opens,
+so an import that finished while the tab was shut would otherwise never be
+mentioned. Jobs already announced are remembered in a ref, because StrictMode
+replays state updaters and a replayed dedupe is no dedupe.
+
+This is the one place the frontend talks to Supabase directly rather than
+through `apiFetch`. Realtime needs the supabase-js client regardless, and RLS
+(`user_id = auth.uid()`) is what makes it safe — the worker writes with the
+service role and bypasses RLS, so the policy is written for the reader.
+
 **The worker survives its own startup failing.** `signal.signal` only works
 on the main thread, and an unguarded call raised before the loop had polled
 once — killing the process with no log, because the first log came after. Signal
