@@ -60,11 +60,32 @@ class ExamSpec:
     # getting right to be in range. Erring high is the safe direction.
     pass_pct: float = GENERIC_PASS_PCT
 
+    # The vendor's published domain split: ((title, percentage), ...).
+    #
+    # Unlike pass_pct this is NOT an approximation — it is a transcription, and
+    # an entry is left empty rather than estimated. A plausible-looking guess is
+    # exactly the failure this table exists to stop: weights that look right,
+    # sum to 100, and quietly misallocate every practice paper. Empty means
+    # "look elsewhere", which is a useful answer; a guess is not.
+    #
+    # Percentages are stored as the vendor states them. Where a vendor publishes
+    # integer weights out of a total rather than percentages (LPI does), the
+    # conversion is written out in the entry so it can be checked.
+    domains: tuple[tuple[str, float], ...] = ()
+
 
 CATALOGUE: tuple[ExamSpec, ...] = (
     # --- CompTIA ------------------------------------------------------------
     ExamSpec("CompTIA A+ Core 1", 90, 90, ("220-1201", "220-1101"),
-             ("a+ core 1", "comptia a+ core 1"), pass_pct=75.0),
+             ("a+ core 1", "comptia a+ core 1"), pass_pct=75.0,
+             # 220-1201 exam objectives, checked 20 Aug 2026.
+             domains=(
+                 ("Mobile Devices", 13.0),
+                 ("Networking", 23.0),
+                 ("Hardware", 25.0),
+                 ("Virtualization and Cloud Computing", 11.0),
+                 ("Hardware and Network Troubleshooting", 28.0),
+             )),
     ExamSpec("CompTIA A+ Core 2", 90, 90, ("220-1202", "220-1102"),
              ("a+ core 2", "comptia a+ core 2"), pass_pct=78.0),
     ExamSpec("CompTIA A+", 90, 90, (), ("comptia a+",), pass_pct=75.0),
@@ -89,7 +110,20 @@ CATALOGUE: tuple[ExamSpec, ...] = (
              ("itf+", "it fundamentals+")),
     # --- Linux Professional Institute ---------------------------------------
     ExamSpec("LPI Linux Essentials", 40, 60, ("010-160",), ("linux essentials",),
-             pass_pct=62.5),
+             pass_pct=62.5,
+             # Exam 010 objectives, checked 20 Aug 2026. LPI publishes integer
+             # weights per topic totalling 40, not percentages: 7, 9, 9, 8, 7.
+             # Divided by 40 these land on exact halves, which is a useful
+             # check — a derived set produced 17.95/23.08/23.08/20.51/15.38,
+             # i.e. the same shape computed out of 39 with topic 5 given 6.
+             # Plausible, close, and wrong.
+             domains=(
+                 ("The Linux Community and a Career in Open Source", 17.5),
+                 ("Finding Your Way on a Linux System", 22.5),
+                 ("The Power of the Command Line", 22.5),
+                 ("The Linux Operating System", 20.0),
+                 ("Security and File Permissions", 17.5),
+             )),
     ExamSpec("LPIC-1", 60, 90, ("101-500", "102-500"), ("lpic-1", "lpic 1")),
     ExamSpec("LPIC-2", 60, 90, ("201-450", "202-450"), ("lpic-2", "lpic 2")),
     # --- Cloud --------------------------------------------------------------

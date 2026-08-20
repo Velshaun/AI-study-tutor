@@ -126,6 +126,34 @@ weight and then dropped the attribution at insert, so a 90-question paper could
 only ever yield one percentage. Everything downstream — the breakdown, the
 baseline, adaptive weighting — was impossible until the column was written.
 
+**Domain weights are looked up, never derived — and then frozen.** A weight is
+a property of the exam, not of the material someone uploaded. The blueprint
+model used to produce them and the rebuild used to rewrite them, so adding one
+source could re-derive the whole split: two runs minutes apart over the same six
+sources gave LPI's published figures once and a flat 20/20/20/20/20 the next.
+Both summed to 100, both looked reasonable, and `exam_profile` allocates every
+practice paper by them.
+
+`exam_weights` resolves them in one order and stops at the first answer: the
+catalogue's transcription of the vendor's objectives, then a study guide that
+states them outright, then the vendor's own page via grounded search, then
+*provisional* — which is not a failure but a recorded state, and the only one a
+later lookup may replace. Nothing overwrites a published set. The rebuild path
+no longer writes `weight_pct` at all.
+
+Provisional modules get an even split rather than the model's guess. A derived
+split looks authoritative, sums to 100, and encodes only the shape of whatever
+was uploaded; an even split is visibly a placeholder, which is what not knowing
+actually looks like.
+
+Two things this turned up that are worth keeping. LPI publishes integer weights
+out of **40**, not percentages — the derived set had computed them out of 39 and
+given topic 5 a 6, landing on 15.38% where the published figure is 17.5%. Close,
+plausible, wrong. And matching a blueprint title to a published one has to take
+the *longest* match, as `exam_catalog` already does for certification names:
+"Hardware" is a substring of "Hardware and Network Troubleshooting", so
+first-match wrote A+ domain 5 the weight of domain 3.
+
 **Pass marks are an approximation, and say so.** Vendors publish scaled
 thresholds (675/900, 500/800) that are not linear in questions correct, so
 `exam_catalog.pass_pct` is a study target rather than a re-implementation of
@@ -458,7 +486,7 @@ All twelve features from the August audit are shipped. Latest work, newest first
 `20260824000000` job queue · `20260825000000` question provenance ·
 `20260826000000` retire imported questions ·
 `20260827000000` source domain assignment ·
-`20260828000000` worker kinds
+`20260828000000` worker kinds · `20260829000000` frozen exam weights
 
 Applied through the Supabase **Management API** with a personal access token
 (`POST /v1/projects/{ref}/database/query`). The service-role key cannot run DDL,
@@ -506,20 +534,6 @@ group_shared_domains, group_domain_views, coverage_maps, exam_attempts`
   takes one directly), or transcripts fetched somewhere that isn't a datacentre.
   Until then the paste door is the working one, and the failures correctly say
   "couldn't reach it" rather than blaming the videos.
-- **A rebuild can flatten a module's exam weights, and nothing notices.**
-  Observed 20 Aug 2026 on the live LPI module: two `process_module` runs a few
-  minutes apart over the same six sources produced `17.95/23.08/23.08/20.51/
-  15.38` the first time — LPI's published weights, expressed out of 39 — and a
-  flat `20/20/20/20/20` the second. Both sum to 100, both look reasonable, and
-  the second is wrong. The weights were restored by hand from the recorded
-  values.
-
-  This matters more than a one-off, because the finaliser rebuilds on *every*
-  import: adding one source can silently re-derive the blueprint worse than it
-  was, and `exam_profile` allocates questions by those weights. Nothing compares
-  a new blueprint against the old one, and nothing prefers `exam_catalog`'s
-  published weights over a fresh model answer when the catalogue has them. Worth
-  fixing before the next import feature, not after.
 - **HEIC is accepted but untested on a real iPhone.** iOS usually converts to
   JPEG on pick, so it rarely arrives; if it does, Gemini may reject it.
 - **"Add a screen recording" is a picker, not a recorder** — the web can't start

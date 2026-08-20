@@ -328,11 +328,17 @@ def write_domains(
     if deletable:
         client.table("domains").delete().in_("id", deletable).execute()
 
+    # Deliberately does NOT write weight_pct. A weight is a property of the
+    # exam, not of the material — and this line ran on every import, so adding
+    # one source could re-derive the whole split. Two runs minutes apart over
+    # the same six sources produced LPI's published figures once and a flat
+    # 20/20/20/20/20 the next; both summed to 100, and `exam_profile` allocates
+    # every practice paper by them. Weights are looked up once and frozen; see
+    # `exam_weights`.
     for row, fresh in to_update:
         client.table("domains").update({
             "description": fresh.get("description") or "",
             "order_index": fresh["order_index"],
-            "weight_pct": fresh["weight_pct"],
         }).eq("id", row["id"]).execute()
 
     rows = [
@@ -378,7 +384,10 @@ def write_domains(
             module_id, len(protected), ", ".join(protected[:6]),
         )
 
+    weights_note = _settle_weights(module_id)
+
     return {
+        "weights": weights_note,
         "domain_count": created + updated + preserved,
         "created": created,
         "updated": updated,
@@ -387,6 +396,93 @@ def write_domains(
         "protected_domains": protected,
         # Refused even under force — their questions are in a graded paper.
         "sat_exam_domains": sat_exam,
+    }
+
+
+def _weight_inputs(module_id: str) -> tuple[str, str, str]:
+    """The module's title, and the best study guide it holds.
+
+    Fetched here rather than threaded through `write_domains`, which is called
+    from several places and has no business carrying weight-lookup arguments.
+
+    "Best" is the largest PDF: a vendor study guide is the biggest thing in a
+    typical module by a wide margin, and a guide that prints its weightings
+    prints them near the front, so size is a good enough proxy for the file most
+    likely to contain a blueprint table.
+    """
+    client = get_supabase()
+    rows = (
+        client.table("modules").select("title").eq("id", module_id).limit(1).execute()
+    ).data or []
+    title = (rows[0].get("title") if rows else "") or ""
+
+    files = (
+        client.table("user_files")
+        .select("filename, extracted_text, char_count, source_type")
+        .eq("module_id", module_id).eq("source_type", "pdf")
+        .order("char_count", desc=True).limit(1).execute()
+    ).data or []
+    if not files:
+        return title, "", ""
+    return title, (files[0].get("extracted_text") or ""), (files[0].get("filename") or "")
+
+
+def _settle_weights(module_id: str) -> dict[str, Any]:
+    """Look the exam's weights up once, then leave them alone forever.
+
+    Runs after the blueprint so the domains exist to attach weights to. Does
+    nothing at all once a module holds a published or study-guide set — that is
+    the freeze, and it is checked here rather than trusted to callers, because
+    every import path ends up in this function.
+
+    A provisional set is *not* frozen: it exists precisely so that uploading a
+    study guide later can supersede it.
+    """
+    from app.services import exam_weights
+
+    if not exam_weights.available():
+        return {"status": "unavailable"}
+
+    existing = exam_weights.current_source(module_id)
+    if existing not in exam_weights.REPLACEABLE:
+        logger.info(
+            "Module %s already holds %s weights; leaving them alone.",
+            module_id, existing,
+        )
+        return {"status": "frozen", "source": existing}
+
+    module_title, guide_text, guide_name = _weight_inputs(module_id)
+    weights = exam_weights.resolve(
+        certification=module_title,
+        module_title=module_title,
+        guide_text=guide_text,
+        guide_name=guide_name,
+    )
+
+    rows = (
+        get_supabase().table("domains")
+        .select("id, title, weight_pct, status")
+        .eq("module_id", module_id).execute()
+    ).data or []
+
+    if weights.domains:
+        written = exam_weights.apply_to_domains(module_id, weights, rows)
+    else:
+        # Provisional. The blueprint model's split is discarded rather than
+        # kept: it is a guess that looks like a measurement, which is worse than
+        # an obvious placeholder.
+        written = exam_weights.even_split(module_id, rows)
+
+    exam_weights.record(module_id, weights)
+    logger.info(
+        "Module %s weights settled as %s (%d domain(s) written): %s",
+        module_id, weights.source, written, weights.citation,
+    )
+    return {
+        "status": "set",
+        "source": weights.source,
+        "citation": weights.citation,
+        "domains_written": written,
     }
 
 
