@@ -1,0 +1,32 @@
+# The background worker: the same source, on a base that can open a browser.
+#
+# Only this service renders arbitrary pages, so only this service carries the
+# browser. The web image stays slim.
+#
+# The Playwright base is here from the start rather than being swapped in when
+# the direct-URL phase needs it, so the image size, the cold start and the
+# two-service topology are all real and tested before anything depends on them.
+# The `playwright` Python package arrives with that phase; the browsers and
+# their system libraries are already in this image.
+#
+# Pinned to a specific Playwright release deliberately: the browser build and
+# the Python package have to agree, and `latest` would break that silently on
+# some future rebuild.
+
+FROM mcr.microsoft.com/playwright/python:v1.49.0-jammy
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# No port, no health check: this process serves nothing. It polls the queue and
+# exits on SIGTERM, which is what a redeploy sends — an interrupted job is
+# reclaimed and resumed rather than restarted.
+CMD ["python", "worker.py"]

@@ -1,0 +1,35 @@
+# The web service: FastAPI, and nothing that launches a browser.
+#
+# Named `.web` rather than `Dockerfile` on purpose. Railway auto-detects a file
+# called `Dockerfile` at the service root and switches the build over to it —
+# so committing it under that name would change how the live API deploys on the
+# next push, without anyone choosing to. Renaming this to `Dockerfile` is that
+# choice, and should be made after the image has actually been built once.
+#
+# Two images rather than one, because only the worker renders pages and a
+# Playwright base is roughly a gigabyte of browser the API would never open.
+# This one stays slim; see Dockerfile.worker for its sibling.
+#
+# It also pins Python, which the buildpack never did — Railway picked its own,
+# and CLAUDE.md records a build that broke when it moved. This replaces the
+# Procfile; the start command below is deliberately identical to what that
+# Procfile ran, so switching to Docker changes how the service is built and
+# nothing about how it behaves.
+
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# Requirements first: this layer is cached until the dependency list itself
+# changes, so an ordinary code edit doesn't reinstall the world.
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Railway supplies PORT. The shell form is needed for it to expand.
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}

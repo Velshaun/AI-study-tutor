@@ -85,6 +85,33 @@ class Settings:
         self.openai_voice_marcus: str = os.getenv("OPENAI_TTS_VOICE_MARCUS", "onyx")
         self.openai_voice_sophia: str = os.getenv("OPENAI_TTS_VOICE_SOPHIA", "nova")
 
+        # --- Background worker ---------------------------------------------
+        # How many items of one job run at once. Transcript fetches are the
+        # reason this is configurable: the ceiling that keeps YouTube happy is
+        # only discoverable in production, and lowering it should be an env
+        # change rather than a deploy.
+        self.worker_item_concurrency: int = int(
+            os.getenv("WORKER_ITEM_CONCURRENCY", "5")
+        )
+        # Polling is adaptive: brisk while there is work, a slow heartbeat once
+        # the queue has been quiet. Never zero — jobs are queued by things other
+        # than a user action, and a failed job needs picking up eventually.
+        self.worker_poll_busy_secs: float = float(
+            os.getenv("WORKER_POLL_BUSY_SECS", "2")
+        )
+        self.worker_poll_idle_secs: float = float(
+            os.getenv("WORKER_POLL_IDLE_SECS", "45")
+        )
+        # How long the queue must stay empty before dropping to the slow rate.
+        self.worker_idle_after_secs: float = float(
+            os.getenv("WORKER_IDLE_AFTER_SECS", "60")
+        )
+        # How often a running job says it is still alive. Must stay comfortably
+        # under jobs.STALE_AFTER or a slow item looks like a dead worker.
+        self.worker_heartbeat_secs: float = float(
+            os.getenv("WORKER_HEARTBEAT_SECS", "20")
+        )
+
         # --- Storage / uploads --------------------------------------------
         self.upload_dir: str = os.getenv("UPLOAD_DIR", "./uploads")
         self.max_upload_mb: int = int(os.getenv("MAX_UPLOAD_MB", "50"))

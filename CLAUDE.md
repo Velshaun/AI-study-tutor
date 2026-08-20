@@ -162,6 +162,12 @@ once answered — one read, no model call, the same trade practice mode already
 makes. The runner holds the styling back until the answer lands, or a locked
 question flashes every option as wrong for the length of the round trip.
 
+**The worker survives its own startup failing.** `signal.signal` only works
+on the main thread, and an unguarded call raised before the loop had polled
+once — killing the process with no log, because the first log came after. Signal
+registration is best-effort now: losing the graceful stop costs a job being
+reclaimed instead of finishing cleanly, losing the worker costs everything.
+
 **Work that outlives a deploy needs a table, not a BackgroundTask.** A
 FastAPI background task runs in the web process and dies with it — fine for a
 generation the learner is watching, useless for importing a playlist across
@@ -381,7 +387,19 @@ group_shared_domains, group_domain_views, coverage_maps, exam_attempts`
 
 ### Deployment
 
-Vercel builds the frontend, Railway the backend, both from `main`. Railway had a
+Vercel builds the frontend, Railway the backend, both from `main`.
+
+**Two images, one repo.** `Dockerfile.worker` (Playwright base) runs
+`worker.py`; `Dockerfile.web` is the slim API image. Only the worker opens a
+browser, so only it carries one. The web file is named `.web` deliberately:
+Railway auto-detects a file called `Dockerfile` and would switch the live API's
+build on the next push without anyone deciding to. Renaming it is that decision,
+and belongs after the image has been built once — neither has been, because the
+Docker daemon wouldn't start here.
+
+The worker is a second Railway service pointed at `railway.worker.json`. It
+serves no port and needs no health check; SIGTERM stops it taking new work, and
+anything interrupted harder than that is reclaimed by heartbeat. Railway had a
 transient build failure in mid-August that resolved on its own; there is no
 `.python-version` or `runtime.txt`, so Railway picks its own Python and could
 move under you again — pinning it is a one-line fix if it recurs.
