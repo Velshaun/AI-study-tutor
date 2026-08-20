@@ -41,6 +41,7 @@ supabase/migrations/   timestamped, idempotent, safe to re-run
 | `extraction` | PDF, text, audio, **image (Gemini vision)**, **video (frames + narration)** |
 | `pipeline` | Ingestion, and the guard that stops it destroying study content |
 | `performance` | Rolling per-domain strength, adaptive weighting, attempt records |
+| `ingest` | The parse boundary: pasted material in, canonical records out |
 | `jobs` | The durable queue: claim, checkpoint, resume, retry-failed |
 | `schema_features` | Probes for optional columns so the API can deploy ahead of a migration |
 
@@ -161,6 +162,19 @@ measurement. `POST /practice-exam/{id}/answer` reveals one question at a time,
 once answered — one read, no model call, the same trade practice mode already
 makes. The runner holds the styling back until the answer lands, or a locked
 question flashes every option as wrong for the length of the round trip.
+
+**A parser converts; it never invents.** Every incoming format — a Quizlet
+export, a caption file, a block of exam questions — becomes the same two records
+at the `ingest` boundary, so nothing downstream learns where material came from.
+The rule that keeps it honest is `Question.usable`: a prompt with no options, or
+no answer, or an answer pointing outside its own options is not a question. A
+list of terms and definitions labelled "Practice Exam" cannot be made into one,
+because the options were never there — so it is kept as reference text with a
+note saying exactly that. A half-built paper the learner can sit and cannot pass
+is worse than no paper.
+
+The learner's label decides where material is filed; detection only pre-selects
+the pill and never overrides them.
 
 **Import progress is watched, not owned.** `GenerationProvider` holds its
 jobs in a promise the browser keeps open, which is precisely why it can't carry
@@ -343,7 +357,7 @@ All twelve features from the August audit are shipped. Latest work, newest first
 `20260818000000` interactive terms · `20260819000000` deck titles ·
 `20260820000000` study attempts · `20260821000000` tutor messages ·
 `20260822000000` coverage maps · `20260823000000` domain performance ·
-`20260824000000` job queue
+`20260824000000` job queue · `20260825000000` question provenance
 
 Applied through the Supabase **Management API** with a personal access token
 (`POST /v1/projects/{ref}/database/query`). The service-role key cannot run DDL,
