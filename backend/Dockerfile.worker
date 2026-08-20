@@ -13,7 +13,7 @@
 # the Python package have to agree, and `latest` would break that silently on
 # some future rebuild.
 
-FROM mcr.microsoft.com/playwright/python:v1.49.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.49.0-noble
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

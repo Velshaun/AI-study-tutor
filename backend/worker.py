@@ -21,9 +21,9 @@ SIGTERM stops the loop taking new work and lets the current items finish; if the
 process dies harder than that, the job's heartbeat goes stale and the next
 worker reclaims it, re-running only the unfinished items.
 
-Handlers register themselves in ``HANDLERS`` by job kind. It is deliberately
-empty for now: the queue and this loop are proven on their own before anything
-depends on them.
+Handlers register themselves in ``HANDLERS`` by job kind. Import handlers arrive
+with the phases that need them; the only one here today is ``ping``, which is a
+permanent production health check rather than scaffolding — see below.
 """
 
 from __future__ import annotations
@@ -51,8 +51,49 @@ logger = logging.getLogger("worker")
 # failure. Raise `PermanentFailure` for something retrying will never fix.
 ItemHandler = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 
-# {job kind: handler}. Filled in by later phases.
+# {job kind: handler}. Import handlers register here as later phases add them.
 HANDLERS: dict[str, ItemHandler] = {}
+
+
+# --- permanent production health check --------------------------------------
+# NOT test scaffolding. Do not delete.
+#
+# A queue you cannot exercise in production is one you find out about from a
+# user. This job kind is the smallest thing that proves the whole chain is alive
+# — that the worker is running, that it can reach Supabase, that it can claim a
+# job and an item, checkpoint mid-flight, and close the job out — without
+# touching a learner's data or spending anything at an upstream API.
+#
+# Enqueue one with `jobs.enqueue(kind="ping", items=[{"payload": {}}])` after a
+# deploy, or on a schedule. It is deliberately dull: if it ever stops
+# succeeding, something real is broken.
+PING_KIND = "ping"
+PING_MAX_SLEEP_SECS = 10.0
+
+
+def handle_ping(job: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
+    """Sleep briefly, checkpointing on the way, and report what ran it.
+
+    The sleep is what makes the checkpoint meaningful: it leaves a window in
+    which the item is genuinely mid-flight, so killing the worker here is a real
+    test of resume rather than a formality.
+    """
+    payload = item.get("payload") or {}
+    seconds = max(0.0, min(float(payload.get("sleep_secs", 1.0)), PING_MAX_SLEEP_SECS))
+    started = time.time()
+
+    jobs.checkpoint_item(item["id"], {"stage": "sleeping", "for_secs": seconds})
+    time.sleep(seconds)
+    jobs.checkpoint_item(item["id"], {"stage": "done", "for_secs": seconds})
+
+    return {
+        "ok": True,
+        "slept_secs": round(time.time() - started, 3),
+        "worker": f"{socket.gethostname()}:{os.getpid()}",
+    }
+
+
+HANDLERS[PING_KIND] = handle_ping
 
 
 class PermanentFailure(RuntimeError):
