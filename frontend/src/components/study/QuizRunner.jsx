@@ -2,7 +2,10 @@ import { Check, ChevronLeft, Clock, RotateCcw, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import { planExpansions } from '../../lib/terms'
+import { toResults } from '../../lib/session'
+import FlagToggle from './FlagToggle'
 import QuestionNavigator from './QuestionNavigator'
+import ResultsGrid from './ResultsGrid'
 import TermSheet from './TermSheet'
 import TermText from './TermText'
 
@@ -53,7 +56,7 @@ function clock(totalSeconds) {
 }
 
 export default function QuizRunner({
-  quiz, onSubmit, onRestart, attempt, renderResult, onAnswer,
+  quiz, onSubmit, onRestart, attempt, renderResult, onAnswer, onFinished,
 }) {
   const questions = quiz.questions || []
   const durationMinutes = quiz.duration_minutes || 0
@@ -78,6 +81,20 @@ export default function QuizRunner({
   })
   const [timedOut, setTimedOut] = useState(false)
   const [openTerm, setOpenTerm] = useState(null)
+  // Session state until the confirmation prompt, so flagging costs nothing
+  // and is undone by simply not confirming. Independent of the outcome:
+  // flagging a question you then get right is the useful case.
+  const [flags, setFlags] = useState(() => new Set())
+  // Kept so the results screen can draw the tiles without recomputing
+  // during render — the server's key only arrives with the submission.
+  const [sessionResults, setSessionResults] = useState([])
+  const toggleFlag = (at) =>
+    setFlags((prev) => {
+      const next = new Set(prev)
+      if (next.has(at)) next.delete(at)
+      else next.add(at)
+      return next
+    })
   // Answers revealed so far, by question index — only used where the paper
   // arrived without them and the caller asked for per-question reveals.
   const [revealed, setRevealed] = useState({})
@@ -144,6 +161,21 @@ export default function QuizRunner({
     const res = await onSubmit(answerList)
     setResult(res)
     setFinished(true)
+    // Built here rather than in the results branch: `res` carries the
+    // server's key, and the render path shouldn't be doing async bookkeeping.
+    const rows = toResults({
+        questions,
+        answers: answerList,
+        flags,
+        correctIndexOf: (question, i) =>
+          res?.results?.[i]?.correct_index ?? question?.correct_index ?? null,
+        promptOf: (question) => question?.question ?? '',
+    }).map((row, i) => ({
+      ...row,
+      explanation: res?.results?.[i]?.explanation || row.explanation,
+    }))
+    setSessionResults(rows)
+    onFinished?.({ results: rows, result: res })
   }
 
   useEffect(() => {
@@ -286,6 +318,15 @@ export default function QuizRunner({
           <RotateCcw size={16} aria-hidden="true" />
           Try again
         </button>
+
+        {/* One list, every question, each tile carrying its own state. No
+            split between flagged and missed: a question can be both, so
+            sections would either duplicate it or have to pick one. */}
+        {sessionResults.length > 0 && (
+          <div className="w-full space-y-2 pt-2 text-left">
+            <ResultsGrid results={sessionResults} />
+          </div>
+        )}
       </div>
     )
   }
@@ -308,9 +349,17 @@ export default function QuizRunner({
     <div className="space-y-5">
       {/* Progress */}
       <div className="space-y-1.5">
-        <div className="flex justify-between text-xs text-sec">
-          <span>
+        <div className="flex items-center justify-between text-xs text-sec">
+          <span className="inline-flex items-center gap-1">
             Question {index + 1} of {questions.length}
+            {/* Always available, including on a question already answered
+                correctly — the signal worth catching is the learner's own
+                uncertainty, not the outcome. */}
+            <FlagToggle
+              flagged={flags.has(index)}
+              onToggle={() => toggleFlag(index)}
+              className="-my-2 size-9"
+            />
           </span>
           {durationMinutes > 0 && (
             <span

@@ -235,6 +235,19 @@ export const api = {
   // half-deleted playlist if it stopped partway.
   deleteSourceGroup: (moduleId, groupKey) =>
     apiFetch(`/sources/group/${moduleId}/${groupKey}`, { method: 'DELETE' }),
+  // --- the two containers, and the sessions that feed them ------------------
+  // Nothing else in the app reads a container: these are the only calls that
+  // touch it, which is what "opt-in and isolated" means in practice.
+  container: (moduleId, name, signal) =>
+    apiFetch(`/bank/${moduleId}/${name}`, { signal }),
+  addToContainer: (moduleId, name, body) =>
+    apiFetch(`/bank/${moduleId}/${name}/add`, { method: 'POST', body }),
+  deleteContainerEntry: (entryId) =>
+    apiFetch(`/bank/entry/${entryId}`, { method: 'DELETE' }),
+  generateFromContainer: (moduleId, name, body) =>
+    apiFetch(`/bank/${moduleId}/${name}/generate`, { method: 'POST', body }),
+  recordSession: (body) => apiFetch('/bank/sessions', { method: 'POST', body }),
+  sessions: (moduleId, signal) => apiFetch(`/bank/sessions/${moduleId}`, { signal }),
   subjectCheck: (texts, moduleId) =>
     apiFetch('/modules/subject-check', {
       method: 'POST',
