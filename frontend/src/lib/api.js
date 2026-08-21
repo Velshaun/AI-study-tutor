@@ -238,6 +238,10 @@ export const api = {
   // --- the two containers, and the sessions that feed them ------------------
   // Nothing else in the app reads a container: these are the only calls that
   // touch it, which is what "opt-in and isolated" means in practice.
+  // Where you started against where you are. Null for most modules: the
+  // pre-assessment is optional, and not having one isn't a problem.
+  baselineComparison: (moduleId, signal) =>
+    apiFetch(`/stats/baseline/${moduleId}`, { signal }),
   container: (moduleId, name, signal) =>
     apiFetch(`/bank/${moduleId}/${name}`, { signal }),
   addToContainer: (moduleId, name, body) =>

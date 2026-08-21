@@ -7,6 +7,7 @@ import {
   Loader2,
   Mic,
   Sparkles,
+  Target,
 } from 'lucide-react'
 import { useState } from 'react'
 
@@ -14,7 +15,6 @@ import DomainClassroom from './DomainClassroom'
 import ExamsSection from './ExamsSection'
 import GeneratePreferencesModal from './GeneratePreferencesModal'
 import ModuleKpis from './ModuleKpis'
-import PreAssessmentCard from './PreAssessmentCard'
 import ContentReadinessCard from './ContentReadinessCard'
 import LearnerReadinessCard from './LearnerReadinessCard'
 import { useGeneration } from '../../hooks/useGeneration'
@@ -22,6 +22,8 @@ import { useToast } from '../../hooks/useToast'
 import { api } from '../../lib/api'
 import * as lectures from '../../lib/lectures'
 import { path } from '../../routes'
+import ContainerSection from './ContainerSection'
+import BaselineSection from './BaselineSection'
 
 /**
  * Classroom tab — the module organised the way its exam is.
@@ -165,11 +167,15 @@ export default function ClassroomTab({ moduleId, domains, examCount = 40 }) {
     <div className="space-y-8">
       <ModuleKpis moduleId={moduleId} />
 
-      {/* Nothing has been measured yet — so measure it, before the app starts
-          guessing what to put in front of them. */}
-      {performance && !performance.has_baseline && studyable.length > 0 && (
-        <PreAssessmentCard moduleId={moduleId} questionCount={examCount} />
-      )}
+      {/* Its own section, above practice exams and never mixed with them: the
+          baseline is the line the others are measured against, not one of
+          them. Offers the assessment until it is taken, then becomes the
+          permanent record and the comparison — the offer never returns. */}
+      <BaselineSection
+        moduleId={moduleId}
+        questionCount={examCount}
+        canTake={Boolean(performance && !performance.has_baseline && studyable.length > 0)}
+      />
 
       <ExamsSection
         moduleId={moduleId}
@@ -180,6 +186,18 @@ export default function ClassroomTab({ moduleId, domains, examCount = 40 }) {
           queryClient.invalidateQueries({ queryKey: ['exam-attempts', moduleId] })
         }}
       />
+
+      {/* The two containers. Module-scoped and spanning the whole blueprint,
+          which is exactly where practice exams sit — so they sit alongside
+          them rather than inside the domain list. */}
+      <section className="space-y-3">
+        <h2 className="flex items-center gap-2 border-l-2 border-accent pl-2.5 text-xs font-bold uppercase tracking-[0.14em] text-accent2">
+          <Target size={13} aria-hidden="true" />
+          Your own questions
+        </h2>
+        <ContainerSection moduleId={moduleId} container="missed" />
+        <ContainerSection moduleId={moduleId} container="qa" />
+      </section>
 
       {isPending ? (
         <div className="space-y-2">

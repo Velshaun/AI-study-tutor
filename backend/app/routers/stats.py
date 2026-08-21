@@ -303,6 +303,19 @@ class PerformanceResponse(BaseModel):
     has_baseline: bool = False
 
 
+@router.get("/baseline/{module_id}")
+async def baseline_comparison(
+    module_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> dict[str, Any] | None:
+    """Where you started against where you are now.
+
+    Null when there is no baseline, which is most modules — the pre-assessment
+    is optional, and a module without one is not a module with a problem.
+    """
+    return performance.comparison(module_id, user.id)
+
+
 @router.get("/performance/{module_id}", response_model=PerformanceResponse)
 async def module_performance(
     module_id: str,

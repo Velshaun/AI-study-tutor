@@ -505,6 +505,118 @@ def baseline(module_id: str, user_id: str) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
+def comparison(module_id: str, user_id: str) -> dict[str, Any] | None:
+    """Where you started against where you are, overall and per domain.
+
+    The baseline is the pre-assessment, which a module gets exactly one of — the
+    database enforces that, because a second one would silently move the line
+    the learner measures themselves against.
+
+    The "now" side is the most recent *practice* sitting rather than the best
+    one. A personal best is a nice thing to have and a bad thing to plan from;
+    the useful question here is whether the work is paying off lately.
+
+    Returns None when there is nothing to compare — no baseline, or a baseline
+    and nothing since. A comparison of a thing against itself reads as no
+    progress, which is not what "you have only sat this once" means.
+    """
+    if not available():
+        return None
+
+    start = baseline(module_id, user_id)
+    if not start:
+        return None
+
+    later = (
+        _client().table("exam_attempts").select("*")
+        .eq("module_id", module_id).eq("user_id", user_id)
+        .eq("kind", "practice")
+        .order("submitted_at", desc=True).limit(1).execute()
+    ).data or []
+    if not later:
+        return {"baseline": _side(start), "latest": None, "domains": [], "delta": None}
+
+    now = later[0]
+    by_domain: dict[str, dict[str, Any]] = {}
+    for row in start.get("domain_results") or []:
+        key = row.get("domain_id") or row.get("title")
+        if key:
+            by_domain[key] = {
+                "domain_id": row.get("domain_id"),
+                "title": row.get("title") or "",
+                "then": _pct(row),
+                "now": None,
+            }
+    for row in now.get("domain_results") or []:
+        key = row.get("domain_id") or row.get("title")
+        if not key:
+            continue
+        entry = by_domain.setdefault(key, {
+            "domain_id": row.get("domain_id"),
+            "title": row.get("title") or "",
+            "then": None,
+        })
+        entry["now"] = _pct(row)
+
+    domains = []
+    for entry in by_domain.values():
+        then, now_pct = entry.get("then"), entry.get("now")
+        # A domain the baseline never covered has nothing to be measured
+        # against, and showing it as a rise from zero would be an invention.
+        entry["delta"] = (
+            round(now_pct - then, 1)
+            if then is not None and now_pct is not None else None
+        )
+        domains.append(entry)
+    domains.sort(key=lambda d: (d["delta"] is None, -(d["delta"] or 0)))
+
+    return {
+        "baseline": _side(start),
+        "latest": _side(now),
+        "delta": round(float(now.get("score") or 0) - float(start.get("score") or 0), 1),
+        "domains": domains,
+    }
+
+
+def _side(attempt: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "score": float(attempt.get("score") or 0),
+        "correct": attempt.get("correct") or 0,
+        "total": attempt.get("total") or 0,
+        "submitted_at": attempt.get("submitted_at"),
+        "exam_id": attempt.get("exam_id"),
+        # The per-question record, which `exam_attempts` never held — it stores
+        # domain totals. `study_sessions` does, so the permanent baseline record
+        # is a lookup rather than a schema change.
+        "results": _session_results(attempt.get("exam_id")),
+    }
+
+
+def _session_results(exam_id: str | None) -> list[dict[str, Any]]:
+    """The questions of a sitting, if a session was recorded for it.
+
+    Empty for anything sat before sessions existed, which the baseline card
+    handles by simply not offering to expand.
+    """
+    if not exam_id or not schema_features.has_column("study_sessions", "results"):
+        return []
+    rows = (
+        _client().table("study_sessions").select("results")
+        .eq("item_id", exam_id).order("created_at").limit(1).execute()
+    ).data or []
+    return (rows[0].get("results") if rows else []) or []
+
+
+def _pct(row: dict[str, Any]) -> float | None:
+    """A domain result's percentage, however that attempt recorded it."""
+    if row.get("score") is not None:
+        return round(float(row["score"]), 1)
+    total = row.get("total") or 0
+    if not total:
+        return None
+    return round((row.get("correct") or 0) / total * 100, 1)
+
+
 def attempt_count(module_id: str, user_id: str) -> int:
     if not available():
         return 0
