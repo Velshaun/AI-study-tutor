@@ -12,12 +12,14 @@ import {
   Send,
   ThumbsDown,
   Trash2,
-  Video,
-} from 'lucide-react'
+  Video, Mic, MicOff} from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import { useToast } from '../../hooks/useToast'
 import { api } from '../../lib/api'
+import { useConfirm } from '../../hooks/useConfirm'
+import { useSpeechRecognition } from '../../hooks/useSpeechRecognition'
+import { looksLikeInstruction } from '../../lib/tutorIntent'
 
 /**
  * Chat tab — the module's tutor.
@@ -69,6 +71,65 @@ export default function ChatTab({ moduleId }) {
   const queryClient = useQueryClient()
   const toast = useToast()
   const [input, setInput] = useState('')
+  const confirm = useConfirm()
+
+  // Speech-to-text through the hook the lecture player already uses. Voice
+  // *replies* are deliberately not here: the player owns audio playback and
+  // narrating a chat answer would mean a second thing that can be speaking.
+  const speech = useSpeechRecognition({
+    onSubmit: (text) => {
+      const said = (text || '').trim()
+      if (said) setInput((prior) => (prior ? `${prior} ${said}` : said))
+    },
+  })
+
+  // "Make me a practice exam from my missed questions" — planned first, never
+  // executed straight from the sentence.
+  const act = useMutation({
+    mutationFn: async (message) => {
+      const plan = await api.planTutorAction(moduleId, message)
+      if (!plan.is_action || !plan.actions?.length) return { plan, results: null }
+
+      if (plan.needs_confirmation) {
+        const ok = await confirm({
+          title: 'Go ahead?',
+          // Every action named, one per line, including which exams have
+          // already been sat. The learner approves this text, not a summary
+          // of it.
+          message: plan.actions.map((a) => `• ${a.describe}`).join('\n'),
+          confirmLabel: 'Do it',
+          cancelLabel: 'Cancel',
+          danger: true,
+        })
+        if (!ok) return { plan, results: null, cancelled: true }
+      }
+      const done = await api.runTutorAction(moduleId, plan.actions)
+      return { plan, results: done.results }
+    },
+    onSuccess: ({ plan, results, cancelled }, message) => {
+      // The filter was wide, not accurate. When the planner disagrees, this
+      // was a question all along — answer it rather than saying nothing.
+      if (!plan.is_action) {
+        ask.mutate({ question: message })
+        return
+      }
+      for (const key of ['studio', 'module', 'exam-attempts']) {
+        queryClient.invalidateQueries({ queryKey: [key, moduleId] })
+      }
+      if (cancelled) {
+        toast.success('Left everything as it was.')
+        return
+      }
+      if (!results) return
+      const failed = results.filter((r) => !r.ok)
+      if (failed.length) {
+        toast.error(failed[0].detail || 'Some of that could not be done.')
+      } else {
+        toast.success(results.map((r) => r.detail).join(' '))
+      }
+    },
+    onError: (e) => toast.error(e?.message || 'Could not do that.'),
+  })
   const [added, setAdded] = useState(() => new Set())
   const [reported, setReported] = useState(() => new Set())
   const endRef = useRef(null)
@@ -159,9 +220,14 @@ export default function ChatTab({ moduleId }) {
   function submit(e) {
     e.preventDefault()
     const question = input.trim()
-    if (!question || ask.isPending) return
+    if (!question || ask.isPending || act.isPending) return
     setInput('')
-    ask.mutate({ question })
+    // A local filter decides which of the two paths to take, so an ordinary
+    // question doesn't pay for a planning call it will never use. It only ever
+    // routes — the planner still decides whether anything happens, and falls
+    // back to answering when it turns out not to be an instruction.
+    if (looksLikeInstruction(question)) act.mutate(question)
+    else ask.mutate({ question })
   }
 
   return (
@@ -272,13 +338,33 @@ export default function ChatTab({ moduleId }) {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask your tutor anything…"
-            className="input flex-1"
+            placeholder={
+              speech.listening ? 'Listening…' : 'Ask, or tell me what to make…'
+            }
+            className="input min-w-0 flex-1"
           />
+          {speech.supported && (
+            <button
+              type="button"
+              onClick={() => (speech.listening ? speech.stop() : speech.start())}
+              aria-pressed={speech.listening}
+              aria-label={speech.listening ? 'Stop dictating' : 'Dictate'}
+              className={`flex size-11 shrink-0 items-center justify-center rounded-xl
+                          transition-colors ${
+                            speech.listening
+                              ? 'bg-warning/15 text-warning'
+                              : 'bg-surface2 text-sec hover:text-pri'
+                          }`}
+            >
+              {speech.listening
+                ? <MicOff size={16} aria-hidden="true" />
+                : <Mic size={16} aria-hidden="true" />}
+            </button>
+          )}
           <button
             type="submit"
-            disabled={!input.trim() || ask.isPending}
-            className="btn-primary px-4"
+            disabled={!input.trim() || ask.isPending || act.isPending}
+            className="btn-primary shrink-0 px-4"
           >
             <Send size={16} aria-hidden="true" />
           </button>

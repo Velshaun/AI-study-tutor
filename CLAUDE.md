@@ -126,6 +126,28 @@ collects things they went out of their way to ask, so asking again would be
 asking twice; it mirrors on write, best-effort, with `lecture_qa` staying the
 record of record.
 
+**The tutor may act, and every action goes through an endpoint.** Not the
+tables, and not a parallel implementation. The handlers already refuse to delete
+a domain whose questions are in a sat exam, already check ownership, already cap
+exam length and freeze weights — reaching past them would mean re-implementing
+each of those guards correctly, forever, and a guard added later would not
+apply. `tutor_actions` therefore knows *which* things may be done and nothing
+about whether any particular one is allowed.
+
+The verb list is an allowlist rather than a filter: anything unnamed cannot be
+done whatever the sentence said, so a model describing an action it cannot name
+produces a refusal instead of an approximation. Planning and executing are
+separate calls — the plan comes back naming each step, the chat confirms, and
+only then does anything fire. Because the second call takes the plan rather than
+the sentence, the model is not involved in the confirmation and cannot talk its
+way past it. The pre-assessment is never a delete candidate, and an exam that
+has been sat says so in the confirmation before it is removed.
+
+Routing is a local filter in front of the planner, not a second parser. Sending
+every message to the planner would add a model call before every ordinary
+question; the filter casts wide and decides nothing — a false positive costs one
+small call that falls through to a normal answer, which nobody sees.
+
 **Container entries are snapshots, not references.** A foreign key was the first
 design and does not survive this schema: `quizzes.questions` is jsonb, so quiz
 questions have no row to point at. Copying is also the honest shape — a record

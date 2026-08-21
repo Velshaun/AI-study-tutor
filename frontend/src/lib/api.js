@@ -240,6 +240,17 @@ export const api = {
   // touch it, which is what "opt-in and isolated" means in practice.
   // Where you started against where you are. Null for most modules: the
   // pre-assessment is optional, and not having one isn't a problem.
+  // Two calls on purpose: planning never mutates, and acting takes the
+  // plan rather than the sentence — so the model is not involved in the
+  // confirmation and cannot talk its way through it.
+  planTutorAction: (moduleId, message) =>
+    apiFetch(`/modules/${moduleId}/tutor/plan`, {
+      method: 'POST', body: { message },
+    }),
+  runTutorAction: (moduleId, actions) =>
+    apiFetch(`/modules/${moduleId}/tutor/act`, {
+      method: 'POST', body: { actions },
+    }),
   baselineComparison: (moduleId, signal) =>
     apiFetch(`/stats/baseline/${moduleId}`, { signal }),
   container: (moduleId, name, signal) =>

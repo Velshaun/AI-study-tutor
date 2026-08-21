@@ -498,6 +498,127 @@ ANSWER_SCHEMA: dict[str, Any] = {
 }
 
 
+INTENT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "is_action": {
+            "type": "boolean",
+            "description": (
+                "True only when the learner is asking for something to be "
+                "DONE — created or deleted. A question about the material, "
+                "however imperative it sounds, is not an action."
+            ),
+        },
+        "steps": {
+            "type": "array",
+            "description": "In the order the learner asked for them.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "verb": {
+                        "type": "string",
+                        "description": (
+                            "One of: generate_exam, generate_quiz, "
+                            "generate_flashcards, delete_exam, delete_quiz. "
+                            "Use nothing else. If what they asked for is not "
+                            "in this list, leave steps empty and let the reply "
+                            "explain."
+                        ),
+                    },
+                    "count": {
+                        "type": "integer",
+                        "description": "How many. 1 unless they said otherwise.",
+                    },
+                    "from_missed": {
+                        "type": "boolean",
+                        "description": (
+                            "True when they asked for it to come from their "
+                            "missed or flagged questions."
+                        ),
+                    },
+                },
+                "required": ["verb"],
+            },
+        },
+        "reply": {
+            "type": "string",
+            "description": (
+                "What to say. For an action, a short sentence describing what "
+                "is about to happen. For anything refused, why — plainly, "
+                "without apologising twice."
+            ),
+        },
+    },
+    "required": ["is_action", "steps", "reply"],
+}
+
+
+def read_intent(message: str, context: str = "") -> dict[str, Any]:
+    """Is this a request to do something, and if so what?
+
+    A separate, strict-schema call rather than tool-calling on the answering
+    model. Two reasons. The answer path is a long grounded conversation and
+    giving it the ability to act would mean every ordinary reply carried that
+    risk. And a schema whose `verb` enumerates the allowlist in its own
+    description keeps the model's output inside the vocabulary that
+    `tutor_actions` will accept anyway — so a refusal is a sentence rather than
+    a mismatch.
+    """
+    from google.genai import types
+
+    try:
+        response = _generate(
+            "tutor-intent",
+            model=settings.gemini_model,
+            contents=(
+                "Decide whether this message asks for something to be done in "
+                "a study app, and plan it.\n\n"
+                "Only these are possible: generating a practice exam, a quiz "
+                "or flashcards, and deleting a practice exam or a quiz. "
+                "Anything else — deleting a module, changing a score, editing "
+                "a lecture — is not possible: say so in `reply` and leave "
+                "`steps` empty.\n\n"
+                "A question about the subject is not an action, even phrased "
+                "as an instruction: \"explain TCP handshakes\" is a question.\n\n"
+                f"--- MODULE ---\n{context}\n\n"
+                f"--- MESSAGE ---\n{message}"
+            ),
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=INTENT_SCHEMA,
+                temperature=0.0,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Intent read failed: %s", exc)
+        return {"is_action": False, "steps": [], "reply": ""}
+
+    import json
+
+    try:
+        data = json.loads(response.text or "{}")
+    except (ValueError, TypeError):
+        return {"is_action": False, "steps": [], "reply": ""}
+
+    steps = []
+    for step in data.get("steps") or []:
+        verb = (step.get("verb") or "").strip()
+        if not verb:
+            continue
+        steps.append({
+            "verb": verb,
+            "args": {
+                "count": step.get("count") or 1,
+                "from_missed": bool(step.get("from_missed")),
+            },
+        })
+    return {
+        "is_action": bool(data.get("is_action")) and bool(steps),
+        "steps": steps,
+        "reply": (data.get("reply") or "").strip(),
+    }
+
+
 def answer_question(
     module_id: str, user_id: str, question: str, history: list[dict[str, Any]],
 ) -> dict[str, Any]:

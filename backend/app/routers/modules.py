@@ -33,6 +33,7 @@ from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
 from app.services import (
     coverage, dead_links, exam_catalog, exam_profile, subject_match, tutor,
+    tutor_actions,
 )
 from app.services.ai_service import GenerationError, discover_resources
 from app.services.link_check import validate_resources
@@ -916,6 +917,103 @@ async def clear_tutor_history(
     _client().table("tutor_messages").delete().eq("module_id", module_id).eq(
         "user_id", user.id
     ).execute()
+
+
+class TutorPlanRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=2000)
+
+
+class PlannedAction(BaseModel):
+    verb: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    describe: str = ""
+    destructive: bool = False
+
+
+class TutorPlan(BaseModel):
+    """What the tutor proposes to do, before it has done any of it."""
+
+    is_action: bool = False
+    reply: str = ""
+    actions: list[PlannedAction] = Field(default_factory=list)
+    refusals: list[str] = Field(default_factory=list)
+    # True when anything in the plan destroys something. The chat must confirm
+    # before calling /tutor/act, and this is what tells it to.
+    needs_confirmation: bool = False
+
+
+@router.post("/{module_id}/tutor/plan", response_model=TutorPlan)
+async def plan_tutor_action(
+    module_id: str,
+    payload: TutorPlanRequest,
+    user: AuthUser = Depends(get_current_user),
+) -> TutorPlan:
+    """Work out what a message is asking for. Changes nothing.
+
+    Separate from executing on purpose. The learner sees the plan named — "Delete
+    'Mock exam 3' — you have already sat this one" — and only then is anything
+    called. Because the second call takes the plan rather than the sentence, the
+    model is not involved in the confirmation at all and cannot talk its way
+    through it.
+    """
+    module = _fetch_own(module_id, user.id)
+
+    intent = tutor.read_intent(
+        payload.message, context=module.get("title") or "",
+    )
+    if not intent.get("is_action"):
+        return TutorPlan(is_action=False, reply=intent.get("reply") or "")
+
+    actions, refusals = tutor_actions.plan_from_intent(
+        intent, module_id=module_id, user_id=user.id,
+    )
+    if not actions:
+        return TutorPlan(
+            is_action=False,
+            reply=intent.get("reply") or "",
+            refusals=refusals,
+        )
+
+    return TutorPlan(
+        is_action=True,
+        reply=intent.get("reply") or "",
+        actions=[PlannedAction(**a.to_dict()) for a in actions],
+        refusals=refusals,
+        needs_confirmation=any(tutor_actions.is_destructive(a.verb) for a in actions),
+    )
+
+
+class TutorActRequest(BaseModel):
+    actions: list[PlannedAction] = Field(..., max_length=20)
+
+
+class TutorActResult(BaseModel):
+    results: list[dict[str, Any]] = Field(default_factory=list)
+
+
+@router.post("/{module_id}/tutor/act", response_model=TutorActResult)
+async def run_tutor_action(
+    module_id: str,
+    payload: TutorActRequest,
+    user: AuthUser = Depends(get_current_user),
+) -> TutorActResult:
+    """Run a plan the learner approved.
+
+    Every action goes through the endpoint handler that owns it, so ownership
+    checks, sat-exam protection, exam sizing and frozen weights all apply
+    without being restated. A handler's refusal comes back as a result rather
+    than an error — "that exam has been sat" is what the learner needs to read.
+    """
+    _fetch_own(module_id, user.id)
+    results = await tutor_actions.execute(
+        [a.model_dump() for a in payload.actions], user=user, module_id=module_id,
+    )
+    logger.info(
+        "Tutor ran %d action(s) on module %s: %s",
+        len(results), module_id,
+        ", ".join(f"{r['verb']}={'ok' if r['ok'] else 'refused'}" for r in results),
+    )
+    return TutorActResult(results=results)
 
 
 @router.post("/{module_id}/tutor", response_model=TutorReply)
