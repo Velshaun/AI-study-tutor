@@ -10,6 +10,7 @@ import PageTitle from '../components/PageTitle'
 import { useConfirm } from '../hooks/useConfirm'
 import { useToast } from '../hooks/useToast'
 import { api, ApiError } from '../lib/api'
+import { useSessionFinish } from '../hooks/useSessionFinish'
 
 /**
  * Quizzes for a domain — spec Prompt 6.6.
@@ -161,12 +162,20 @@ export default function Quizzes() {
  */
 function ResumableQuiz({ quiz, onSubmit }) {
   const attempt = useAttempt('quiz', quiz.id)
+  // The module comes from the quiz rather than the route: quizzes are opened by
+  // domain, and a container belongs to the module above it.
+  const finishSession = useSessionFinish(quiz.module_id)
   if (attempt.loading) return <div className="skeleton h-40 rounded-2xl" />
   return (
     <QuizRunner
       quiz={quiz}
       attempt={attempt}
       onSubmit={(answers) => onSubmit(quiz, answers)}
+      onFinished={({ results }) =>
+        finishSession({
+          kind: 'quiz', itemId: quiz.id, title: quiz.title, results,
+        })
+      }
     />
   )
 }

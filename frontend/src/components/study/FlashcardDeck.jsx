@@ -1,8 +1,11 @@
 import { motion } from 'framer-motion'
 import { Check, ChevronLeft, RotateCcw, Star, Trash2, X } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { planExpansions } from '../../lib/terms'
+import { toResults } from '../../lib/session'
+import FlagToggle from './FlagToggle'
+import ResultsGrid from './ResultsGrid'
 import TermSheet from './TermSheet'
 import TermText from './TermText'
 
@@ -25,7 +28,7 @@ import TermText from './TermText'
 const SWIPE_THRESHOLD = 100
 
 export default function FlashcardDeck({
-  cards, onFavourite, onDelete, onRestart, attempt,
+  cards, onFavourite, onDelete, onRestart, attempt, onFinished,
 }) {
   // Saved progress, read once: a deck reopened mid-way carries on rather than
   // starting over.
@@ -47,7 +50,21 @@ export default function FlashcardDeck({
     () => new Set(Array.isArray(saved?.state?.known) ? saved.state.known : []),
   )
   const [openTerm, setOpenTerm] = useState(null)
+  // Same contract as every other runner: session state until the confirmation
+  // prompt, independent of whether the card was marked known.
+  const [flags, setFlags] = useState(() => new Set())
+  const toggleFlag = (id) =>
+    setFlags((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
 
+  // Reported once when the deck runs out. An effect rather than a call inside
+  // `advance`: `done` is derived from the index, and the advance that finishes
+  // the deck doesn't know it was the last one.
+  const reported = useRef(false)
   const current = cards[index]
   const done = index >= cards.length
 
@@ -108,6 +125,35 @@ export default function FlashcardDeck({
     onRestart?.()
   }
 
+  useEffect(() => {
+    if (!done || reported.current || !cards.length) return
+    reported.current = true
+    // A card marked "not known" is a wrong answer. It is the same evidence —
+    // the learner said they didn't have it — and treating it differently would
+    // mean the one place you admit to not knowing something is the one place
+    // it isn't recorded. Volume is handled where it should be: the prompt asks
+    // before anything is saved, and the scoping dials handle a big pool after.
+    const rows = toResults({
+      questions: cards,
+      answers: cards.map((card) => (known.has(card.id) ? 0 : null)),
+      flags: new Set(
+        cards.map((card, i) => (flags.has(card.id) ? i : -1)).filter((i) => i >= 0),
+      ),
+      correctIndexOf: () => 0,
+      promptOf: (card) => card.front || '',
+      optionsOf: (card) => [card.back || ''],
+    }).map((row, i) => ({
+      ...row,
+      source_kind: 'flashcard',
+      source_id: cards[i]?.id ?? null,
+      domain_id: cards[i]?.domain_id ?? null,
+      // The back of the card is the answer, so a banked card can become a
+      // question later without going back to the original.
+      explanation: cards[i]?.back || '',
+    }))
+    onFinished?.({ results: rows, known: known.size, total: cards.length })
+  }, [done, cards, known, flags, onFinished])
+
   if (done) {
     return (
       <div className="card flex flex-col items-center gap-5 py-12 text-center">
@@ -125,6 +171,24 @@ export default function FlashcardDeck({
           <RotateCcw size={16} aria-hidden="true" />
           Study again
         </button>
+
+        {/* The same tiles as every other runner: green for known, red for not,
+            flag in the corner either way. */}
+        <div className="w-full space-y-2 pt-2 text-left">
+          <ResultsGrid
+            results={cards.map((card, i) => ({
+              index: i,
+              prompt: card.front || '',
+              options: [card.back || ''],
+              correct_index: 0,
+              chosen_index: known.has(card.id) ? 0 : null,
+              correct: known.has(card.id),
+              answered: known.has(card.id),
+              flagged: flags.has(card.id),
+              explanation: card.back || '',
+            }))}
+          />
+        </div>
       </div>
     )
   }
@@ -134,8 +198,13 @@ export default function FlashcardDeck({
       {/* Progress */}
       <div className="space-y-1.5">
         <div className="flex justify-between text-xs text-sec">
-          <span>
+          <span className="inline-flex items-center gap-1">
             Card {index + 1} of {cards.length}
+            <FlagToggle
+              flagged={flags.has(current?.id)}
+              onToggle={() => current && toggleFlag(current.id)}
+              className="-my-2 size-9"
+            />
           </span>
           <span>{known.size} known</span>
         </div>

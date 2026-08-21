@@ -10,6 +10,7 @@ import PageTitle from '../components/PageTitle'
 import { useConfirm } from '../hooks/useConfirm'
 import { useToast } from '../hooks/useToast'
 import { api, ApiError } from '../lib/api'
+import { useSessionFinish } from '../hooks/useSessionFinish'
 
 /**
  * Flashcards for a domain — spec Prompt 6.5.
@@ -19,6 +20,8 @@ import { api, ApiError } from '../lib/api'
  */
 export default function Flashcards() {
   const { domainId } = useParams()
+  // Cards are fetched by domain, so the module comes off the cards
+  // themselves — a container belongs to the module, not the domain.
   // A deck is keyed by its domain — the cards have no set of their own.
   const attempt = useAttempt('flashcards', domainId)
   const navigate = useNavigate()
@@ -69,6 +72,7 @@ export default function Flashcards() {
   }
 
   const cards = Array.isArray(data) ? data : []
+  const finishSession = useSessionFinish(cards[0]?.module_id)
   const isAuth = error instanceof ApiError && error.isAuth
 
   return (
@@ -113,6 +117,12 @@ export default function Flashcards() {
           attempt={attempt}
           onFavourite={favourite.mutate}
           onDelete={confirmDelete}
+          onFinished={({ results }) =>
+            finishSession({
+              kind: 'flashcards', itemId: domainId,
+              title: `${cards.length} cards`, results,
+            })
+          }
         />
       )}
     </div>

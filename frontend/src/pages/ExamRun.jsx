@@ -10,6 +10,7 @@ import { useAttempt } from '../hooks/useAttempt'
 import { useToast } from '../hooks/useToast'
 import { ApiError, api } from '../lib/api'
 import { path } from '../routes'
+import { useSessionFinish } from '../hooks/useSessionFinish'
 
 /**
  * Sit a stored practice exam.
@@ -29,6 +30,10 @@ export default function ExamRun() {
     queryKey: ['exam', examId],
     queryFn: ({ signal }) => api.exam(examId, signal),
   })
+
+  // One call at the end: records the sitting, then asks whether the missed
+  // and flagged questions should join the module's container.
+  const finishSession = useSessionFinish(exam?.module_id)
 
   async function submit(answers) {
     const result = await api.submitExam(examId, answers)
@@ -83,6 +88,11 @@ export default function ExamRun() {
         quiz={exam}
         attempt={attempt}
         onSubmit={submit}
+        onFinished={({ results }) =>
+          finishSession({
+            kind: 'exam', itemId: exam.id, title: exam.title, results,
+          })
+        }
         onRestart={() => navigate(-1)}
         // Deliberately no `onAnswer`: an exam says nothing until the paper is
         // handed in. That is how the real sitting works, and it is what lets a
