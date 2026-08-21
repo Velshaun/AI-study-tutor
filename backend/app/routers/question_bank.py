@@ -69,6 +69,27 @@ class BankEntry(BaseModel):
     created_at: datetime | None = None
 
 
+# Shared by both generation paths — a container and a past session ask the
+# same question over different pools, so they answer in the same shape.
+class GenerateRequest(BaseModel):
+    # 'practice_exam' | 'quiz' | 'flashcards'
+    media: str
+    # 'all' | 'half' | a number
+    how_many: str | int = "all"
+    # 'recent' | 'oldest' | 'random'
+    which: str = "recent"
+    title: str | None = None
+
+
+class GenerateResponse(BaseModel):
+    media: str
+    created_id: str | None = None
+    used: int
+    available: int
+    skipped: int = 0
+    note: str = ""
+
+
 # --- sessions ---------------------------------------------------------------
 # Declared before the container routes on purpose. `/bank/sessions/{module_id}`
 # and `/bank/{module_id}/{container}` are both three segments, so the generic
@@ -173,6 +194,105 @@ async def list_sessions(
     ]
 
 
+class SessionGenerateRequest(BaseModel):
+    media: str
+    # 'missed' | 'flagged' | 'both'
+    source: str = "both"
+    how_many: str | int = "all"
+    which: str = "recent"
+
+
+@router.post("/sessions/{session_id}/generate", response_model=GenerateResponse)
+async def generate_from_session(
+    session_id: str,
+    payload: SessionGenerateRequest,
+    user: AuthUser = Depends(get_current_user),
+) -> GenerateResponse:
+    """Build something from one past sitting's missed and flagged questions.
+
+    The same dials as a container, over a different pool. A session stores its
+    own results, so this needs nothing from the exam it was a sitting of — which
+    is what lets a sitting stay a source after the exam behind it is deleted.
+
+    Deliberately does *not* write to a container on the way through. Generating
+    from a session is not the same act as saving those questions for later, and
+    doing both silently would fill a container the learner declined at the end
+    of the run.
+    """
+    rows = (
+        _client().table("study_sessions").select("*")
+        .eq("id", session_id).eq("user_id", user.id).limit(1).execute()
+    ).data or []
+    if not rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "That session isn't here.")
+    session = rows[0]
+
+    results = session.get("results") or []
+    pool = [
+        r for r in results
+        if (payload.source == "missed" and not r.get("correct"))
+        or (payload.source == "flagged" and r.get("flagged"))
+        or (payload.source == "both" and (not r.get("correct") or r.get("flagged")))
+    ]
+    if not pool:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Nothing in that session matches — you got everything right and "
+            "flagged nothing.",
+        )
+
+    # Reuses the container's dials and its entry->question conversion by
+    # wrapping each result in the same shape, so "the thirty oldest" means one
+    # thing in this app rather than two.
+    as_entries = [
+        {"id": None, "snapshot": {
+            "prompt": r.get("prompt"),
+            "options": r.get("options") or [],
+            "correct_index": r.get("correct_index"),
+            "explanation": r.get("explanation") or "",
+        }}
+        for r in pool
+    ]
+    chosen = bank.scope(as_entries, how_many=payload.how_many, which=payload.which)
+
+    questions = []
+    for position, entry in enumerate(chosen):
+        question = bank.to_question({**entry, "id": None}, position)
+        if question:
+            # A session question has no bank entry behind it, so nothing to
+            # graduate — it was never banked.
+            question.pop("bank_entry_id", None)
+            questions.append(question)
+    skipped = len(chosen) - len(questions)
+
+    module_id = session["module_id"]
+    _own_module(module_id, user.id)
+    title = f"From {session.get('title') or 'a past session'}"
+
+    if payload.media in ("practice_exam", "quiz") and not questions:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Nothing in that selection can become a question.",
+        )
+
+    if payload.media == "practice_exam":
+        created = _write_exam(module_id=module_id, user_id=user.id,
+                              questions=questions, title=title)
+    elif payload.media == "quiz":
+        created = _write_quiz(module_id=module_id, user_id=user.id,
+                              questions=questions, title=title)
+    else:
+        created = _write_flashcards(module_id=module_id, user_id=user.id,
+                                    entries=chosen, title=title)
+
+    logger.info("Generated %s from session %s: %d of %d",
+                payload.media, session_id, len(chosen), len(pool))
+    return GenerateResponse(
+        media=payload.media, created_id=created, used=len(chosen),
+        available=len(pool), skipped=skipped,
+    )
+
+
 @router.get("/{module_id}/{container}", response_model=list[BankEntry])
 async def list_container(
     module_id: str,
@@ -233,25 +353,6 @@ async def add_to_container(
         user_id=user.id, module_id=module_id, container=container,
         entries=[i.model_dump() for i in payload.items],
     )
-
-
-class GenerateRequest(BaseModel):
-    # 'practice_exam' | 'quiz' | 'flashcards'
-    media: str
-    # 'all' | 'half' | a number
-    how_many: str | int = "all"
-    # 'recent' | 'oldest' | 'random'
-    which: str = "recent"
-    title: str | None = None
-
-
-class GenerateResponse(BaseModel):
-    media: str
-    created_id: str | None = None
-    used: int
-    available: int
-    skipped: int = 0
-    note: str = ""
 
 
 @router.post("/{module_id}/{container}/generate", response_model=GenerateResponse)

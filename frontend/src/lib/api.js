@@ -251,6 +251,9 @@ export const api = {
   generateFromContainer: (moduleId, name, body) =>
     apiFetch(`/bank/${moduleId}/${name}/generate`, { method: 'POST', body }),
   recordSession: (body) => apiFetch('/bank/sessions', { method: 'POST', body }),
+  // The same dials as a container, over one past sitting's questions.
+  generateFromSession: (moduleId, sessionId, body) =>
+    apiFetch(`/bank/sessions/${sessionId}/generate`, { method: 'POST', body }),
   sessions: (moduleId, signal) => apiFetch(`/bank/sessions/${moduleId}`, { signal }),
   subjectCheck: (texts, moduleId) =>
     apiFetch('/modules/subject-check', {

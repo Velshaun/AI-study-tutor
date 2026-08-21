@@ -7,9 +7,15 @@ lecture, because it came from one.
 
 Three rules shape everything here.
 
-**Nothing enters silently.** Entries are written only by an explicit call from
-the end-of-session confirmation. A container that fills itself is one nobody
-trusts, and one nobody prunes.
+**Nothing enters the missed container silently.** Its entries are written only
+by an explicit call from the end-of-session confirmation. A container that fills
+itself is one nobody trusts, and one nobody prunes.
+
+Q&A is the exception, and deliberately so: there is nothing to confirm, because
+asking the question *was* the deliberate act. The missed container collects
+things a learner would rather not have produced, so it asks first; this one
+collects things they went out of their way to ask, so asking again would be
+asking twice.
 
 **Nothing leaves silently either.** Auto-graduation retires an entry after two
 correct answers in a row, and records `graduated_at` rather than deleting — a
@@ -136,6 +142,51 @@ def add_from_session(
         container, module_id, added, updated,
     )
     return {"added": added, "updated": updated}
+
+
+def mirror_lecture_qa(
+    *, user_id: str, module_id: str | None, exchange_id: str,
+    question: str, answer: str, domain_id: str | None = None,
+) -> bool:
+    """Put a lecture exchange into the Q&A container as it happens.
+
+    The one container that fills without a confirmation prompt, and the reason
+    is that there is nothing to confirm: asking the question *was* the deliberate
+    act. The missed container collects things the learner would rather not have
+    produced, so it asks first; this collects things they went out of their way
+    to ask, so asking again would be asking twice.
+
+    Best-effort. A lecture must not fail because a mirror write did — the
+    exchange itself is already saved in `lecture_qa`, which stays the record of
+    record.
+    """
+    if not available() or not module_id or not question.strip():
+        return False
+    try:
+        _client().table("question_bank").insert({
+            "user_id": user_id,
+            "module_id": module_id,
+            "container": QA,
+            "source_kind": "lecture_qa",
+            "source_id": exchange_id,
+            "domain_id": domain_id,
+            # Neither missed nor flagged: it is here because it was asked.
+            "missed": False,
+            "flagged": False,
+            "snapshot": {
+                "question": question[:2000],
+                "answer": (answer or "")[:4000],
+                # `prompt` as well, so everything downstream that reads a
+                # question — the list, the flashcard writer, the dials — sees
+                # one shape and does not need to know where an entry came from.
+                "prompt": question[:2000],
+            },
+        }).execute()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Could not mirror exchange %s into the Q&A container: %s",
+                    exchange_id, exc)
+        return False
 
 
 def record_answer(bank_entry_id: str, correct: bool) -> dict[str, Any] | None:

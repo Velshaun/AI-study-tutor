@@ -24,6 +24,7 @@ import * as lectures from '../../lib/lectures'
 import { path } from '../../routes'
 import ContainerSection from './ContainerSection'
 import BaselineSection from './BaselineSection'
+import SessionHistory from './SessionHistory'
 
 /**
  * Classroom tab — the module organised the way its exam is.
@@ -198,6 +199,11 @@ export default function ClassroomTab({ moduleId, domains, examCount = 40 }) {
         <ContainerSection moduleId={moduleId} container="missed" />
         <ContainerSection moduleId={moduleId} container="qa" />
       </section>
+
+      {/* Every finished sitting, still a source. A results screen lasts as long
+          as someone stands in front of it; what they got wrong is worth more
+          than that. */}
+      <SessionHistory moduleId={moduleId} />
 
       {isPending ? (
         <div className="space-y-2">

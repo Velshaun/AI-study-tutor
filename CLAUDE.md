@@ -109,6 +109,28 @@ pre-submission payload maps only label/text/term_key, so nothing leaks early.
 **Timed exams store a deadline, not remaining seconds.** Storing the remainder
 would make walking away a way to buy more time.
 
+**A question pool is the second exception to weight-based allocation.** Exam
+length has one source of truth and every paper is allocated by domain weight —
+except for the two cases where the questions already exist and were not chosen
+by the blueprint. Imported past papers were the first. Sets generated from a
+container or a past session are the second: the length is whatever the learner
+dialled, and a fixed pool of their own mistakes cannot be allocated by weight
+without either inventing questions or dropping the ones they asked for. Both
+paths therefore bypass `exam_profile` and `performance.adaptive_weights`
+deliberately, and say so at the call site.
+
+**Nothing enters the missed container silently — and Q&A is the exception.**
+The missed container collects things a learner would rather not have produced,
+so a confirmation at the end of a session is the only way in. Lecture Q&A
+collects things they went out of their way to ask, so asking again would be
+asking twice; it mirrors on write, best-effort, with `lecture_qa` staying the
+record of record.
+
+**Container entries are snapshots, not references.** A foreign key was the first
+design and does not survive this schema: `quizzes.questions` is jsonb, so quiz
+questions have no row to point at. Copying is also the honest shape — a record
+of what someone got wrong should outlive the practice exam it came from.
+
 **Imported exam PDFs become real exams.** Written to `practice_exams` /
 `practice_questions` — the same tables generated exams use — so they behave
 identically by construction rather than by matching two code paths. A PDF
@@ -538,7 +560,8 @@ All twelve features from the August audit are shipped. Latest work, newest first
 `20260826000000` retire imported questions ·
 `20260827000000` source domain assignment ·
 `20260828000000` worker kinds · `20260829000000` frozen exam weights ·
-`20260830000000` playlist sources and debounced rebuild
+`20260830000000` playlist sources and debounced rebuild ·
+`20260831000000` question bank
 
 Applied through the Supabase **Management API** with a personal access token
 (`POST /v1/projects/{ref}/database/query`). The service-role key cannot run DDL,
@@ -595,9 +618,6 @@ group_shared_domains, group_domain_views, coverage_maps, exam_attempts`
 - **`POST /practice-exam/{id}/answer` has no consumer** now that exams defer
   feedback. `QuizRunner` still supports the per-question reveal it feeds, so
   the endpoint is the ready-made hook for a "check as you go" exam mode.
-- **A flashcard run saved before per-card marks resumes with 0 known.** The old
-  save stored a count, which says how many without saying which; the count
-  restarts rather than being wrong in a way nothing can correct.
 - **Four `AnimatePresence` users remain** — MiniPlayer, VoiceInput,
   QASessionCard, ToastProvider. None of them step; they mount and unmount
   transient panels. They were audited during the stepper sweep, not changed.

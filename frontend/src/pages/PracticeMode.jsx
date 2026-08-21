@@ -9,6 +9,7 @@ import { useAttempt } from '../hooks/useAttempt'
 import { useToast } from '../hooks/useToast'
 import { ApiError, api } from '../lib/api'
 import { path } from '../routes'
+import { useSessionFinish } from '../hooks/useSessionFinish'
 
 /**
  * Practice Exam Mode — spec 6.4.
@@ -53,6 +54,10 @@ export default function PracticeMode() {
   })
 
   const questions = Array.isArray(data?.questions) ? data.questions : []
+  // Declared after `questions`, not before: practice runs are opened by
+  // domain and the container belongs to the module above it, which the
+  // questions carry — and `const` is not hoisted.
+  const finishSession = useSessionFinish(questions[0]?.module_id)
   const target = data?.target_count || questions.length
   const generating = !!data?.generating
   const isAuth = error instanceof ApiError && error.isAuth
@@ -123,6 +128,12 @@ export default function PracticeMode() {
           onFlag={handleFlag}
           onGotIt={handleGotIt}
           onComplete={complete}
+          onFinished={({ results }) =>
+            finishSession({
+              kind: 'practice', itemId: domainId,
+              title: 'Practice set', results,
+            })
+          }
         />
       )}
     </div>

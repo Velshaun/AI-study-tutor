@@ -8,6 +8,8 @@ import ErrorBanner from '../ErrorBanner'
 import QuestionNavigator from './QuestionNavigator'
 import TermSheet from './TermSheet'
 import TermText from './TermText'
+import { toResults } from '../../lib/session'
+import FlagToggle from './FlagToggle'
 
 /**
  * Practice Exam Mode runner — spec 6.4 / Prompt 11.
@@ -53,10 +55,21 @@ export default function PracticeRunner({
   onFlag,
   onGotIt,
   onComplete,
+  onFinished,
   attempt,
 }) {
   // Answers are already recorded server-side as each is submitted, so only the
   // learner's place in the set needs keeping.
+  // Session flags, exactly as in the other runners. Distinct from `onFlag`,
+  // which is the older Review Later button and writes to the server on press.
+  const [flags, setFlags] = useState(() => new Set())
+  const toggleFlag = (at) =>
+    setFlags((prev) => {
+      const next = new Set(prev)
+      if (next.has(at)) next.delete(at)
+      else next.add(at)
+      return next
+    })
   const [index, setIndex] = useState(() =>
     Math.min(attempt?.restored?.position ?? 0, Math.max(0, questions.length - 1)),
   )
@@ -123,6 +136,24 @@ export default function PracticeRunner({
       attempt?.save?.({ position: to, completed: to >= questions.length })
     } else {
       attempt?.save?.({ position: questions.length, completed: true })
+      // Practice mode's answers were posted as they were given, so the session
+      // record is assembled from what came back rather than from a final
+      // submission — there isn't one.
+      onFinished?.({
+        results: toResults({
+          questions,
+          answers: Array.from({ length: questions.length },
+            (_, i) => history[i]?.selected ?? null),
+          flags,
+          correctIndexOf: (_q, i) => history[i]?.revealed?.correct_option ?? null,
+          promptOf: (question) => question?.question ?? question?.prompt ?? '',
+        }).map((row, i) => ({
+          ...row,
+          correct: Boolean(history[i]?.revealed?.is_correct),
+          explanation: history[i]?.revealed?.why_summary || '',
+          source_id: questions[i]?.id ?? null,
+        })),
+      })
       onComplete?.()
     }
   }
@@ -163,9 +194,14 @@ export default function PracticeRunner({
     <div className="space-y-5">
       {/* Progress */}
       <div className="space-y-1.5">
-        <div className="flex justify-between text-xs text-sec">
-          <span>
+        <div className="flex items-center justify-between text-xs text-sec">
+          <span className="inline-flex items-center gap-1">
             Question {Math.min(index + 1, count)} of {count}
+            <FlagToggle
+              flagged={flags.has(index)}
+              onToggle={() => toggleFlag(index)}
+              className="-my-2 size-9"
+            />
             {awaitingMore && questions.length < count && (
               <span className="ml-1.5 text-accent2">
                 · {questions.length} ready

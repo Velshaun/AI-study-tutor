@@ -41,7 +41,7 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import broadcast
+from app.services import broadcast, question_bank
 from app.services.qa import (
     QAError,
     answer_question,
@@ -380,6 +380,20 @@ async def ask(
         raise HTTPException(status.HTTP_502_BAD_GATEWAY,
                             "Could not save the exchange.")
     row = inserted.data[0]
+
+    # Mirrored into the module's Q&A container. Only real questions: a
+    # pleasantry is not something anyone wants to revise from, and
+    # `is_knowledge_question` is the classification that already exists to say
+    # which is which.
+    if is_knowledge:
+        question_bank.mirror_lecture_qa(
+            user_id=user.id,
+            module_id=(lecture or {}).get("module_id"),
+            exchange_id=row["id"],
+            question=payload.voice_transcription or summary,
+            answer=answer,
+            domain_id=(lecture or {}).get("domain_id"),
+        )
 
     broadcast.publish(channel, {
         "event": "answer",
