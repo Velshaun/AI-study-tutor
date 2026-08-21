@@ -32,6 +32,7 @@ from app.config import settings
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
 from app.services import (
+    storage,
     coverage, dead_links, exam_catalog, exam_profile, subject_match, tutor,
     tutor_actions,
 )
@@ -940,6 +941,51 @@ class TutorPlan(BaseModel):
     # True when anything in the plan destroys something. The chat must confirm
     # before calling /tutor/act, and this is what tells it to.
     needs_confirmation: bool = False
+
+
+class TutorSpeakRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=4000)
+    # Which tutor voice. Same two the lecture player uses, so a reply sounds
+    # like the thing that was reading a moment ago.
+    voice: str = "marcus"
+
+
+class TutorSpeech(BaseModel):
+    audio_url: str | None = None
+    secs: int | None = None
+
+
+@router.post("/{module_id}/tutor/speak", response_model=TutorSpeech)
+async def speak_tutor_reply(
+    module_id: str,
+    payload: TutorSpeakRequest,
+    user: AuthUser = Depends(get_current_user),
+) -> TutorSpeech:
+    """Narrate a chat reply, in the same voice the lecture uses.
+
+    Reuses the lecture Q&A synthesiser rather than adding a second one: the
+    answer is short, the voice is the same, and the caching and the sentence
+    -boundary truncation are already right there.
+
+    Best-effort by design. A reply that cannot be narrated is still a reply, and
+    returning null audio lets the chat show the text and move on rather than
+    failing a message the learner can perfectly well read.
+    """
+    _fetch_own(module_id, user.id)
+    try:
+        from app.services.qa import synthesise_answer
+
+        path, secs = synthesise_answer(
+            entry_id=f"tutor-{module_id}",
+            user_id=user.id,
+            answer=payload.text,
+            voice=payload.voice,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Could not narrate a tutor reply: %s", exc)
+        return TutorSpeech()
+
+    return TutorSpeech(audio_url=storage.signed_url(path), secs=secs)
 
 
 @router.post("/{module_id}/tutor/plan", response_model=TutorPlan)

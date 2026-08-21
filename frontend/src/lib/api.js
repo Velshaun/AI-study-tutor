@@ -243,6 +243,10 @@ export const api = {
   // Two calls on purpose: planning never mutates, and acting takes the
   // plan rather than the sentence — so the model is not involved in the
   // confirmation and cannot talk its way through it.
+  speakTutorReply: (moduleId, text, voice) =>
+    apiFetch(`/modules/${moduleId}/tutor/speak`, {
+      method: 'POST', body: { text, voice },
+    }),
   planTutorAction: (moduleId, message) =>
     apiFetch(`/modules/${moduleId}/tutor/plan`, {
       method: 'POST', body: { message },

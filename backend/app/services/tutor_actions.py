@@ -205,6 +205,12 @@ def _plan_create(verb: str, args: dict[str, Any], module_id: str) -> Action:
         "generate_flashcards": "flashcards",
     }[verb]
     count = _as_count(args.get("count"), default=1, ceiling=5)
+    how_many = args.get("how_many", "all")
+    which = args.get("which", "recent")
+    if from_container:
+        # One set is drawn from the pool; asking for three would be three
+        # copies of the same thirty questions.
+        count = 1
     return Action(
         verb=verb,
         args={
@@ -212,14 +218,36 @@ def _plan_create(verb: str, args: dict[str, Any], module_id: str) -> Action:
             "domain_id": args.get("domain_id"),
             "count": count,
             "from_container": from_container,
-            "how_many": args.get("how_many", "all"),
-            "which": args.get("which", "recent"),
+            "how_many": how_many,
+            "which": which,
         },
         describe=(
-            f"Generate {count} {label}{'s' if count != 1 else ''}"
-            + (" from your missed questions" if from_container else "")
+            f"Generate a {label} from {_describe_scope(how_many, which)} of your "
+            "missed questions"
+            if from_container
+            else f"Generate {count} {label}{'s' if count != 1 else ''}"
         ),
     )
+
+
+def _describe_scope(how_many: Any, which: str) -> str:
+    """"the thirty oldest", "half at random" — the dials, in words.
+
+    Written into the plan so the confirmation says which questions, not just how
+    many. "Generate a quiz from your missed questions" and "…from the thirty
+    oldest of your missed questions" are different promises.
+    """
+    amount = (
+        "all" if how_many == "all"
+        else "half" if how_many == "half"
+        else str(how_many)
+    )
+    order = {"oldest": "oldest", "recent": "most recent", "random": "at random"}.get(
+        which, "most recent",
+    )
+    if which == "random":
+        return f"{amount} {order}"
+    return f"the {amount} {order}" if amount != "all" else f"all ({order} first)"
 
 
 def _as_count(value: Any, *, default: int = 1, ceiling: int = 10) -> int:
@@ -286,7 +314,55 @@ async def execute(
     return done
 
 
+MEDIA_FOR_VERB = {
+    "generate_exam": "practice_exam",
+    "generate_quiz": "quiz",
+    "generate_flashcards": "flashcards",
+}
+
+
+async def _generate_from_container(verb, args, user, module_id) -> str:
+    """Build from the learner's own missed questions, honouring the dials.
+
+    A separate path because it is a genuinely different request: the ordinary
+    generators write new questions from the module's sources, and this one draws
+    from a fixed pool of things the learner already got wrong. Saying
+    "from your missed questions" and then building from the module would be the
+    app doing something other than what it just said.
+
+    Goes through the container endpoint for the same reason every other action
+    does — the dials, the cap, the Q&A-can't-be-a-lecture rule and the
+    exam_profile bypass all live there, and none of them should exist twice.
+    """
+    from app.routers import question_bank as bank_router
+
+    media = MEDIA_FOR_VERB[verb]
+    payload = bank_router.GenerateRequest(
+        media=media,
+        how_many=args.get("how_many", "all"),
+        which=args.get("which", "recent"),
+    )
+    try:
+        result = await bank_router.generate_from_container(
+            module_id, "missed", payload, user=user,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # "There's nothing in there yet" is the common one, and it is an answer
+        # rather than a failure.
+        detail = getattr(exc, "detail", None) or str(exc)
+        return str(detail)
+
+    label = media.replace("_", " ")
+    note = f" {result.note}" if result.note else ""
+    return (
+        f"Made a {label} from {result.used} of your {result.available} "
+        f"missed question{'s' if result.available != 1 else ''}.{note}"
+    )
+
+
 async def _generate_exams(router, args, user, module_id) -> str:
+    if args.get("from_container"):
+        return await _generate_from_container("generate_exam", args, user, module_id)
     made = 0
     for _ in range(args.get("count", 1)):
         payload = router.GenerateRequest(module_id=module_id)
@@ -296,6 +372,8 @@ async def _generate_exams(router, args, user, module_id) -> str:
 
 
 async def _generate_quizzes(router, args, user, module_id) -> str:
+    if args.get("from_container"):
+        return await _generate_from_container("generate_quiz", args, user, module_id)
     domain_id = args.get("domain_id") or _first_domain(module_id, user.id)
     if not domain_id:
         return "There are no domains in this module to build a quiz from yet."
@@ -307,6 +385,10 @@ async def _generate_quizzes(router, args, user, module_id) -> str:
 
 
 async def _generate_cards(router, args, user, module_id) -> str:
+    if args.get("from_container"):
+        return await _generate_from_container(
+            "generate_flashcards", args, user, module_id,
+        )
     domain_id = args.get("domain_id") or _first_domain(module_id, user.id)
     if not domain_id:
         return "There are no domains in this module to build cards from yet."

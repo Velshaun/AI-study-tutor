@@ -536,6 +536,21 @@ INTENT_SCHEMA: dict[str, Any] = {
                             "missed or flagged questions."
                         ),
                     },
+                    "how_many": {
+                        "type": "string",
+                        "description": (
+                            "Only with from_missed. How many of the pool to "
+                            "use: 'all', 'half', or a number as a string like "
+                            "'30'. Default 'all'."
+                        ),
+                    },
+                    "which": {
+                        "type": "string",
+                        "description": (
+                            "Only with from_missed. Which of the pool: "
+                            "'recent', 'oldest' or 'random'. Default 'recent'."
+                        ),
+                    },
                 },
                 "required": ["verb"],
             },
@@ -578,6 +593,11 @@ def read_intent(message: str, context: str = "") -> dict[str, Any]:
                 "Anything else — deleting a module, changing a score, editing "
                 "a lecture — is not possible: say so in `reply` and leave "
                 "`steps` empty.\n\n"
+                "When they say the material should come from what they got "
+                "wrong, set from_missed, and carry any scope they gave: "
+                "how_many ('all', 'half', or a number) and which ('recent', "
+                "'oldest', 'random'). \"a quiz on the thirty oldest\" is "
+                "how_many='30', which='oldest'.\n\n"
                 "A question about the subject is not an action, even phrased "
                 "as an instruction: \"explain TCP handshakes\" is a question.\n\n"
                 f"--- MODULE ---\n{context}\n\n"
@@ -605,11 +625,26 @@ def read_intent(message: str, context: str = "") -> dict[str, Any]:
         verb = (step.get("verb") or "").strip()
         if not verb:
             continue
+        # "30" comes back as a string from the schema; the dials take either,
+        # but keeping the int here means the plan's description reads "the 30
+        # oldest" rather than "the '30' oldest".
+        how_many = (step.get("how_many") or "all").strip() or "all"
+        if how_many not in ("all", "half"):
+            try:
+                how_many = int(how_many)
+            except (TypeError, ValueError):
+                how_many = "all"
+        which = (step.get("which") or "recent").strip()
+        if which not in ("recent", "oldest", "random"):
+            which = "recent"
+
         steps.append({
             "verb": verb,
             "args": {
                 "count": step.get("count") or 1,
                 "from_missed": bool(step.get("from_missed")),
+                "how_many": how_many,
+                "which": which,
             },
         })
     return {

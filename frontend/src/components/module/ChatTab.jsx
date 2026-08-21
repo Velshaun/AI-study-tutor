@@ -12,14 +12,15 @@ import {
   Send,
   ThumbsDown,
   Trash2,
-  Video, Mic, MicOff} from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+  Video, Mic, MicOff, Volume2, VolumeX} from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useToast } from '../../hooks/useToast'
 import { api } from '../../lib/api'
 import { useConfirm } from '../../hooks/useConfirm'
 import { useSpeechRecognition } from '../../hooks/useSpeechRecognition'
 import { looksLikeInstruction } from '../../lib/tutorIntent'
+import { useAudioFocus } from '../../hooks/useAudioFocus'
 
 /**
  * Chat tab — the module's tutor.
@@ -73,15 +74,60 @@ export default function ChatTab({ moduleId }) {
   const [input, setInput] = useState('')
   const confirm = useConfirm()
 
+  // One speaker at a time. Starting the tutor ducks the lecture; finishing
+  // gives it back — but only if the tutor was what paused it. A pause the
+  // learner made is theirs to undo.
+  const focus = useAudioFocus()
+  const { speak, stopSpeaking, primeAnswerAudio } = focus.player
+
+  // Voice replies, off by default: a chat is a quiet thing until asked
+  // otherwise, and someone reading on a train should not have to mute an app
+  // they have just opened.
+  const [voiceReplies, setVoiceReplies] = useState(false)
+  // State rather than a ref so the effect above can depend on it — releasing
+  // focus is a reaction to the tutor going quiet, not something to fire from
+  // inside the callback that made it quiet.
+  const [speaking, setSpeaking] = useState(false)
+
+  const finishSpeaking = useCallback(() => setSpeaking(false), [])
+
+  const narrate = useCallback(
+    async (text) => {
+      if (!voiceReplies || !text?.trim()) return
+      focus.take()
+      setSpeaking(true)
+      try {
+        const { audio_url: url } = await api.speakTutorReply(moduleId, text)
+        if (!url) {
+          finishSpeaking()
+          return
+        }
+        speak(url, finishSpeaking)
+      } catch {
+        // A reply that can't be narrated is still a reply.
+        finishSpeaking()
+      }
+    },
+    [voiceReplies, moduleId, speak, focus, finishSpeaking],
+  )
+
   // Speech-to-text through the hook the lecture player already uses. Voice
   // *replies* are deliberately not here: the player owns audio playback and
   // narrating a chat answer would mean a second thing that can be speaking.
   const speech = useSpeechRecognition({
+    onSpeechStart: () => focus.take(),
     onSubmit: (text) => {
       const said = (text || '').trim()
       if (said) setInput((prior) => (prior ? `${prior} ${said}` : said))
     },
   })
+  // No mirror ref: the repo forbids writing one from an effect, and it isn't
+  // needed — `speech.listening` is a dependency, so the callback below is
+  // rebuilt whenever it changes and never reads a stale copy.
+  useEffect(() => {
+    // The mic closing while nothing is being narrated ends the tutor's turn.
+    if (!speech.listening && !speaking) focus.release()
+  }, [speech.listening, speaking, focus])
 
   // "Make me a practice exam from my missed questions" — planned first, never
   // executed straight from the sentence.
@@ -122,11 +168,13 @@ export default function ChatTab({ moduleId }) {
       }
       if (!results) return
       const failed = results.filter((r) => !r.ok)
+      const said = results.map((r) => r.detail).join(' ')
       if (failed.length) {
         toast.error(failed[0].detail || 'Some of that could not be done.')
       } else {
-        toast.success(results.map((r) => r.detail).join(' '))
+        toast.success(said)
       }
+      narrate(said)
     },
     onError: (e) => toast.error(e?.message || 'Could not do that.'),
   })
@@ -155,12 +203,16 @@ export default function ChatTab({ moduleId }) {
   const ask = useMutation({
     mutationFn: ({ question, forceAssessment, resumeMessageId }) =>
       api.askTutor(moduleId, question, { forceAssessment, resumeMessageId }),
-    onSuccess: () => {
+    onSuccess: (reply) => {
       queryClient.invalidateQueries({ queryKey: ['tutor', moduleId] })
       // Asking for an assessment can start the sources being read, so the map's
       // state has probably just changed.
       queryClient.invalidateQueries({ queryKey: ['coverage', moduleId] })
       endRef.current?.scrollIntoView({ behavior: 'smooth' })
+      // Read it aloud, if that was asked for. Fire-and-forget: the text is
+      // already on screen, and narration is an addition to it rather than the
+      // delivery of it.
+      narrate(reply?.answer || reply?.content || '')
     },
     onError: (e) => toast.error(e?.message || 'The tutor could not answer.'),
   })
@@ -343,6 +395,32 @@ export default function ChatTab({ moduleId }) {
             }
             className="input min-w-0 flex-1"
           />
+          {/* Replies aloud, off until asked for. Priming the audio element on
+              the same tap satisfies the browsers that only allow playback to
+              start from a gesture. */}
+          <button
+            type="button"
+            onClick={() => {
+              primeAnswerAudio?.()
+              setVoiceReplies((on) => {
+                if (on) stopSpeaking?.()
+                return !on
+              })
+            }}
+            aria-pressed={voiceReplies}
+            aria-label={voiceReplies ? 'Turn off spoken replies' : 'Read replies aloud'}
+            title={voiceReplies ? 'Spoken replies on' : 'Spoken replies off'}
+            className={`flex size-11 shrink-0 items-center justify-center rounded-xl
+                        transition-colors ${
+                          voiceReplies
+                            ? 'bg-accent/15 text-accent2'
+                            : 'bg-surface2 text-sec hover:text-pri'
+                        }`}
+          >
+            {voiceReplies
+              ? <Volume2 size={16} aria-hidden="true" />
+              : <VolumeX size={16} aria-hidden="true" />}
+          </button>
           {speech.supported && (
             <button
               type="button"

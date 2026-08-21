@@ -126,6 +126,21 @@ collects things they went out of their way to ask, so asking again would be
 asking twice; it mirrors on write, best-effort, with `lecture_qa` staying the
 record of record.
 
+**One thing speaks at a time.** Starting the tutor ducks the lecture; finishing
+gives it back. The standard audio-focus convention, and it removes barge-in
+rather than solving it — there is never a moment when both are audible, so
+nothing has to be coordinated between them.
+
+The rule that makes it feel right: **focus only resumes what focus paused.** A
+lecture the learner stopped themselves stays stopped, and pressing play while
+the tutor holds focus drops the claim, so releasing it later never yanks
+playback back to a state they have since changed. Held in a ref rather than
+state, because taking and releasing must not schedule a render — and released on
+unmount, so navigating away mid-answer cannot leave a lecture paused forever.
+
+Voice replies reuse the lecture Q&A synthesiser rather than adding a second one,
+and are off until asked for: a chat is a quiet thing until told otherwise.
+
 **The tutor may act, and every action goes through an endpoint.** Not the
 tables, and not a parallel implementation. The handlers already refuse to delete
 a domain whose questions are in a sat exam, already check ownership, already cap
