@@ -9,6 +9,7 @@ import Visualizer from '../components/player/Visualizer'
 import { useToast } from '../hooks/useToast'
 import { usePlayer } from '../hooks/usePlayer'
 import { ROUTES, path } from '../routes'
+import HeadphonesNotice from '../components/player/HeadphonesNotice'
 
 /**
  * Full-screen lecture player — spec §5.5.
@@ -101,6 +102,10 @@ export default function LecturePlayer() {
           shrinking the stage above rather than overlapping it, while its mic FAB
           stays anchored just above the controls bar. */}
       <VoiceInput />
+
+      {/* Said once, before the first lecture. Non-blocking: dismissing it
+          is acknowledgement, not consent to anything. */}
+      <HeadphonesNotice />
 
       {/* Controls bar */}
       <div className="border-t border-border bg-surface px-5 py-5 pb-[max(1.25rem,env(safe-area-inset-bottom))]">

@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { Ear, Mic, Play, Send, X } from 'lucide-react'
+import { Ear, Hand, Mic, Play, Send, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import { usePlayer } from '../../hooks/usePlayer'
@@ -39,6 +39,7 @@ import { apiFetch } from '../../lib/api'
 const S = {
   IDLE: 'idle',
   LISTENING: 'listening', // capturing the question
+  TYPING: 'typing', // hand raised: lecture paused, question being written
   THINKING: 'thinking',
   ANSWERING: 'answering', // answer audio playing, mic closed
   AWAITING: 'awaiting', // answer done, mic open for confirm-or-question
@@ -100,6 +101,25 @@ export default function VoiceInput() {
   }
 
   const dismiss = endConversation
+
+  /** Raise a hand: pause the lecture and ask in writing.
+   *
+   *  The other door into the same conversation. Speaking works when the tutor
+   *  can be interrupted, which needs headphones — through a speaker the mic
+   *  hears the tutor and the interruption is unreliable. Rather than making
+   *  that someone's problem to discover, this is always here: the lecture stops
+   *  the moment the hand goes up, exactly as it does for the mic, and the
+   *  answer comes back spoken *and* written either way.
+   */
+  const raiseHand = () => {
+    stopSpeaking()
+    speech.cancel()
+    clearFailsafe()
+    setShowFailsafe(false)
+    setError(null)
+    pause()
+    setState(S.TYPING)
+  }
 
   /** Reopen the mic once an answer has finished, and arm the 10s failsafe. */
   const startAwaiting = () => {
@@ -327,6 +347,56 @@ export default function VoiceInput() {
                   </div>
                 )}
 
+                {/* Hand raised. The same input the error state offers, put
+                    where it can be reached on purpose rather than only after
+                    something has gone wrong. */}
+                {activeState === S.TYPING && (
+                  <div className="relative space-y-2 rounded-2xl border border-accent/30
+                                  bg-surface2 px-4 py-3 pe-16">
+                    <button
+                      onClick={resumeLecture}
+                      aria-label="Dismiss and return to the lecture"
+                      className="btn-ghost absolute right-1.5 top-1.5 size-8 rounded-full p-0"
+                    >
+                      <X size={16} aria-hidden="true" />
+                    </button>
+                    <p className="text-xs text-sec">
+                      The lecture is paused. {tutor} will answer out loud and in
+                      writing.
+                    </p>
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault()
+                        const t = typed.trim()
+                        if (!t) return
+                        setTyped('')
+                        handleUtterance(t)
+                      }}
+                      className="flex gap-2"
+                    >
+                      {/* Focused on open: the hand went up to ask something,
+                          and making them tap again is a step with no purpose. */}
+                      <input
+                        autoFocus
+                        value={typed}
+                        onChange={(e) => setTyped(e.target.value)}
+                        placeholder={`Ask ${tutor} a question…`}
+                        className="input min-w-0 flex-1"
+                      />
+                      <button
+                        type="submit"
+                        disabled={!typed.trim()}
+                        className="btn-primary shrink-0 px-3 disabled:opacity-40"
+                      >
+                        <Send size={15} aria-hidden="true" />
+                      </button>
+                    </form>
+                    <button onClick={resumeLecture} className="btn-ghost text-xs">
+                      Back to the lecture
+                    </button>
+                  </div>
+                )}
+
                 {/* Error + typing fallback. An X (top-right) and "Back to the
                     lecture" both dismiss the panel and resume playback, so the
                     student is never trapped here. Right padding on the content
@@ -378,6 +448,22 @@ export default function VoiceInput() {
           so the button always floats just above it whether the panel is open or
           closed, and never overlaps the progress bar or transport. */}
       <div className="relative z-40 h-0">
+        {/* Hand-raise, left of the mic. Deliberately always present rather than
+            appearing only when speech fails: through a speaker, barge-in is
+            unreliable long before it is broken, and a door you can see is worth
+            more than one that appears once you are already stuck. */}
+        {!open && (
+          <button
+            onClick={raiseHand}
+            aria-label="Raise your hand and type a question"
+            title="Raise your hand — pauses the lecture"
+            className="absolute bottom-4 right-[5.25rem] flex size-12 items-center
+                       justify-center rounded-full bg-surface2 text-sec shadow-lg
+                       transition-colors hover:text-pri"
+          >
+            <Hand size={20} aria-hidden="true" />
+          </button>
+        )}
         <button
           onClick={isListening ? speech.stop : open ? dismiss : startQuestion}
           aria-label={isListening ? 'Stop and send' : open ? 'Close' : 'Ask a question'}

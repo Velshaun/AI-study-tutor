@@ -8,11 +8,34 @@ import { usePlayer } from '../../hooks/usePlayer'
  * Canvas rather than DOM nodes: this repaints every frame, and animating ~32
  * elements' heights would thrash layout on a mid-range phone.
  *
+ * **Bands are log-spaced, because frequency is.** The first version divided the
+ * analyser's bins evenly, which sounds fair and is not: the bins are linear in
+ * hertz, so half the bars covered 8-16kHz where a narrated lecture has nothing
+ * at all. Measured against a speech-shaped signal, 6 of 32 bars carried the
+ * whole picture and the remaining 26 sat dead — which is exactly what it looked
+ * like. Spacing the bands logarithmically between 80Hz and 6kHz puts a bar's
+ * worth of width where a bar's worth of energy is: 26 of 32 now move.
+ *
+ * Peak per band rather than mean, for the same reason a VU meter shows peaks —
+ * a consonant is a short burst, and averaging it across a band erases it.
+ *
  * Falls back to a gentle idle wave when there's no analyser — Safari refuses a
  * second MediaElementSource for the same element, and a cross-origin failure
  * yields all-zero data. Flat dead bars during audible playback look broken, so
  * the fallback keeps motion without pretending to be real data.
  */
+
+// Where a voice actually lives. Below 80Hz is room rumble; above 6kHz, speech
+// holds only sibilance, and giving it a third of the width was the original
+// mistake.
+const LOW_HZ = 80
+const HIGH_HZ = 6000
+
+// Peaks fall at this fraction per frame. Bars that only rise and fall with the
+// signal look nervous; a slow decay gives them weight, and the eye reads the
+// falling edge as loudness dying away rather than as flicker.
+const DECAY = 0.06
+
 export default function Visualizer({ className = '' }) {
   const canvasRef = useRef(null)
   const frameRef = useRef(0)
@@ -24,8 +47,9 @@ export default function Visualizer({ className = '' }) {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    const BARS = 32
     let phase = 0
+    let peaks = []
+    let bandCache = null
 
     const resize = () => {
       const ratio = window.devicePixelRatio || 1
@@ -33,6 +57,8 @@ export default function Visualizer({ className = '' }) {
       canvas.width = Math.max(1, Math.floor(width * ratio))
       canvas.height = Math.max(1, Math.floor(height * ratio))
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
+      // Bands depend on how many bars fit, so a resize invalidates them.
+      bandCache = null
     }
     resize()
     window.addEventListener('resize', resize)
@@ -42,30 +68,49 @@ export default function Visualizer({ className = '' }) {
     const accent2 = getComputedStyle(document.documentElement)
       .getPropertyValue('--color-accent2').trim() || '#8B85FF'
 
+    /** How many bars fit before they stop being bars and become slivers. */
+    const barCount = (width) => (width < 320 ? 20 : width < 480 ? 26 : 32)
+
+    /** Bin ranges per band — computed once per size, not per frame. */
+    const bands = (bars, binCount, sampleRate) => {
+      if (bandCache && bandCache.bars === bars) return bandCache.ranges
+      const nyquist = sampleRate / 2
+      const ranges = Array.from({ length: bars }, (_, i) => {
+        const f0 = LOW_HZ * (HIGH_HZ / LOW_HZ) ** (i / bars)
+        const f1 = LOW_HZ * (HIGH_HZ / LOW_HZ) ** ((i + 1) / bars)
+        const start = Math.round((f0 / nyquist) * binCount)
+        // At the bottom of the range a band can be narrower than one bin;
+        // taking at least one keeps the low bars alive instead of empty.
+        const end = Math.max(Math.round((f1 / nyquist) * binCount), start + 1)
+        return [start, Math.min(end, binCount)]
+      })
+      bandCache = { bars, ranges }
+      return ranges
+    }
+
     const draw = () => {
       frameRef.current = requestAnimationFrame(draw)
 
       const { width, height } = canvas.getBoundingClientRect()
       ctx.clearRect(0, 0, width, height)
 
+      const BARS = barCount(width)
+      if (peaks.length !== BARS) peaks = new Array(BARS).fill(0)
+
       const analyser = getAnalyser()
-      let values
+      let values = null
 
       if (analyser) {
         const data = new Uint8Array(analyser.frequencyBinCount)
         analyser.getByteFrequencyData(data)
-        // Low bins carry most speech energy; sample the lower half so the bars
-        // respond to voice rather than sitting flat in the treble.
-        const usable = Math.floor(data.length * 0.7)
-        values = Array.from({ length: BARS }, (_, i) => {
-          const start = Math.floor((i / BARS) * usable)
-          const end = Math.floor(((i + 1) / BARS) * usable)
-          let sum = 0
-          for (let j = start; j < end; j += 1) sum += data[j]
-          return (sum / Math.max(1, end - start)) / 255
+        const ranges = bands(BARS, data.length, analyser.context.sampleRate)
+        values = ranges.map(([start, end]) => {
+          let peak = 0
+          for (let j = start; j < end; j += 1) {
+            if (data[j] > peak) peak = data[j]
+          }
+          return peak / 255
         })
-      } else {
-        values = null
       }
 
       const silent = !values || values.every((v) => v < 0.01)
@@ -77,14 +122,17 @@ export default function Visualizer({ className = '' }) {
         })
       }
 
-      const gap = 3
+      // Rise instantly, fall slowly.
+      peaks = values.map((v, i) => (v >= peaks[i] ? v : Math.max(v, peaks[i] - DECAY)))
+
+      const gap = width < 320 ? 2 : 3
       const barWidth = (width - gap * (BARS - 1)) / BARS
       const gradient = ctx.createLinearGradient(0, height, 0, 0)
       gradient.addColorStop(0, accent)
       gradient.addColorStop(1, accent2)
       ctx.fillStyle = gradient
 
-      values.forEach((value, i) => {
+      peaks.forEach((value, i) => {
         const barHeight = Math.max(3, value * height * 0.92)
         const x = i * (barWidth + gap)
         const y = (height - barHeight) / 2

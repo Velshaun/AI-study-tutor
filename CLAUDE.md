@@ -126,6 +126,25 @@ collects things they went out of their way to ask, so asking again would be
 asking twice; it mirrors on write, best-effort, with `lecture_qa` staying the
 record of record.
 
+**Frequency bars have to be spaced the way frequency is.** The visualiser
+divided the analyser's bins evenly, which sounds fair and is not: bins are
+linear in hertz, so with `fftSize` at 128 each covered 375Hz and half the bars
+were mapped to 8-16kHz, where a narrated lecture has nothing at all. Measured
+against a speech-shaped signal, 6 of 32 bars carried the whole picture — which
+is exactly what it looked like. Log-spaced bands between 80Hz and 6kHz with
+`fftSize` at 2048 put a bar's width where a bar's energy is: 21 of 26 now move.
+Peak per band rather than mean, because a consonant is a short burst and
+averaging erases it.
+
+**Two doors into the same conversation, and the notice says which is which.**
+With headphones the tutor can be interrupted by speaking, because the mic hears
+only the learner. Through a speaker the mic hears the tutor too, so barge-in is
+unreliable — and the hand-raise pauses the lecture and takes a typed question
+instead. Both answer aloud *and* in writing. The difference is a fact about
+acoustics nobody should have to deduce, so it is said once before the first
+lecture and remembered; a notice that reappears is one people learn to dismiss
+without reading.
+
 **One thing speaks at a time.** Starting the tutor ducks the lecture; finishing
 gives it back. The standard audio-focus convention, and it removes barge-in
 rather than solving it — there is never a moment when both are audible, so

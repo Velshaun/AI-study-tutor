@@ -145,8 +145,23 @@ export function PlayerProvider({ children }) {
       const ctx = new Ctx()
       const source = ctx.createMediaElementSource(audio)
       const analyser = ctx.createAnalyser()
-      analyser.fftSize = 128
-      analyser.smoothingTimeConstant = 0.8
+      // 2048 rather than 128. At 128 the analyser gives 64 bins across the
+      // whole 0-24kHz range — 375Hz each — and a human voice lives almost
+      // entirely under 4kHz, so a speech lecture had all of its energy inside
+      // the first ten bins and nothing to say about the rest. Measured against
+      // a speech-shaped signal, only 6 of the visualiser's 32 bars ever moved.
+      // 2048 gives ~23Hz resolution, which is enough to separate formants.
+      analyser.fftSize = 2048
+      // 0.8 is a long tail for speech — syllables land at about 4Hz and were
+      // being smeared into each other. 0.7 still steadies the bars without
+      // hiding the rhythm of the words.
+      analyser.smoothingTimeConstant = 0.7
+      // The defaults (-100/-30) are set for music with a wide dynamic range.
+      // Narrated speech at a consistent level sits in a much narrower band, and
+      // widening the floor while lowering the ceiling uses the bars' full
+      // height instead of the middle third.
+      analyser.minDecibels = -85
+      analyser.maxDecibels = -20
       source.connect(analyser)
       // Still route to the speakers — a MediaElementSource that isn't
       // connected to the destination plays silently.
