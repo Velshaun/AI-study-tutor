@@ -607,6 +607,10 @@ def read_intent(message: str, context: str = "") -> dict[str, Any]:
                 response_mime_type="application/json",
                 response_schema=INTENT_SCHEMA,
                 temperature=0.0,
+                # A classification against a five-verb allowlist, sitting in
+                # front of every chat message. Thinking costs a second here and
+                # buys nothing — see the note in qa.answer_question.
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
     except Exception as exc:  # noqa: BLE001

@@ -25,7 +25,19 @@ import { useCallback, useEffect, useRef, useState } from 'react'
  * restarts a countdown, and its expiry submits. Identical everywhere.
  */
 
-const SILENCE_MS = 2000
+// How long a pause has to run before the utterance is treated as finished.
+//
+// This was 2000ms, and it was the single largest contributor to the delay
+// between a learner stopping talking and the tutor starting: two seconds of
+// dead air before anything else had even begun. 700ms is comfortably past the
+// pauses inside a sentence — people hesitate mid-thought for 200-400ms — while
+// being short enough that the reply feels like a reply.
+//
+// Dictation into a text box wants longer: there is no conversational turn to
+// take, and cutting someone off mid-compose is worse than waiting. Callers
+// that are transcribing rather than conversing pass DICTATION_SILENCE_MS.
+const SILENCE_MS = 700
+export const DICTATION_SILENCE_MS = 1600
 // ~30 silent restarts at Chrome's ~8s cadence is roughly four minutes — long
 // past the point a real student has acted, but bounded so a wedged mic can't
 // spin indefinitely.

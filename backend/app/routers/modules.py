@@ -15,6 +15,7 @@ from typing import Any
 
 import logging
 
+from fastapi.responses import StreamingResponse
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -986,6 +987,58 @@ async def speak_tutor_reply(
         return TutorSpeech()
 
     return TutorSpeech(audio_url=storage.signed_url(path), secs=secs)
+
+
+@router.post("/{module_id}/tutor/narrate")
+async def narrate_tutor_reply(
+    module_id: str,
+    payload: TutorSpeakRequest,
+    background: BackgroundTasks,
+    user: AuthUser = Depends(get_current_user),
+):
+    """Narration streamed straight to the browser, stored afterwards.
+
+    The difference from `/tutor/speak` is where the bytes go first. That one
+    synthesised, uploaded to Storage, returned a signed URL, and left the
+    browser to fetch it — a whole round trip through a bucket inserted between
+    the learner finishing their question and hearing anything, for bytes that
+    were already in memory.
+
+    This streams them out as the response body. A plain `<audio>` element plays
+    chunked transfer as it arrives, so nothing has to change on the client
+    beyond pointing at a different URL, and the file is written to Storage in
+    the background where nobody is waiting on it.
+    """
+    _fetch_own(module_id, user.id)
+
+    from app.services.qa import QAError, narrate, store_narration
+
+    try:
+        audio, _secs = narrate(answer=payload.text, voice=payload.voice)
+    except QAError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+
+    entry_id = f"tutor-{module_id}"
+    # Cached for replay, but off the critical path: a failed upload costs a
+    # re-synthesis later rather than an answer now.
+    background.add_task(
+        _cache_narration, entry_id=entry_id, user_id=user.id, audio=audio,
+    )
+
+    return StreamingResponse(
+        iter((audio,)),
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _cache_narration(*, entry_id: str, user_id: str, audio: bytes) -> None:
+    from app.services.qa import store_narration
+
+    try:
+        store_narration(entry_id=entry_id, user_id=user_id, audio=audio)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Could not cache narration for %s: %s", entry_id, exc)
 
 
 @router.post("/{module_id}/tutor/plan", response_model=TutorPlan)

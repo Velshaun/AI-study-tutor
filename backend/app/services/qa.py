@@ -207,6 +207,18 @@ def answer_question(
                 response_mime_type="application/json",
                 response_schema=QA_SCHEMA,
                 temperature=0.6,
+                # Thinking off, and only here.
+                #
+                # Measured: it takes the first token from 1370ms to 356ms — a
+                # second of silence removed by one line, which is more than the
+                # entire rest of this round of latency work saved put together.
+                #
+                # It is the right trade for exactly this call and the wrong one
+                # almost everywhere else. A spoken reply is two or three
+                # sentences of recall while a learner sits waiting in a paused
+                # lecture; deriving a blueprint or judging coverage is a
+                # judgement, and those paths keep their thinking budget.
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
         data = json.loads(response.text)
@@ -232,14 +244,15 @@ def answer_question(
     }
 
 
-def synthesise_answer(
-    *, entry_id: str, user_id: str, answer: str, voice: str
-) -> tuple[str, int]:
-    """Narrate an answer in the tutor's voice and cache it in Storage.
+def narrate(*, answer: str, voice: str, entry_id: str = "") -> tuple[bytes, int]:
+    """Turn an answer into audio bytes. Stores nothing.
 
-    Returns ``(storage_path, duration_secs)``. The student paused an audio
-    lecture to ask this, so the reply has to come back as audio in the same
-    voice — text alone breaks the flow.
+    Split out from `synthesise_answer` because playback was waiting on
+    persistence it does not need: the old path synthesised, uploaded to
+    Storage, handed back a signed URL, and only then could the browser start
+    downloading. That is a full round trip through a bucket inserted between a
+    learner finishing a question and hearing a reply — measurable dead air
+    bought nothing, since the bytes were already in memory.
 
     Answers are 2-5 sentences, comfortably inside the ~4096-character TTS
     limit, so this is always a single object. An unusually long answer is cut
@@ -282,17 +295,44 @@ def synthesise_answer(
     except Exception as exc:  # noqa: BLE001
         raise QAError(_transcription_error(exc)) from exc
 
+    return audio, estimate_duration(text)
+
+
+def store_narration(
+    *, entry_id: str, user_id: str, audio: bytes,
+) -> str:
+    """Put narration in Storage, after the learner has already heard it.
+
+    Kept so a past exchange can be replayed without paying for synthesis twice.
+    Called from a background task: nothing is waiting on it, and a failed
+    upload costs a re-synthesis later rather than an answer now.
+    """
+    from app.database import get_supabase
+
     path = f"{user_id}/qa/{entry_id}.mp3"
+    get_supabase().storage.from_(settings.lecture_audio_bucket).upload(
+        path=path,
+        file=audio,
+        file_options={"content-type": "audio/mpeg", "upsert": "true"},
+    )
+    return path
+
+
+def synthesise_answer(
+    *, entry_id: str, user_id: str, answer: str, voice: str
+) -> tuple[str, int]:
+    """Narrate and store, returning ``(storage_path, duration_secs)``.
+
+    The original two-in-one, kept for callers that genuinely want the file to
+    exist before they continue. New paths should call `narrate` and store in
+    the background instead.
+    """
+    audio, secs = narrate(answer=answer, voice=voice, entry_id=entry_id)
     try:
-        get_supabase().storage.from_(settings.lecture_audio_bucket).upload(
-            path=path,
-            file=audio,
-            file_options={"content-type": "audio/mpeg", "upsert": "true"},
-        )
+        path = store_narration(entry_id=entry_id, user_id=user_id, audio=audio)
     except Exception as exc:  # noqa: BLE001
         raise QAError(f"Could not cache the answer audio: {exc}") from exc
-
-    return path, estimate_duration(text)
+    return path, secs
 
 
 # Session titling lives in qa_session.py (spec Prompt 5). Re-exported here under

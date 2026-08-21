@@ -18,7 +18,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useToast } from '../../hooks/useToast'
 import { api } from '../../lib/api'
 import { useConfirm } from '../../hooks/useConfirm'
-import { useSpeechRecognition } from '../../hooks/useSpeechRecognition'
+import {
+  DICTATION_SILENCE_MS, useSpeechRecognition,
+} from '../../hooks/useSpeechRecognition'
 import { looksLikeInstruction } from '../../lib/tutorIntent'
 import { useAudioFocus } from '../../hooks/useAudioFocus'
 
@@ -115,6 +117,9 @@ export default function ChatTab({ moduleId }) {
   // *replies* are deliberately not here: the player owns audio playback and
   // narrating a chat answer would mean a second thing that can be speaking.
   const speech = useSpeechRecognition({
+    // Composing a message, not taking a conversational turn — a longer pause
+    // here is someone thinking, not someone finished.
+    silenceMs: DICTATION_SILENCE_MS,
     onSpeechStart: () => focus.take(),
     onSubmit: (text) => {
       const said = (text || '').trim()
@@ -385,19 +390,33 @@ export default function ChatTab({ moduleId }) {
         </div>
       )}
 
+      {/* One field, with its controls inside it.
+          Speaking is not a mode to enter — half of studying is rambling until
+          the question comes out, and a mic you have to switch to is a mic you
+          reach for less. So typing and speaking sit at the same distance:
+          both live in the composer, always. */}
       <form onSubmit={submit} className="space-y-2">
-        <div className="flex gap-2">
+        <div
+          className={`flex items-center gap-1 rounded-xl border bg-surface px-2
+                      py-1 transition-colors ${
+                        speech.listening
+                          ? 'border-warning/50'
+                          : 'border-border focus-within:border-accent/60'
+                      }`}
+        >
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder={
               speech.listening ? 'Listening…' : 'Ask, or tell me what to make…'
             }
-            className="input min-w-0 flex-1"
+            className="min-w-0 flex-1 bg-transparent px-2 py-2 text-sm text-pri
+                       outline-none placeholder:text-sec"
           />
-          {/* Replies aloud, off until asked for. Priming the audio element on
-              the same tap satisfies the browsers that only allow playback to
-              start from a gesture. */}
+
+          {/* Replies aloud. Priming the audio element on the same tap is what
+              satisfies browsers that only allow playback to begin from a
+              gesture. */}
           <button
             type="button"
             onClick={() => {
@@ -410,28 +429,29 @@ export default function ChatTab({ moduleId }) {
             aria-pressed={voiceReplies}
             aria-label={voiceReplies ? 'Turn off spoken replies' : 'Read replies aloud'}
             title={voiceReplies ? 'Spoken replies on' : 'Spoken replies off'}
-            className={`flex size-11 shrink-0 items-center justify-center rounded-xl
+            className={`flex size-9 shrink-0 items-center justify-center rounded-lg
                         transition-colors ${
                           voiceReplies
-                            ? 'bg-accent/15 text-accent2'
-                            : 'bg-surface2 text-sec hover:text-pri'
+                            ? 'text-accent2'
+                            : 'text-sec hover:text-pri'
                         }`}
           >
             {voiceReplies
               ? <Volume2 size={16} aria-hidden="true" />
               : <VolumeX size={16} aria-hidden="true" />}
           </button>
+
           {speech.supported && (
             <button
               type="button"
               onClick={() => (speech.listening ? speech.stop() : speech.start())}
               aria-pressed={speech.listening}
               aria-label={speech.listening ? 'Stop dictating' : 'Dictate'}
-              className={`flex size-11 shrink-0 items-center justify-center rounded-xl
+              className={`flex size-9 shrink-0 items-center justify-center rounded-lg
                           transition-colors ${
                             speech.listening
-                              ? 'bg-warning/15 text-warning'
-                              : 'bg-surface2 text-sec hover:text-pri'
+                              ? 'animate-pulse text-warning'
+                              : 'text-sec hover:text-pri'
                           }`}
             >
               {speech.listening
@@ -439,14 +459,25 @@ export default function ChatTab({ moduleId }) {
                 : <Mic size={16} aria-hidden="true" />}
             </button>
           )}
+
           <button
             type="submit"
             disabled={!input.trim() || ask.isPending || act.isPending}
-            className="btn-primary shrink-0 px-4"
+            aria-label="Send"
+            className="flex size-9 shrink-0 items-center justify-center rounded-lg
+                       bg-accent text-white transition-colors hover:bg-accent2
+                       disabled:opacity-40"
           >
-            <Send size={16} aria-hidden="true" />
+            <Send size={15} aria-hidden="true" />
           </button>
         </div>
+
+        {/* The live transcript, so a rambling question is visible as it forms
+            rather than appearing all at once when the mic closes. */}
+        {speech.listening && speech.transcript && (
+          <p className="px-2 text-xs italic text-sec">{speech.transcript}</p>
+        )}
+
         <p className="text-xs text-sec">
           Answers are AI-generated from your sources. Always verify.
         </p>
