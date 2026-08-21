@@ -244,6 +244,61 @@ def answer_question(
     }
 
 
+# How long the opening clip may be before the saving disappears.
+#
+# Time-to-first-audio scales with input length: measured, a four-sentence answer
+# took 2433ms to synthesise and its first sentence alone took 1076ms. So the
+# lever is not streaming the bytes — that only buys the tail — it is asking for
+# less text up front.
+#
+# One sentence is usually the right unit, but a very short opener ("Good
+# question.") is a clip that ends before the next one is ready, so sentences are
+# accumulated up to this length. Comfortably under it, synthesis stays around a
+# second.
+OPENING_CHARS = 180
+
+# Below this, an opener is too short to cover the synthesis of what comes
+# after it — "Good question." is over in under a second. Above it, a
+# sentence is already several seconds of speech and absorbing the next one
+# only makes the learner wait longer for the first word.
+SHORT_OPENER_CHARS = 55
+
+
+def split_clips(answer: str) -> list[str]:
+    """An answer as clips: a short opener, then the rest.
+
+    The opener is what the learner waits for, so it is kept small. Everything
+    after it goes in one piece, because the *second* clip is not waited for —
+    it is synthesised while the first is playing, and a spoken sentence lasts
+    several seconds against roughly a second of synthesis. Splitting further
+    would add round trips to hide latency that is already hidden.
+    """
+    import re
+
+    text = (answer or "").strip()
+    if not text:
+        return []
+
+    sentences = [x for x in re.split(r"(?<=[.!?])\s+", text) if x.strip()]
+    if len(sentences) <= 1:
+        return [text]
+
+    opener = sentences[0]
+    taken = 1
+    # Absorb the next sentence only if the opener is too short to cover the
+    # synthesis of what follows.
+    while (
+        taken < len(sentences)
+        and len(opener) < SHORT_OPENER_CHARS
+        and len(opener) + len(sentences[taken]) + 1 <= OPENING_CHARS
+    ):
+        opener = f"{opener} {sentences[taken]}"
+        taken += 1
+
+    rest = " ".join(sentences[taken:]).strip()
+    return [opener, rest] if rest else [opener]
+
+
 def narrate(*, answer: str, voice: str, entry_id: str = "") -> tuple[bytes, int]:
     """Turn an answer into audio bytes. Stores nothing.
 

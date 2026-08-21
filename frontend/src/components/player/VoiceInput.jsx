@@ -137,6 +137,32 @@ export default function VoiceInput() {
     failsafeTimer.current = setTimeout(() => setShowFailsafe(true), FAILSAFE_MS)
   }
 
+  /** Play the rest of a two-clip answer, once the opener has finished.
+   *
+   *  The remainder is usually ready by now — the opener is several seconds of
+   *  speech against about a second of synthesis — but "usually" is not "always",
+   *  so this re-reads the exchange once if the URL was not in the original
+   *  response. One retry, not a poll: if it is still not there, the learner has
+   *  heard the opening and can read the rest, which is a better outcome than
+   *  standing in silence waiting for audio that may never arrive.
+   */
+  const playRest = async (exchangeId, knownUrl) => {
+    let url = knownUrl
+    if (!url && exchangeId) {
+      try {
+        const fresh = await apiFetch(`/lectures/qa/${exchangeId}`)
+        url = fresh?.answer_rest_url || null
+      } catch {
+        url = null
+      }
+    }
+    if (!url) {
+      startAwaiting()
+      return
+    }
+    speak(url, startAwaiting)
+  }
+
   /** Ask a genuine question. The backend generates the answer and narrates it
    *  as a single audio file in the tutor's voice, ending with a spoken check-in
    *  ("Does that make sense?"). We play that audio automatically through the
@@ -161,9 +187,16 @@ export default function VoiceInput() {
 
       const url = result.exchange?.answer_audio_url
       if (url) {
-        // speak() pauses the lecture underneath and calls startAwaiting only
-        // when narration ends — the lecture never resumes before the answer.
-        speak(url, startAwaiting)
+        // A long answer comes back as two clips: the opener, which is all the
+        // learner waited for, and the remainder, which the server is still
+        // synthesising as this line runs. Playing the first and fetching the
+        // second behind it puts that synthesis inside speech that is already
+        // happening rather than inside silence.
+        //
+        // speak() pauses the lecture underneath and calls back when narration
+        // ends — the lecture never resumes before the answer.
+        const exchangeId = result.exchange?.id
+        speak(url, () => playRest(exchangeId, result.exchange?.answer_rest_url))
       } else {
         // Narration failed (audio_error) — the student reads the answer; reopen
         // the mic at once so the flow isn't stuck.

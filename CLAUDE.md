@@ -145,6 +145,25 @@ acoustics nobody should have to deduce, so it is said once before the first
 lecture and remembered; a notice that reappears is one people learn to dismiss
 without reading.
 
+**An answer is spoken as two clips, and only the first one is waited for.**
+Time-to-first-audio scales with how much text goes to the synthesiser, not with
+how the bytes come back — measured, a four-sentence answer took 2433ms and its
+first sentence alone took 1076ms. Streaming the response was the obvious fix and
+the wrong one: OpenAI holds for ~2.9s before emitting anything and then delivers
+in ~1s, so piping buys the tail, and the tail was never the problem.
+
+So the opener is synthesised and returned, the remainder is synthesised behind
+it, and the player fetches the second clip while the first is still speaking —
+putting that cost inside speech that is already happening rather than inside
+silence. It works because a spoken sentence lasts several seconds against a
+couple of seconds of synthesis; a very short opener would not cover it, which is
+why sentences are absorbed up to a threshold before splitting.
+
+One caveat worth carrying: OpenAI's TTS latency is noisy. The same 71-character
+opener measured 1209ms, 1896ms and 3047ms across three consecutive runs, so any
+single figure here is directional. What holds across every run is the shape —
+less text up front is faster.
+
 **One thing speaks at a time.** Starting the tutor ducks the lecture; finishing
 gives it back. The standard audio-focus convention, and it removes barge-in
 rather than solving it — there is never a moment when both are audible, so
@@ -617,7 +636,7 @@ All twelve features from the August audit are shipped. Latest work, newest first
 `20260827000000` source domain assignment ·
 `20260828000000` worker kinds · `20260829000000` frozen exam weights ·
 `20260830000000` playlist sources and debounced rebuild ·
-`20260831000000` question bank
+`20260831000000` question bank · `20260901000000` qa answer rest
 
 Applied through the Supabase **Management API** with a personal access token
 (`POST /v1/projects/{ref}/database/query`). The service-role key cannot run DDL,

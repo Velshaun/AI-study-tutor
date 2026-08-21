@@ -28,6 +28,7 @@ from typing import Any
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     Header,
     HTTPException,
@@ -46,6 +47,7 @@ from app.services.qa import (
     QAError,
     answer_question,
     derive_session_title,
+    split_clips,
     synthesise_answer,
 )
 from app.services.qa_session import (
@@ -149,6 +151,10 @@ class QAExchange(BaseModel):
     created_at: datetime | None = None
     answer_audio_url: str | None = None
     answer_audio_secs: int | None = None
+    # The rest of the answer, when it is long enough to be worth splitting.
+    # Requested by the player while the opening clip is still playing, so its
+    # synthesis is hidden behind speech that is already happening.
+    answer_rest_url: str | None = None
     answer_voice: str | None = None
     full_transcription: str | None = None
 
@@ -247,6 +253,7 @@ def _to_exchange(row: dict[str, Any], *, raw: bool = False) -> QAExchange:
         classified_by=row.get("classified_by"),
         created_at=row.get("created_at"),
         answer_audio_url=_audio_url(row.get("answer_audio_path")),
+        answer_rest_url=_audio_url(row.get("answer_rest_path")),
         answer_audio_secs=row.get("answer_audio_secs"),
         answer_voice=row.get("answer_voice"),
         full_transcription=row.get("full_transcription") if raw else None,
@@ -280,11 +287,33 @@ def _remove_audio(paths: list[str | None]) -> None:
 
 
 # --- Ask --------------------------------------------------------------------
+def _narrate_rest(*, entry_id: str, user_id: str, text: str, voice: str) -> None:
+    """Synthesise everything after the opening clip.
+
+    Runs after the response has gone. Nothing is waiting on it in the sense
+    that matters — the learner is already listening to the opener — and if it
+    fails they have heard the first part and can read the rest, which is a much
+    better outcome than having waited for both.
+    """
+    from app.services.qa import synthesise_answer
+
+    try:
+        path, _secs = synthesise_answer(
+            entry_id=f"{entry_id}-rest", user_id=user_id, answer=text, voice=voice,
+        )
+        _client().table("lecture_qa").update(
+            {"answer_rest_path": path},
+        ).eq("id", entry_id).execute()
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Could not narrate the remainder of %s: %s", entry_id, exc)
+
+
 @router.post("/{lecture_id}/qa", response_model=AskResponse,
              status_code=status.HTTP_201_CREATED)
 async def ask(
     lecture_id: str,
     payload: AskRequest,
+    background: BackgroundTasks,
     user: AuthUser = Depends(get_current_user),
 ) -> AskResponse:
     """Handle one spoken utterance.
@@ -402,11 +431,26 @@ async def ask(
     })
 
     # Narrate. A TTS failure degrades to text rather than losing the reply.
+    #
+    # Only the opening clip is waited for. Time-to-first-audio scales with how
+    # much text is sent: measured, a four-sentence answer took 2433ms and its
+    # first sentence alone took 1076ms. The remainder is synthesised straight
+    # after, and the player asks for it while the opener is still speaking — so
+    # its cost lands inside speech that is already happening rather than inside
+    # silence the learner is sitting through.
     if payload.speak:
         try:
+            clips = split_clips(answer)
+            opener = clips[0] if clips else answer
             path, secs = synthesise_answer(
-                entry_id=row["id"], user_id=user.id, answer=answer, voice=voice,
+                entry_id=row["id"], user_id=user.id, answer=opener, voice=voice,
             )
+            if len(clips) > 1:
+                background.add_task(
+                    _narrate_rest,
+                    entry_id=row["id"], user_id=user.id,
+                    text=clips[1], voice=voice,
+                )
             updated = client.table("lecture_qa").update({
                 "answer_audio_path": path,
                 "answer_audio_secs": secs,
@@ -513,6 +557,27 @@ async def end_active_session(
 
 
 # --- Read -------------------------------------------------------------------
+@router.get("/qa/{exchange_id}", response_model=QAExchange)
+async def one_exchange(
+    exchange_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> QAExchange:
+    """Re-read one exchange.
+
+    Exists for a single case: the player has finished the opening clip and the
+    remainder's URL was not in the original response because it was still being
+    synthesised. One re-read is cheaper than holding the response open, and it
+    only happens when synthesis outran a spoken sentence — which is rare and
+    survivable either way.
+
+    Sits above the `/{lecture_id}/...` routes out of habit rather than
+    necessity — checked, and nothing else in this router matches
+    `/lectures/qa/<id>`, because every three-segment sibling pins its last
+    segment to a literal.
+    """
+    return _to_exchange(_one("lecture_qa", exchange_id, user.id, "Exchange"))
+
+
 @router.get("/{lecture_id}/qa-sessions", response_model=list[QASession])
 async def lecture_sessions(
     lecture_id: str,
