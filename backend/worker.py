@@ -299,6 +299,16 @@ class Worker:
                                     job_id)
                         break
                     while len(running) < settings.worker_item_concurrency:
+                        # Checked here as well as above: the pool tops up as
+                        # slots free, so without this the loop keeps claiming
+                        # while the first refusals are still coming back. It
+                        # cannot save the wave already in flight — those items
+                        # were claimed before anything had failed — so the
+                        # guarantee is that no *new* wave starts, and the cost
+                        # of a block is bounded by the concurrency rather than
+                        # by the length of the playlist.
+                        if self.blocked_streak >= BLOCKED_STREAK_LIMIT:
+                            break
                         item = jobs.claim_item(job_id)
                         if not item:
                             break
