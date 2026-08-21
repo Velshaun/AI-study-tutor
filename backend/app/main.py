@@ -32,6 +32,7 @@ from app.routers import (
     quizzes,
     sources,
     stats,
+    question_bank,
 )
 
 
@@ -101,6 +102,7 @@ app.include_router(quizzes.router)
 app.include_router(practice_exam.router)
 app.include_router(imports.router)
 app.include_router(practice_mode.router)
+app.include_router(question_bank.router)
 app.include_router(attempts.router)
 app.include_router(groups.router)
 app.include_router(favourites.router)
