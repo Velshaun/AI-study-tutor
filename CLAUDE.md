@@ -323,6 +323,48 @@ onto `practice_exams`, because those are properties of a paper. The old table is
 kept empty and unread until a later migration drops it, so a missed reader is
 recoverable rather than fatal.
 
+**A domain holds as many of each thing as were asked for.** The Classroom drew
+one lecture, one deck, one quiz and one pool of practice questions per domain,
+and three places enforced that independently: generation reused or overwrote by
+`(domain, voice, length)`, the studio grouping kept one of each, and
+`groupByDomain` discarded the rest after picking a winner. A ten-minute lecture
+is an introduction and the second one is the next part of the subject, not a
+correction of the first — practice exams already accumulated and nothing made
+the other four different. Every type is a list now, and every count is
+`list.length`, so a row claiming three that opens to two is not reachable.
+
+Decks are keyed on `(domain, deck_title)`, so a domain can hold several;
+practice questions stay one pool because they have no title to tell two apart.
+Two batches can land on the same generated deck title, which would read as one
+deck of forty rather than two of twenty, so the title is made unique at insert —
+a suffix rather than a refusal, since the name the model chose is still the best
+description of the cards. Generation reuses only something *still being
+written*, which stops a double tap costing two lectures without ever handing
+back a finished one in place of the new one that was asked for.
+
+**Removing study material is not deleting it.** `qa_sessions.lecture_id` and
+`lecture_qa.lecture_id` both cascade, so deleting a lecture took every question
+the learner asked during it, and the Q&A container mirrors those rows, so its
+entries went too. `review_later` and `study_attempts` are polymorphic with no
+foreign key at all, so a delete left them pointing at nothing — worse than
+either outcome. `deleted_at` on `lectures`, `quizzes`, `flashcards` and
+`practice_questions`, filtered out of every *listing* read, is the whole
+mechanism; `services/removal.py` is the one place that knows it.
+
+Only the listings, deliberately. A removed quiz's score still counts towards the
+domain's strength, because the learner really did sit it, and a strength that
+moved when somebody tidied their Classroom would be measuring housekeeping.
+Review flags stay pointing at their questions — that is what marking rather than
+deleting is *for*. Fetching one by id still works, because a Q&A entry names the
+lecture it came from.
+
+The narrated audio is deleted anyway: it is the expensive part, it regenerates,
+and nothing is keyed to it — what the Q&A history records is the exchange, not
+the recording of it. `audio_chunks` is emptied with it so nothing later reads a
+storage path that no longer resolves. Every path keeps the old delete behind
+`removal.supported()`, so a deployment without the column does what it did
+before rather than offering a button that silently does nothing.
+
 **A source is filed under exactly one domain.** The primary. A lecture that
 touches four topics is *about* one of them, and spreading it across all four
 would report coverage in three domains it only mentions — the same mistake
@@ -636,7 +678,8 @@ All twelve features from the August audit are shipped. Latest work, newest first
 `20260827000000` source domain assignment ·
 `20260828000000` worker kinds · `20260829000000` frozen exam weights ·
 `20260830000000` playlist sources and debounced rebuild ·
-`20260831000000` question bank · `20260901000000` qa answer rest
+`20260831000000` question bank · `20260901000000` qa answer rest ·
+`20260902000000` soft delete media
 
 Applied through the Supabase **Management API** with a personal access token
 (`POST /v1/projects/{ref}/database/query`). The service-role key cannot run DDL,
@@ -651,8 +694,9 @@ SQL has to be JSON-encoded to a file and posted with `--data-binary @file` —
 these migrations contain `$$` blocks and quotes that no amount of shell quoting
 survives.
 
-**The token used for this has been rotated — a new one is needed to apply
-anything further.**
+The token lives in `backend/.env` as `SUPABASE_ACCESS_TOKEN` (untracked;
+documented in `.env.example`). It is rotated periodically, so a failure there
+means asking for a new one rather than debugging the request.
 
 Live tables (25): `profiles, modules, domains, lectures, qa_sessions, lecture_qa,
 flashcards, quizzes, practice_exams, practice_questions, imported_practice_questions,
