@@ -123,6 +123,17 @@ export default function PracticeRunner({
     }
   }
 
+  /** What has been chosen so far, in question order.
+   *
+   *  Saved with the position because the position alone was never enough: a
+   *  practice answer is posted as it is given and stored nowhere, so a run that
+   *  ends without its results reaching anything leaves no record of what was
+   *  answered at all. This is the only durable copy.
+   */
+  function chosenSoFar() {
+    return Array.from({ length: questions.length }, (_, i) => history[i]?.selected ?? null)
+  }
+
   function advance() {
     setDraft(null)
     setError(null)
@@ -133,9 +144,11 @@ export default function PracticeRunner({
       setIndex(to)
       setFurthest(to)
       setVisited((seen) => new Set(seen).add(to))
-      attempt?.save?.({ position: to, completed: to >= questions.length })
+      attempt?.save?.({ position: to, answers: chosenSoFar(), completed: to >= questions.length })
     } else {
-      attempt?.save?.({ position: questions.length, completed: true })
+      attempt?.save?.({
+        position: questions.length, answers: chosenSoFar(), completed: true,
+      })
       // Practice mode's answers were posted as they were given, so the session
       // record is assembled from what came back rather than from a final
       // submission — there isn't one.

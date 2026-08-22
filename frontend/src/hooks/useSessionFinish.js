@@ -31,7 +31,19 @@ export function useSessionFinish(moduleId) {
 
   return useCallback(
     async ({ kind, itemId, title, results }) => {
-      if (!moduleId || !results?.length) return
+      // A run that finished with no module is a wiring fault, not a state the
+      // app should ever reach — and it used to return here without a word,
+      // which is how a forty-question practice run ended with no record, no
+      // prompt and nothing to show for it. Say so, loudly enough to be found.
+      if (!moduleId) {
+        console.error(
+          `[session] ${kind} run finished with no module id — the session ` +
+          'record and the missed-questions prompt have both been skipped.',
+        )
+        toast.error('Couldn’t file this session. Your results are still below.')
+        return
+      }
+      if (!results?.length) return
 
       try {
         await api.recordSession({
@@ -42,8 +54,12 @@ export function useSessionFinish(moduleId) {
           results,
         })
         queryClient.invalidateQueries({ queryKey: ['sessions', moduleId] })
-      } catch {
-        // Bookkeeping. The learner is looking at their results either way.
+      } catch (e) {
+        // Bookkeeping, so it does not take the screen — but not silence
+        // either: without the record the sitting cannot be revisited later,
+        // and the learner is the only one who can decide to sit it again.
+        console.error('[session] could not record the sitting', e)
+        toast.error('Couldn’t save this session to your history.')
       }
 
       const { bankable: count } = summarise(results)

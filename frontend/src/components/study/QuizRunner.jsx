@@ -1,4 +1,4 @@
-import { Check, ChevronLeft, Clock, RotateCcw, X } from 'lucide-react'
+import { AlertCircle, Check, ChevronLeft, Clock, RotateCcw, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import { planExpansions } from '../../lib/terms'
@@ -80,6 +80,10 @@ export default function QuizRunner({
     return Number.isFinite(left) ? Math.max(0, left) : durationMinutes * 60
   })
   const [timedOut, setTimedOut] = useState(false)
+  // A hand-in that failed, and whether one is in flight. Held apart from the
+  // per-question error: this one is about the paper, not the question.
+  const [submitError, setSubmitError] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
   const [openTerm, setOpenTerm] = useState(null)
   // Session state until the confirmation prompt, so flagging costs nothing
   // and is undone by simply not confirming. Independent of the outcome:
@@ -156,9 +160,38 @@ export default function QuizRunner({
     if (submittingRef.current) return
     submittingRef.current = true
     if (expired) setTimedOut(true)
-    // The run is over: stop offering it as something to come back to.
+    setSubmitError(null)
+    setSubmitting(true)
+
+    let res
+    try {
+      res = await onSubmit(answerList)
+    } catch (e) {
+      // Everything about this used to be silent.
+      //
+      // There was no catch at all: a rejected submit left `submittingRef` stuck
+      // true — so the button was dead for the rest of the session — set no
+      // result, showed no message, and became an unhandled rejection. The
+      // learner saw a paper they had just spent forty minutes on do nothing.
+      //
+      // So: say so, unlock the button, and keep every answer exactly where it
+      // is so the retry is one tap rather than a resit.
+      submittingRef.current = false
+      setSubmitting(false)
+      setSubmitError(e?.message || 'Couldn’t hand in your paper.')
+      // Written even though the run has not been graded: these answers exist
+      // nowhere else, and a tab that closes before the retry would otherwise
+      // take them with it. `completed` stays false, so the run is still
+      // offered as something to come back to.
+      attempt?.save?.({ position: questions.length, answers: answerList })
+      return
+    }
+
+    setSubmitting(false)
+    // Only now is the run over, so only now does it stop being resumable.
+    // Marking it complete before the submit meant a failed hand-in destroyed
+    // the resume as well as the score.
     attempt?.save?.({ position: questions.length, answers: answerList, completed: true })
-    const res = await onSubmit(answerList)
     setResult(res)
     setFinished(true)
     // Built here rather than in the results branch: `res` carries the
@@ -483,6 +516,27 @@ export default function QuizRunner({
           )}
       </div>
 
+      {/* A hand-in that didn't land. Loud, and it stays until it works —
+          every answer is still held, so this is a retry rather than a resit. */}
+      {submitError && (
+        <div className="space-y-2 rounded-xl border border-danger/40 bg-danger/10 px-4 py-3">
+          <p className="flex items-start gap-2 text-sm font-medium text-danger">
+            <AlertCircle size={15} className="mt-0.5 shrink-0" aria-hidden="true" />
+            {submitError}
+          </p>
+          <p className="text-xs text-sec">
+            Your answers are safe. Nothing has been scored yet — tap to try again.
+          </p>
+          <button
+            onClick={() => finish(answersRef.current, { expired: timedOut })}
+            disabled={submitting}
+            className="btn-primary w-full disabled:opacity-60"
+          >
+            {submitting ? 'Handing in…' : 'Hand in again'}
+          </button>
+        </div>
+      )}
+
       <div className="flex gap-3">
         <button
           onClick={() => goTo(index - 1)}
@@ -492,8 +546,14 @@ export default function QuizRunner({
           <ChevronLeft size={16} aria-hidden="true" />
           Previous
         </button>
-        <button onClick={next} disabled={!answered} className="btn-primary flex-1">
-          {index < questions.length - 1 ? 'Next question' : 'Finish & score'}
+        <button
+          onClick={next}
+          disabled={!answered || submitting}
+          className="btn-primary flex-1 disabled:opacity-60"
+        >
+          {submitting
+            ? 'Handing in…'
+            : index < questions.length - 1 ? 'Next question' : 'Finish & score'}
         </button>
       </div>
 

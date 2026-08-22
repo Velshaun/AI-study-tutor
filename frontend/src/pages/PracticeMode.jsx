@@ -9,6 +9,7 @@ import { useAttempt } from '../hooks/useAttempt'
 import { useToast } from '../hooks/useToast'
 import { ApiError, api } from '../lib/api'
 import { path } from '../routes'
+import { summarise } from '../lib/session'
 import { useSessionFinish } from '../hooks/useSessionFinish'
 
 /**
@@ -33,6 +34,10 @@ export default function PracticeMode() {
   const attempt = useAttempt('practice', domainId)
   const [done, setDone] = useState(false)
   const [flagged, setFlagged] = useState(0)
+  // What they actually scored. The runner already knows — every answer was
+  // graded server-side as it was given — and the completion screen was
+  // throwing it away and reporting a count of questions instead.
+  const [scored, setScored] = useState(null)
 
   const { data, isPending, error } = useQuery({
     queryKey: ['practice-questions', domainId],
@@ -54,10 +59,16 @@ export default function PracticeMode() {
   })
 
   const questions = Array.isArray(data?.questions) ? data.questions : []
-  // Declared after `questions`, not before: practice runs are opened by
-  // domain and the container belongs to the module above it, which the
-  // questions carry — and `const` is not hoisted.
-  const finishSession = useSessionFinish(questions[0]?.module_id)
+  // From the set, not from a question.
+  //
+  // This read `questions[0]?.module_id`, and a practice question has never
+  // carried one — it carries its domain, which is the right shape for a
+  // question. So this was always `undefined`, `useSessionFinish` returned at
+  // its first line, and a finished run wrote no session record, offered no
+  // missed-questions prompt and left no trace of the attempt. Silently, every
+  // time. The set carries the module now, because the end of a sitting is
+  // module-level work.
+  const finishSession = useSessionFinish(data?.module_id)
   const target = data?.target_count || questions.length
   const generating = !!data?.generating
   const isAuth = error instanceof ApiError && error.isAuth
@@ -109,12 +120,14 @@ export default function PracticeMode() {
       ) : done ? (
         <CompleteScreen
           total={questions.length}
+          scored={scored}
           flagged={flagged}
           onReview={() => navigate(path('reviewLater', { domainId }))}
           onAgain={() => {
             attempt.clear()
             setDone(false)
             setFlagged(0)
+            setScored(null)
           }}
         />
       ) : (
@@ -128,12 +141,13 @@ export default function PracticeMode() {
           onFlag={handleFlag}
           onGotIt={handleGotIt}
           onComplete={complete}
-          onFinished={({ results }) =>
-            finishSession({
+          onFinished={({ results }) => {
+            setScored(summarise(results))
+            return finishSession({
               kind: 'practice', itemId: domainId,
               title: 'Practice set', results,
             })
-          }
+          }}
         />
       )}
     </div>
@@ -156,14 +170,28 @@ function GeneratingState() {
   )
 }
 
-function CompleteScreen({ total, flagged, onReview, onAgain }) {
+function CompleteScreen({ total, scored, flagged, onReview, onAgain }) {
+  const pct = scored?.total ? Math.round((scored.correct / scored.total) * 100) : null
   return (
     <div className="card flex flex-col items-center gap-5 py-12 text-center">
-      <div className="flex size-16 items-center justify-center rounded-full bg-success">
-        <GraduationCap size={30} className="text-white" aria-hidden="true" />
+      <div className={`flex size-16 items-center justify-center rounded-full ${
+        pct == null ? 'bg-success' : pct >= 70 ? 'bg-success' : pct >= 40 ? 'bg-accent' : 'bg-warning'
+      }`}>
+        {pct == null ? (
+          <GraduationCap size={30} className="text-white" aria-hidden="true" />
+        ) : (
+          <span className="text-xl font-bold text-white">{pct}%</span>
+        )}
       </div>
       <div className="space-y-1">
         <h2 className="text-lg font-semibold text-pri">Practice complete</h2>
+        {/* The score first, because it is what forty minutes of answering was
+            for. The count is context, not the result. */}
+        {scored?.total ? (
+          <p className="text-sm text-pri">
+            {scored.correct} of {scored.total} correct
+          </p>
+        ) : null}
         <p className="text-sm text-sec">
           {total} question{total === 1 ? '' : 's'} reviewed
           {flagged > 0

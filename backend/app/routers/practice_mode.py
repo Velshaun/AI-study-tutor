@@ -122,6 +122,15 @@ class PracticeSet(BaseModel):
     questions: list[PracticeQuestion] = Field(default_factory=list)
     target_count: int = 0
     generating: bool = False
+    # The module this set belongs to.
+    #
+    # A question carries only its domain, which is right — but the end of a
+    # sitting is module-level work: the session record and the missed-questions
+    # container both live on the module. The client had nowhere to read it from,
+    # so `useSessionFinish` was handed `undefined` and returned at its first
+    # line. A 40-question practice run therefore ended with no results prompt,
+    # no session record and no trace of the attempt, silently, every time.
+    module_id: str | None = None
 
 
 class AnsweredOption(PracticeOption):
@@ -497,6 +506,7 @@ async def get_questions(
         questions=[_row_to_question(r, flagged=r["id"] in flagged) for r in existing],
         target_count=target,
         generating=generating,
+        module_id=domain.get("module_id"),
     )
 
 
