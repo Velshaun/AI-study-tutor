@@ -58,6 +58,23 @@ export function PlayerProvider({ children }) {
   // if a pause lands between requesting a chunk and its metadata arriving, the
   // deferred autoplay must not fire and resurrect audio after the user paused.
   const playIntentRef = useRef(false)
+  // Where the element should be inside the current chunk.
+  //
+  // A browser silently ignores `currentTime` written while `readyState` is 0,
+  // and a fresh `src` resets it to 0 — so every seek made between opening a
+  // lecture and its first chunk reporting metadata was dropped on the floor.
+  // React's `position` moved, the element did not, and then the deferred seek
+  // registered at load time put the element back at the *saved* position. That
+  // is the whole of "rewinding does nothing": the bar moved, the audio didn't,
+  // and the first `timeupdate` after play snapped the bar back.
+  //
+  // So the wanted offset lives here rather than in the closure that registered
+  // the handler, and whichever handler runs applies the newest one.
+  const pendingOffsetRef = useRef(0)
+  // Which load a deferred handler belongs to. `loadedmetadata` fires on the
+  // element, not on a chunk, so a handler left over from a superseded load
+  // would otherwise fire against the chunk that replaced it.
+  const loadTokenRef = useRef(0)
 
   const [lecture, setLecture] = useState(null)
   const [chunks, setChunks] = useState([])
@@ -240,11 +257,19 @@ export function PlayerProvider({ children }) {
       if (autoplay) playIntentRef.current = true
       setChunkIndex(index)
       setPlaybackError(null)
+      pendingOffsetRef.current = offset
+      const token = (loadTokenRef.current += 1)
       audio.src = chunk.url
       audio.playbackRate = speed
 
       const start = () => {
-        if (offset > 0) audio.currentTime = Math.min(offset, audio.duration || offset)
+        // A newer load has claimed the element; this handler is about a chunk
+        // that is no longer pointed at.
+        if (loadTokenRef.current !== token) return
+        // The newest wanted offset, not the one captured when this was
+        // registered — the learner may have scrubbed while it was loading.
+        const wanted = pendingOffsetRef.current
+        if (wanted > 0) audio.currentTime = Math.min(wanted, audio.duration || wanted)
         // Only start if playback is still intended — a pause may have landed
         // while this chunk was loading.
         if (autoplay && playIntentRef.current) startPlayback(audio)
@@ -427,6 +452,11 @@ export function PlayerProvider({ children }) {
       const { index, offset } = locateChunk(target, chunks, durations)
       setPosition(target)
       if (index === chunkIndex && audio) {
+        // Record it either way. If the chunk is still loading the write below
+        // is ignored by the browser, and this is what the pending
+        // `loadedmetadata` handler applies instead of the position the lecture
+        // opened at.
+        pendingOffsetRef.current = offset
         audio.currentTime = offset
       } else {
         loadChunk(index, offset, playing)
