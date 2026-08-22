@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
+  AlertCircle,
   BookOpen,
   CheckCircle2,
   ChevronDown,
@@ -9,14 +10,17 @@ import {
   Mic,
   Play,
   Plus,
+  RotateCcw,
   Sparkles,
   Target,
   Trash2,
+  X,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { useConfirm } from '../../hooks/useConfirm'
+import { useGeneration } from '../../hooks/useGeneration'
 import { usePreferences } from '../../hooks/usePreferences'
 import { useToast } from '../../hooks/useToast'
 import { api } from '../../lib/api'
@@ -309,7 +313,7 @@ function MediaAction({ kind, moduleId, domain, items = [], examCount }) {
   const queryClient = useQueryClient()
   const { preferences } = usePreferences()
   const confirm = useConfirm()
-  const [busy, setBusy] = useState(false)
+  const generation = useGeneration()
   const [open, setOpen] = useState(false)
 
   // A lecture still being written counts towards the row — the learner asked
@@ -343,43 +347,57 @@ function MediaAction({ kind, moduleId, domain, items = [], examCount }) {
     }
   }
 
-  const build = useMutation({
-    mutationFn: async () => {
-      if (kind === 'lecture') {
-        const lecture = await api.generateLecture({
-          domain_id: domain.id,
-          voice: preferences.tutor_voice,
-          length: preferences.lecture_length,
-        })
-        // The endpoint answers before there is any audio; waiting is what makes
-        // the "Open" that follows tell the truth.
-        if (lecture?.id) await lectures.waitForLecture(lecture.id)
-        return lecture
-      }
-      if (kind === 'flashcards') {
-        return api.generateFlashcards({ domain_id: domain.id, count: 20 })
-      }
-      if (kind === 'quiz') {
-        return api.generateQuiz({
-          domain_id: domain.id,
-          difficulty: preferences.quiz_difficulty,
-          question_count: 10,
-        })
-      }
-      return api.practiceQuestions(domain.id, { count: examCount })
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['studio', moduleId] })
-      queryClient.invalidateQueries({ queryKey: ['module', moduleId] })
-      toast.success(`${cfg.label} ready for ${domain.title}`)
-      // Open the list so the new one is visible where it landed, rather than
-      // behind a row that still reads the same as before.
-      setOpen(true)
-    },
-    onError: (e) =>
-      toast.error(e?.message || `Couldn’t build the ${cfg.label.toLowerCase()}`),
-    onSettled: () => setBusy(false),
-  })
+  // Generation runs above the router, not in this component.
+  //
+  // It always survived navigation — the promise outlives the render — but the
+  // *state* did not: `busy` was local, so walking back into the Classroom
+  // mid-build showed a row identical to the one before the tap. Nothing
+  // building, nothing pending, no reason to believe anything had happened. The
+  // provider keys the job by where the result will land, so the row that will
+  // hold it says so wherever the learner is.
+  function build() {
+    return generation.start({
+      moduleId,
+      domainId: domain.id,
+      kind,
+      label: `${cfg.label} for ${domain.title}`,
+      run: async () => {
+        let destination
+        if (kind === 'lecture') {
+          const lecture = await api.generateLecture({
+            domain_id: domain.id,
+            voice: preferences.tutor_voice,
+            length: preferences.lecture_length,
+          })
+          // The endpoint answers before there is any audio; waiting is what
+          // makes the "View" that follows tell the truth.
+          if (lecture?.id) {
+            await lectures.waitForLecture(lecture.id)
+            destination = path('lecture', { id: lecture.id })
+          }
+        } else if (kind === 'flashcards') {
+          await api.generateFlashcards({ domain_id: domain.id, count: 20 })
+          destination = path('flashcards', { domainId: domain.id })
+        } else if (kind === 'quiz') {
+          await api.generateQuiz({
+            domain_id: domain.id,
+            difficulty: preferences.quiz_difficulty,
+            question_count: 10,
+          })
+          destination = path('quizzes', { domainId: domain.id })
+        } else {
+          await api.practiceQuestions(domain.id, { count: examCount })
+          destination = path('practiceMode', { domainId: domain.id })
+        }
+        queryClient.invalidateQueries({ queryKey: ['studio', moduleId] })
+        queryClient.invalidateQueries({ queryKey: ['module', moduleId] })
+        // Open the list so the new one is visible where it landed, rather than
+        // behind a row that still reads the same as before.
+        setOpen(true)
+        return destination
+      },
+    })
+  }
 
   // Removing is a UI action. Nothing produced from an item goes with it —
   // the Q&A asked during a lecture, the questions missed in a quiz, the cards
@@ -419,7 +437,10 @@ function MediaAction({ kind, moduleId, domain, items = [], examCount }) {
     if (ok) remove.mutate(item)
   }
 
-  const working = busy || build.isPending
+  // Read from the provider, so it is true on every screen that draws this row
+  // rather than only on the one that started it.
+  const working = generation.isGenerating(moduleId, kind, domain.id)
+  const failure = generation.failureOf(moduleId, kind, domain.id)
 
   // The names, comma-separated, on one line. Truncation is the browser's job —
   // `truncate` clips with an ellipsis at whatever width there is, which is the
@@ -428,27 +449,35 @@ function MediaAction({ kind, moduleId, domain, items = [], examCount }) {
   const preview = items.map((i) => i.title).filter(Boolean).join(', ')
   const subtitle = working
     ? cfg.busy
-    : !has
-      ? 'None yet'
-      : building.length
-        ? `${preview} · ${building.length} still building`
-        : preview
+    : failure
+      ? failure.message
+      : !has
+        ? 'None yet'
+        : building.length
+          ? `${preview} · ${building.length} still building`
+          : preview
 
   return (
     <div className={`overflow-hidden rounded-xl ${
-      has ? 'bg-surface2' : 'border border-dashed border-border'
+      failure ? 'border border-danger/40 bg-danger/5'
+        : working ? 'border border-accent/40 bg-accent/5'
+          : has ? 'bg-surface2' : 'border border-dashed border-border'
     }`}>
       <div className="flex items-center gap-3 px-3 py-2.5">
         <button
           type="button"
-          onClick={() => (has ? setOpen((v) => !v) : (setBusy(true), build.mutate()))}
+          onClick={() => (has ? setOpen((v) => !v) : failure ? failure.retry() : build())}
           disabled={working}
           aria-expanded={has ? open : undefined}
           className="flex min-w-0 flex-1 items-center gap-3 text-left"
         >
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent2">
+          <span className={`flex size-8 shrink-0 items-center justify-center rounded-lg ${
+            failure ? 'bg-danger/10 text-danger' : 'bg-accent/10 text-accent2'
+          }`}>
             {working ? (
               <Loader2 size={15} className="animate-spin" aria-hidden="true" />
+            ) : failure ? (
+              <AlertCircle size={15} aria-hidden="true" />
             ) : (
               <cfg.Icon size={15} aria-hidden="true" />
             )}
@@ -464,7 +493,11 @@ function MediaAction({ kind, moduleId, domain, items = [], examCount }) {
                 <span className="ml-1.5 text-xs font-normal text-sec">{count}</span>
               )}
             </span>
-            <span className="block truncate text-xs text-sec">{subtitle}</span>
+            <span className={`block truncate text-xs ${
+              failure ? 'text-danger' : working ? 'text-accent2' : 'text-sec'
+            }`}>
+              {subtitle}
+            </span>
           </span>
           {has && !working && (
             <ChevronDown
@@ -479,10 +512,35 @@ function MediaAction({ kind, moduleId, domain, items = [], examCount }) {
             is the point, so "add" cannot be buried inside the list it adds to.
             On an empty row the whole row already generates, so this is a label
             rather than a second button competing with it. */}
-        {!working && (has ? (
+        {/* A failure stays put until it is retried or waved off. A toast is
+            gone in four seconds and someone in another tab never saw it, so
+            quietly reverting the row to "none yet" is how a failure becomes a
+            mystery. */}
+        {!working && failure ? (
+          <span className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={() => failure.retry()}
+              aria-label={`Try building the ${cfg.label.toLowerCase()} again`}
+              className="flex size-8 items-center justify-center rounded-lg
+                         text-accent2 transition-colors hover:bg-accent/10"
+            >
+              <RotateCcw size={15} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              onClick={() => generation.dismissFailure(moduleId, kind, domain.id)}
+              aria-label="Dismiss this error"
+              className="flex size-8 items-center justify-center rounded-lg
+                         text-sec transition-colors hover:bg-surface2"
+            >
+              <X size={15} aria-hidden="true" />
+            </button>
+          </span>
+        ) : !working && (has ? (
           <button
             type="button"
-            onClick={() => { setBusy(true); build.mutate() }}
+            onClick={() => build()}
             aria-label={`Generate another ${cfg.label.toLowerCase()} for ${domain.title}`}
             className="flex size-8 shrink-0 items-center justify-center rounded-lg
                        text-accent2 transition-colors hover:bg-accent/10"
