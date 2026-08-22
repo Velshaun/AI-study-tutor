@@ -52,17 +52,19 @@ export default function Quizzes() {
     mutationFn: (id) => api.deleteQuiz(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['quizzes', domainId] })
-      toast.success('Quiz deleted')
+      toast.success('Quiz removed')
     },
-    onError: (e) => toast.error(e?.message || 'Could not delete quiz'),
+    onError: (e) => toast.error(e?.message || 'Could not remove quiz'),
   })
 
   async function confirmDelete(quiz) {
     const ok = await confirm({
-      title: 'Delete quiz?',
-      message: `"${quiz.title}" and its recorded scores will be removed.`,
-      confirmLabel: 'Delete',
-      danger: true,
+      title: 'Remove quiz?',
+      // It used to say the scores went with it, and they did. They don't now:
+      // a score is a record of a sitting that really happened, and it still
+      // counts towards this domain's strength.
+      message: `"${quiz.title}" comes off this screen. Your score for it stays.`,
+      confirmLabel: 'Remove',
     })
     if (ok) remove.mutate(quiz.id)
   }
@@ -153,7 +155,7 @@ export default function Quizzes() {
               </button>
               <button
                 onClick={() => confirmDelete(quiz)}
-                aria-label="Delete quiz"
+                aria-label="Remove quiz"
                 className="btn-ghost size-11 rounded-full p-0 hover:text-warning"
               >
                 <Trash2 size={16} aria-hidden="true" />

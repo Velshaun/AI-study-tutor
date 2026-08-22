@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import broadcast
+from app.services import broadcast, removal
 from app.services.lecture_gen import LENGTHS, VOICES, generate_lecture
 
 logger = logging.getLogger(__name__)
@@ -216,7 +216,7 @@ async def generate(
     # handed back rather than duplicated. A finished lecture is never reused —
     # asking again means asking for another.
     in_flight = (
-        client.table("lectures").select("*")
+        removal.live(client.table("lectures").select("*"), "lectures")
         .eq("domain_id", payload.domain_id)
         .eq("user_id", user.id)
         .in_("status", ["pending", "generating_text", "generating_audio"])
@@ -231,7 +231,7 @@ async def generate(
     existing = []
     if payload.regenerate:
         existing = (
-            client.table("lectures").select("*")
+            removal.live(client.table("lectures").select("*"), "lectures")
             .eq("domain_id", payload.domain_id).eq("user_id", user.id)
             .order("created_at", desc=True).limit(1).execute()
         ).data or []
@@ -565,20 +565,32 @@ async def delete_lecture(
     lecture_id: str,
     user: AuthUser = Depends(get_current_user),
 ) -> None:
-    """Delete a lecture and its cached audio."""
+    """Remove a lecture from the learner's screens.
+
+    Not a delete, where the schema allows better. ``qa_sessions.lecture_id`` and
+    ``lecture_qa.lecture_id`` both cascade, so removing the row takes every
+    question the learner asked during the lecture with it — and the Q&A
+    container mirrors those rows, so its entries go too. Somebody clearing a
+    finished lecture off their Classroom is not asking for that.
+
+    The narrated audio is a different question and is deleted either way. It is
+    the expensive part, it is regenerable, and nothing is keyed to it: what the
+    Q&A history records is the exchange, not the recording of it.
+    """
     row = _own_lecture(lecture_id, user.id)
 
     paths = [
         c.get("storage_path") for c in (row.get("audio_chunks") or [])
         if c.get("storage_path")
     ]
-    # Q&A rows cascade in the database, but their narrated answers live in
-    # Storage, which the FK cascade cannot reach — collect them here too.
-    qa_rows = (
-        _client().table("lecture_qa").select("answer_audio_path")
-        .eq("lecture_id", lecture_id).eq("user_id", user.id).execute()
-    ).data or []
-    paths += [r["answer_audio_path"] for r in qa_rows if r.get("answer_audio_path")]
+    if not removal.supported("lectures"):
+        # Without the column this really is a delete, so the Q&A audio goes with
+        # it — Storage is not reached by the FK cascade that takes the rows.
+        qa_rows = (
+            _client().table("lecture_qa").select("answer_audio_path")
+            .eq("lecture_id", lecture_id).eq("user_id", user.id).execute()
+        ).data or []
+        paths += [r["answer_audio_path"] for r in qa_rows if r.get("answer_audio_path")]
 
     if paths:
         try:
@@ -586,9 +598,15 @@ async def delete_lecture(
         except Exception:  # noqa: BLE001 - orphaned audio must not block delete
             logger.warning("Could not remove audio for lecture %s", lecture_id)
 
-    _client().table("lectures").delete().eq("id", lecture_id).eq(
-        "user_id", user.id
-    ).execute()
+    table = _client().table("lectures")
+    if removal.supported("lectures"):
+        # The transcript stays with the row; only the audio it pointed at is
+        # gone, so nothing later reads a path that no longer resolves.
+        table.update({**removal.stamp(), "audio_chunks": []}).eq(
+            "id", lecture_id
+        ).eq("user_id", user.id).execute()
+    else:
+        table.delete().eq("id", lecture_id).eq("user_id", user.id).execute()
 
 
 # --- Read -------------------------------------------------------------------
@@ -600,7 +618,9 @@ async def list_lectures(
     user: AuthUser = Depends(get_current_user),
 ) -> list[Lecture]:
     """List the caller's lectures, newest first."""
-    query = _client().table("lectures").select("*").eq("user_id", user.id)
+    query = removal.live(
+        _client().table("lectures").select("*"), "lectures",
+    ).eq("user_id", user.id)
     if module_id:
         query = query.eq("module_id", module_id)
     if favourites_only:
@@ -630,7 +650,7 @@ async def get_lecture_for_domain(
                             f"length must be one of: {', '.join(LENGTHS)}")
 
     query = (
-        _client().table("lectures").select("*")
+        removal.live(_client().table("lectures").select("*"), "lectures")
         .eq("domain_id", domain_id).eq("user_id", user.id)
     )
     if voice:

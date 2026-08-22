@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import performance
+from app.services import performance, removal
 from app.services.ai_service import (
     GenerationError,
     gather_domain_content,
@@ -205,7 +205,7 @@ async def list_for_domain(
 ) -> list[Quiz]:
     """Quizzes for a domain, newest first."""
     rows = (
-        _client().table("quizzes").select("*")
+        removal.live(_client().table("quizzes").select("*"), "quizzes")
         .eq("domain_id", domain_id).eq("user_id", user.id)
         .order("created_at", desc=True).execute()
     ).data or []
@@ -274,8 +274,22 @@ async def delete_quiz(
     quiz_id: str,
     user: AuthUser = Depends(get_current_user),
 ) -> None:
-    """Delete a quiz."""
+    """Remove a quiz from the learner's screens.
+
+    The row stays, and so does its score. A quiz score feeds the domain's
+    strength, and a strength that moves when somebody tidies up their Classroom
+    would be measuring housekeeping rather than learning. What the learner
+    asked for was the pill gone.
+
+    Deployments that have not run the migration yet still delete outright,
+    which is what they did before — worse than the new behaviour, better than a
+    button that silently does nothing.
+    """
     _own_quiz(quiz_id, user.id)
-    _client().table("quizzes").delete().eq("id", quiz_id).eq(
-        "user_id", user.id
-    ).execute()
+    table = _client().table("quizzes")
+    if removal.supported("quizzes"):
+        table.update(removal.stamp()).eq("id", quiz_id).eq(
+            "user_id", user.id
+        ).execute()
+    else:
+        table.delete().eq("id", quiz_id).eq("user_id", user.id).execute()

@@ -34,8 +34,8 @@ from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
 from app.services import (
     storage,
-    coverage, dead_links, exam_catalog, exam_profile, subject_match, tutor,
-    tutor_actions,
+    coverage, dead_links, exam_catalog, exam_profile, removal, subject_match,
+    tutor, tutor_actions,
 )
 from app.services.ai_service import GenerationError, discover_resources
 from app.services.link_check import validate_resources
@@ -502,8 +502,11 @@ async def get_module(
     domain_ids = [d["id"] for d in domain_rows]
     if domain_ids:
         lecture_rows = (
-            client.table("lectures")
-            .select("id, domain_id, status, last_position_secs, duration_secs")
+            removal.live(
+                client.table("lectures")
+                .select("id, domain_id, status, last_position_secs, duration_secs"),
+                "lectures",
+            )
             .in_("domain_id", domain_ids)
             .eq("user_id", user.id)
             .order("created_at", desc=True)
@@ -519,8 +522,10 @@ async def get_module(
         # Two batched queries: this module's practice questions, then which of
         # them the user has flagged.
         pq_rows = (
-            client.table("practice_questions").select("id, domain_id")
-            .in_("domain_id", domain_ids).execute()
+            removal.live(
+                client.table("practice_questions").select("id, domain_id"),
+                "practice_questions",
+            ).in_("domain_id", domain_ids).execute()
         ).data or []
         domain_by_question = {r["id"]: r["domain_id"] for r in pq_rows}
         review_count: dict[str, int] = {}
@@ -541,8 +546,9 @@ async def get_module(
         # flag drives the UI: decks offer study tiles but sit out of bulk
         # lecture generation, and they never distort the exam blueprint.
         card_rows = (
-            client.table("flashcards").select("domain_id")
-            .in_("domain_id", domain_ids).eq("user_id", user.id).execute()
+            removal.live(
+                client.table("flashcards").select("domain_id"), "flashcards",
+            ).in_("domain_id", domain_ids).eq("user_id", user.id).execute()
         ).data or []
         with_cards = {r["domain_id"] for r in card_rows if r.get("domain_id")}
         for d in domain_rows:
@@ -659,9 +665,11 @@ async def studio_media(
     domain_ids = list(title_of.keys())
 
     lecture_rows = (
-        client.table("lectures")
-        .select("id, domain_id, title, duration_secs, status, created_at")
-        .eq("module_id", module_id).eq("user_id", user.id).execute()
+        removal.live(
+            client.table("lectures")
+            .select("id, domain_id, title, duration_secs, status, created_at"),
+            "lectures",
+        ).eq("module_id", module_id).eq("user_id", user.id).execute()
     ).data or []
     lectures = [
         StudioLecture(
@@ -683,9 +691,11 @@ async def studio_media(
     ]
 
     quiz_rows = (
-        client.table("quizzes")
-        .select("id, domain_id, title, question_count, score, created_at")
-        .eq("module_id", module_id).eq("user_id", user.id).execute()
+        removal.live(
+            client.table("quizzes")
+            .select("id, domain_id, title, question_count, score, created_at"),
+            "quizzes",
+        ).eq("module_id", module_id).eq("user_id", user.id).execute()
     ).data or []
     quizzes = [
         StudioQuiz(
@@ -742,8 +752,10 @@ async def studio_media(
         ]
 
     flashcards = _by_domain(
-        (client.table("flashcards").select("domain_id, created_at, deck_title")
-         .eq("module_id", module_id).eq("user_id", user.id).execute()).data or [],
+        (removal.live(
+            client.table("flashcards").select("domain_id, created_at, deck_title"),
+            "flashcards",
+         ).eq("module_id", module_id).eq("user_id", user.id).execute()).data or [],
         "card",
         split_by_title=True,
     )
@@ -751,8 +763,10 @@ async def studio_media(
     practice: list[StudioSet] = []
     if domain_ids:
         practice = _by_domain(
-            (client.table("practice_questions").select("domain_id, created_at")
-             .in_("domain_id", domain_ids).is_("exam_id", "null").execute()).data or [],
+            (removal.live(
+                client.table("practice_questions").select("domain_id, created_at"),
+                "practice_questions",
+             ).in_("domain_id", domain_ids).is_("exam_id", "null").execute()).data or [],
             "question",
         )
 

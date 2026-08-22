@@ -41,7 +41,7 @@ from pydantic import BaseModel, Field
 
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import exam_profile, schema_features
+from app.services import exam_profile, removal, schema_features
 from app.services.ai_service import (
     PRACTICE_BATCH_SIZE,
     GenerationError,
@@ -331,7 +331,10 @@ def _attach_explanations(
 def _stored_questions(domain_id: str) -> list[dict[str, Any]]:
     """The domain's cached practice set, in order."""
     return (
-        _client().table("practice_questions").select("*")
+        removal.live(
+            _client().table("practice_questions").select("*"),
+            "practice_questions",
+        )
         .eq("domain_id", domain_id).is_("exam_id", "null")
         .order("position").execute()
     ).data or []
@@ -456,9 +459,16 @@ async def get_questions(
     target = _target_count(domain, user.id, count)
 
     if regenerate:
-        client.table("practice_questions").delete().eq(
-            "domain_id", domain_id
-        ).is_("exam_id", "null").execute()
+        # Retired rather than deleted, for the same reason removal is: answers
+        # have already been given against these, and review flags point at
+        # them. The replacements are the domain's set from here on; the old
+        # ones simply stop being listed.
+        old_set = client.table("practice_questions")
+        old_set = (
+            old_set.update(removal.stamp())
+            if removal.supported("practice_questions") else old_set.delete()
+        )
+        old_set.eq("domain_id", domain_id).is_("exam_id", "null").execute()
 
     existing = _stored_questions(domain_id)
 
@@ -583,19 +593,33 @@ async def delete_question_set(
     domain_id: str,
     user: AuthUser = Depends(get_current_user),
 ) -> None:
-    """Delete a domain's practice set, and the review flags pointing at it.
+    """Remove a domain's practice set from the learner's screens.
 
-    Flags live in the polymorphic review_later table, which has no foreign key
-    to lean on — so they are cleared here rather than left dangling.
+    The questions are marked rather than deleted, so the answers already given
+    against them — and the review flags in the polymorphic ``review_later``
+    table, which has no foreign key to lean on — keep pointing at rows that
+    exist. A deployment without the column falls back to the old delete, and
+    clears the flags itself so nothing is left dangling.
     """
     _own_domain(domain_id, user.id)
     client = _client()
     rows = (
-        client.table("practice_questions").select("id")
-        .eq("domain_id", domain_id).is_("exam_id", "null").execute()
+        removal.live(
+            client.table("practice_questions").select("id"), "practice_questions",
+        ).eq("domain_id", domain_id).is_("exam_id", "null").execute()
     ).data or []
     if not rows:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No practice set to delete.")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No practice set to remove.")
+
+    if removal.supported("practice_questions"):
+        # The flags stay. A question the learner marked for review is a note
+        # they wrote to themselves, and it still points at a row that exists —
+        # which is the whole reason the questions are marked rather than
+        # deleted.
+        client.table("practice_questions").update(removal.stamp()).eq(
+            "domain_id", domain_id
+        ).is_("exam_id", "null").execute()
+        return
 
     ids = [r["id"] for r in rows]
     for start in range(0, len(ids), 100):

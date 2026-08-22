@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.database import get_supabase
-from app.services import performance, schema_features
+from app.services import performance, removal, schema_features
 from app.routers.auth import AuthUser, get_current_user
 from app.services.ai_service import (
     GenerationError,
@@ -280,23 +280,43 @@ async def import_deck(
 @router.delete("/deck/{domain_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_deck(
     domain_id: str,
+    deck: str | None = Query(
+        None,
+        description="Which deck of this domain. Omit for every card it holds.",
+    ),
     user: AuthUser = Depends(get_current_user),
 ) -> None:
-    """Delete a whole deck — every card the domain holds.
+    """Remove a deck from the learner's screens.
 
-    Cards have no deck row of their own, so a deck is exactly "this domain's
-    cards"; the domain itself stays, since it may carry lectures and quizzes.
+    Cards have no deck row of their own, so a deck is "this domain's cards with
+    this title" — and without a title, all of them, which is what this meant
+    when a domain could only hold one. The domain itself stays either way,
+    since it may carry lectures and quizzes.
+
+    The cards are marked rather than deleted. A card the learner got wrong is
+    already in the missed container as a snapshot, but `study_attempts` and
+    `review_later` are polymorphic with no foreign key, so deleting the row
+    leaves them pointing at nothing — and per-card outcomes are how flashcards
+    feed domain strength at all.
     """
     client = _client()
-    existing = (
-        client.table("flashcards").select("id")
-        .eq("domain_id", domain_id).eq("user_id", user.id).limit(1).execute()
-    ).data
-    if not existing:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No deck to delete.")
-    client.table("flashcards").delete().eq("domain_id", domain_id).eq(
-        "user_id", user.id
-    ).execute()
+    scoped = client.table("flashcards").select("id").eq(
+        "domain_id", domain_id
+    ).eq("user_id", user.id)
+    if deck is not None and schema_features.has_column("flashcards", "deck_title"):
+        scoped = scoped.eq("deck_title", deck)
+    if not removal.live(scoped, "flashcards").limit(1).execute().data:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No deck to remove.")
+
+    write = client.table("flashcards")
+    write = (
+        write.update(removal.stamp()) if removal.supported("flashcards")
+        else write.delete()
+    )
+    write = write.eq("domain_id", domain_id).eq("user_id", user.id)
+    if deck is not None and schema_features.has_column("flashcards", "deck_title"):
+        write = write.eq("deck_title", deck)
+    write.execute()
 
 
 @router.get("/{domain_id}", response_model=list[Flashcard])
@@ -307,7 +327,7 @@ async def list_for_domain(
 ) -> list[Flashcard]:
     """All flashcards for a domain, newest first."""
     query = (
-        _client().table("flashcards").select("*")
+        removal.live(_client().table("flashcards").select("*"), "flashcards")
         .eq("domain_id", domain_id).eq("user_id", user.id)
     )
     if favourites_only:

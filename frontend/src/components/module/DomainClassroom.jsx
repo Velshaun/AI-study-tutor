@@ -11,10 +11,12 @@ import {
   Plus,
   Sparkles,
   Target,
+  Trash2,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { useConfirm } from '../../hooks/useConfirm'
 import { usePreferences } from '../../hooks/usePreferences'
 import { useToast } from '../../hooks/useToast'
 import { api } from '../../lib/api'
@@ -306,6 +308,7 @@ function MediaAction({ kind, moduleId, domain, items = [], examCount }) {
   const toast = useToast()
   const queryClient = useQueryClient()
   const { preferences } = usePreferences()
+  const confirm = useConfirm()
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
 
@@ -377,6 +380,44 @@ function MediaAction({ kind, moduleId, domain, items = [], examCount }) {
       toast.error(e?.message || `Couldn’t build the ${cfg.label.toLowerCase()}`),
     onSettled: () => setBusy(false),
   })
+
+  // Removing is a UI action. Nothing produced from an item goes with it —
+  // the Q&A asked during a lecture, the questions missed in a quiz, the cards
+  // flagged for review all stay, because they are a record of what the learner
+  // did rather than a property of the thing they did it with. The server marks
+  // the row; see `services/removal.py` for why that is not a delete.
+  const remove = useMutation({
+    mutationFn: (item) => {
+      if (kind === 'lecture') return api.deleteLecture(item.id)
+      if (kind === 'quiz') return api.deleteQuiz(item.id)
+      if (kind === 'flashcards') {
+        const deck = item.id?.includes(':')
+          ? item.id.split(':').slice(1).join(':')
+          : ''
+        return api.deleteFlashcardDeck(domain.id, deck)
+      }
+      return api.deletePracticeSet(domain.id)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['studio', moduleId] })
+      queryClient.invalidateQueries({ queryKey: ['module', moduleId] })
+      toast.success('Removed')
+    },
+    onError: (e) => toast.error(e?.message || 'Couldn’t remove that'),
+  })
+
+  async function confirmRemove(item) {
+    const ok = await confirm({
+      title: `Remove “${item.title}”?`,
+      // Said plainly, because the word "remove" is not self-evidently
+      // different from "delete" and the difference is the whole point.
+      message:
+        'It comes off this screen. Anything it produced — questions you '
+        + 'missed, cards you flagged, anything you asked during it — stays.',
+      confirmLabel: 'Remove',
+    })
+    if (ok) remove.mutate(item)
+  }
 
   const working = busy || build.isPending
 
@@ -484,6 +525,17 @@ function MediaAction({ kind, moduleId, domain, items = [], examCount }) {
                   {kind === 'lecture'
                     ? <Play size={14} aria-hidden="true" />
                     : <BookOpen size={14} aria-hidden="true" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => confirmRemove(item)}
+                  disabled={remove.isPending}
+                  aria-label={`Remove ${item.title}`}
+                  className="flex size-9 shrink-0 items-center justify-center rounded-lg
+                             text-sec transition-colors hover:bg-danger/10
+                             hover:text-danger disabled:opacity-40"
+                >
+                  <Trash2 size={14} aria-hidden="true" />
                 </button>
               </li>
             )
