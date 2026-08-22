@@ -417,6 +417,40 @@ storage path that no longer resolves. Every path keeps the old delete behind
 `removal.supported()`, so a deployment without the column does what it did
 before rather than offering a button that silently does nothing.
 
+**No domain is locked behind another; where to start is guidance.** `pipeline`
+wrote `unlocked` for `order_index` 1 and `locked` for everything after it, and
+no code path ever moved a domain out of `locked` — so it was never "finish one
+to open two", it was "two onward are shut forever". A learner whose baseline
+named domains two, three and four as their weakest was pointed away from exactly
+the material they needed.
+
+Removing it needed care because `status='locked'` meant two unrelated things.
+The second is load-bearing: an imported deck is its own domain, marked locked so
+bulk generation, exam weighting and domain assignment skip it, and six backend
+filters read `status != 'locked'` to mean "is a real blueprint domain". Decks
+therefore got `is_deck`, and the progression meaning was deleted rather than
+softened — flipping everything to unlocked without splitting them would have
+given imported decks exam weights.
+
+`order_index` is untouched, and so is completion tracking. Recommendation order
+is a property of the screen; blueprint order is what `exam_profile` allocates
+papers by, and the moment those are the same column a change of view changes an
+exam.
+
+**Ranked by marks on the table, not by weakness.** `lib/priority` orders domains
+by the gap multiplied by what the domain is worth — a domain at 40% worth 4% of
+the paper is a worse evening than one at 60% worth 25%, and weakness alone would
+send someone to the first. The two orderings agree on a module with even
+weights, which is most of them; they diverge exactly where raw weakness is
+wrong. Untouched domains rank on their own rather than as zeroes, because
+treating an absent score as 0% parks everything nobody has opened above every
+measured weakness — the same mistake as a bare mention counting as coverage.
+
+One row is marked "start here". Marking the other four "not yet recommended"
+would read as four rejections, and the blueprint order stays one tap away: an
+app that will only show its own opinion of the order is the lock again in a
+different hat.
+
 **A source is filed under exactly one domain.** The primary. A lecture that
 touches four topics is *about* one of them, and spreading it across all four
 would report coverage in three domains it only mentions — the same mistake
@@ -766,7 +800,8 @@ All twelve features from the August audit are shipped. Latest work, newest first
 `20260830000000` playlist sources and debounced rebuild ·
 `20260831000000` question bank · `20260901000000` qa answer rest ·
 `20260902000000` soft delete media ·
-`20260903000000` one baseline attempt
+`20260903000000` one baseline attempt ·
+`20260904000000` unlock every domain
 
 Applied through the Supabase **Management API** with a personal access token
 (`POST /v1/projects/{ref}/database/query`). The service-role key cannot run DDL,
