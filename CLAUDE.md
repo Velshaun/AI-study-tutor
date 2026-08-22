@@ -225,6 +225,21 @@ practice mode; both shapes are read). Quiz questions carry their terms inside
 `quizzes.questions`. Migrations were added only where there was genuinely
 nowhere to put something.
 
+**A KPI that counts things you own is a way into them.** "3 lectures" was a
+readout, and the three it counted were somewhere below among everything else, so
+recognising your own figure bought nothing. Tapping opens exactly that KPI's
+items, grouped by domain — the Classroom's own grouping, because a second
+ordering would be a second mental model of the same material.
+
+The rows are `MediaItemRow`, lifted out of the Classroom rather than
+reimplemented, and that is the point rather than tidiness: a lookalike drifts the
+first time either side gains a state. It already has one — a lecture still being
+written refuses the tap in the KPI view without a line of code there saying so.
+
+"Domains done" stays a readout: what it counts is domains, and that list is the
+body of the screen underneath. A tile with an empty list stays a tile, because a
+tap that opens an empty sheet teaches people the taps do nothing.
+
 **The Classroom is organised by domain, not by media type.** It was one pool
 grouped by table — every lecture together, every deck together — which mirrored
 the schema rather than the revision. Nobody sits down to "do some flashcards".
@@ -287,7 +302,9 @@ row against the same exam, same answers, same score, hours apart. The baseline
 is the line every later sitting is measured against; two of them is two
 different lines, and which wins depends on how a query happens to sort.
 `submit_exam` refuses a second attempt at a pre-assessment, and
-`exam_attempts_one_baseline_idx` says the same thing in the schema.
+`exam_attempts_one_baseline_idx` says the same thing in the schema. Applied
+22 Aug 2026 after the duplicate row was removed, keeping the earlier of the two
+— a baseline is "before you studied", so the earlier sitting is the true one.
 
 The baseline is also excluded from the studio's exam list. It has its own
 section that draws it as a record with its paper attached; being handed back as
@@ -749,8 +766,7 @@ All twelve features from the August audit are shipped. Latest work, newest first
 `20260830000000` playlist sources and debounced rebuild ·
 `20260831000000` question bank · `20260901000000` qa answer rest ·
 `20260902000000` soft delete media ·
-`20260903000000` one baseline attempt *(written, not applied — a duplicate row
-blocks it)*
+`20260903000000` one baseline attempt
 
 Applied through the Supabase **Management API** with a personal access token
 (`POST /v1/projects/{ref}/database/query`). The service-role key cannot run DDL,
