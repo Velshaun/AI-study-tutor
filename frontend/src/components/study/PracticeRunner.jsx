@@ -116,6 +116,18 @@ export default function PracticeRunner({
     try {
       const result = await onSubmit(q, draft)
       setHistory((seen) => ({ ...seen, [index]: { selected: draft, revealed: result } }))
+      // Written as it is given, not when the learner moves on.
+      //
+      // The server grades a practice answer and stores nothing, so this is the
+      // only durable copy — and saving it only on `advance` meant the last
+      // answer of a run, and every answer of a run that was abandoned
+      // mid-question, existed solely in this tab. `setHistory` has not
+      // committed yet, so the choice is spliced in here rather than read back.
+      const soFar = Array.from(
+        { length: questions.length },
+        (_, i) => (i === index ? draft : history[i]?.selected ?? null),
+      )
+      attempt?.save?.({ position: index, answers: soFar })
     } catch (e) {
       setError(e?.message || 'Could not submit your answer.')
     } finally {

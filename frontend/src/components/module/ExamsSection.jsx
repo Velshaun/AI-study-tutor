@@ -30,7 +30,13 @@ export default function ExamsSection({ moduleId, exams = [], questionCount, onDe
     queryKey: ['exam-attempts', moduleId],
     queryFn: ({ signal }) => api.examAttempts(moduleId, signal),
   })
-  const history = Array.isArray(attempts) ? attempts : []
+  // Exams only. The baseline has its own section directly above, where it is
+  // drawn as a record with its paper attached; listing it here again as a bare
+  // score made a module with one baseline and no practice exams look like it
+  // had sat two things.
+  const history = (Array.isArray(attempts) ? attempts : []).filter(
+    (a) => a.kind !== 'pre_assessment',
+  )
 
   const build = useMutation({
     mutationFn: () => api.generateExam({ module_id: moduleId }),
@@ -123,13 +129,13 @@ export default function ExamsSection({ moduleId, exams = [], questionCount, onDe
       {history.length > 0 && (
         <div className="card space-y-2">
           <p className="text-xs font-semibold uppercase tracking-wider text-sec">
-            Your sittings
+            Exam results
           </p>
           <div className="space-y-1.5">
             {history.map((a) => (
               <div key={a.id} className="flex items-baseline justify-between gap-2">
                 <p className="min-w-0 flex-1 truncate text-sm text-pri">
-                  {a.kind === 'pre_assessment' ? 'Baseline' : 'Practice exam'}
+                  {a.title || 'Practice exam'}
                   <span className="text-sec">
                     {' '}· {a.correct} of {a.total}
                   </span>

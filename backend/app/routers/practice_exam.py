@@ -990,6 +990,10 @@ class AttemptSummary(BaseModel):
     id: str
     exam_id: str
     kind: str = "practice"
+    # Which paper this was. The history list used to label every row by kind —
+    # "Practice exam" against "Practice exam" — which says nothing once a module
+    # holds more than one.
+    title: str = ""
     score: float = 0
     correct: int = 0
     total: int = 0
@@ -1000,11 +1004,12 @@ class AttemptSummary(BaseModel):
     submitted_at: datetime | None = None
 
 
-def _to_attempt(row: dict[str, Any]) -> AttemptSummary:
+def _to_attempt(row: dict[str, Any], title: str = "") -> AttemptSummary:
     return AttemptSummary(
         id=row["id"],
         exam_id=row.get("exam_id") or "",
         kind=row.get("kind") or "practice",
+        title=title,
         score=float(row.get("score") or 0),
         correct=row.get("correct") or 0,
         total=row.get("total") or 0,
@@ -1032,7 +1037,21 @@ async def list_attempts(
         .eq("module_id", module_id).eq("user_id", user.id)
         .order("submitted_at", desc=True).execute()
     ).data or []
-    return [_to_attempt(r) for r in rows]
+
+    # One batched read for the paper names rather than one per attempt. A
+    # deleted exam leaves its attempt standing — deliberately, the sitting
+    # happened — so a missing title falls back rather than dropping the row.
+    ids = sorted({r.get("exam_id") for r in rows if r.get("exam_id")})
+    titles: dict[str, str] = {}
+    if ids:
+        titles = {
+            e["id"]: (e.get("title") or "")
+            for e in (
+                _client().table("practice_exams").select("id, title")
+                .in_("id", ids).execute()
+            ).data or []
+        }
+    return [_to_attempt(r, titles.get(r.get("exam_id"), "")) for r in rows]
 
 
 @router.get("/attempt/{attempt_id}", response_model=AttemptSummary)
@@ -1184,6 +1203,28 @@ async def submit_exam(
     getting better.
     """
     exam = _own_exam(exam_id, user.id)
+
+    # A baseline is sat once, and the guard belongs here rather than in the UI.
+    #
+    # `practice_exams_one_pre_assessment_idx` makes sure a module has only one
+    # pre-assessment *exam*, and it has always held. Nothing guarded the
+    # *attempt*, so re-entering the paper and handing it in again wrote a second
+    # row against the same exam — same answers, same score, a second baseline.
+    # The baseline is the line every later sitting is measured against; two of
+    # them is two different lines.
+    if (exam.get("kind") or "practice") == "pre_assessment":
+        already = (
+            _client().table("exam_attempts").select("id")
+            .eq("exam_id", exam_id).eq("user_id", user.id).limit(1).execute()
+        ).data or []
+        if already:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "You have already taken this module's baseline assessment. "
+                "It is kept as a permanent record — sit a practice exam to "
+                "measure yourself against it.",
+            )
+
     questions = _exam_questions(exam_id)
     if not questions:
         raise HTTPException(status.HTTP_409_CONFLICT, "This exam has no questions.")

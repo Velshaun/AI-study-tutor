@@ -770,10 +770,17 @@ async def studio_media(
             "question",
         )
 
+    # Practice exams only. The baseline is a `pre_assessment` and has its own
+    # section, which draws it as a record rather than as something to sit — but
+    # it was also being handed back here, so it appeared a third time as a
+    # tappable pill that led straight back into taking it again. A module gets
+    # one baseline forever; the only honest number of ways to start a second is
+    # none.
     exam_rows = (
         client.table("practice_exams")
-        .select("id, title, total_points, duration_minutes, created_at")
+        .select("id, title, total_points, duration_minutes, created_at, kind")
         .eq("module_id", module_id).eq("user_id", user.id)
+        .neq("kind", "pre_assessment")
         .order("created_at", desc=True).execute()
     ).data or []
     exams = [
