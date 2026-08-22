@@ -18,7 +18,14 @@ export function detailOf(kind, item) {
       item.score != null ? ` · last ${Math.round(item.score)}%` : ''
     }`
   }
-  return `${item.count || 0} ${kind === 'flashcards' ? 'cards' : 'questions'}`
+  // Practice reads like a quiz once it has been sat: the count, then the last
+  // score. It showed the count alone however many times it had been taken,
+  // which made a domain you had worked through look untouched.
+  return `${item.count || 0} ${kind === 'flashcards' ? 'cards' : 'questions'}${
+    kind === 'practice' && item.score != null
+      ? ` · last ${Math.round(item.score)}%`
+      : ''
+  }`
 }
 
 /** How far into a lecture the learner actually got, for the listening view. */

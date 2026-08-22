@@ -614,6 +614,11 @@ class StudioSet(BaseModel):
     title: str = ""
     domain_title: str | None = None
     count: int = 0
+    # The last sitting's score, where the type has sittings. A quiz row carries
+    # its own `score`; a practice pool has no row of its own, so the figure
+    # comes from the session record — the same thing that puts it in the
+    # history list, so the pill and the history can't disagree.
+    score: float | None = None
     created_at: datetime | None = None
 
 
@@ -715,6 +720,7 @@ async def studio_media(
 
     def _by_domain(
         rows: list[dict[str, Any]], noun: str, *, split_by_title: bool = False,
+        scores: dict[str, float] | None = None,
     ) -> list[StudioSet]:
         """Group a set, naming it after what it covers.
 
@@ -751,6 +757,7 @@ async def studio_media(
                 or f"{title_of.get(dom) or 'Set'} — {n} {noun}{'' if n == 1 else 's'}",
                 domain_title=title_of.get(dom),
                 count=n,
+                score=(scores or {}).get(dom),
                 created_at=newest.get((dom, named)),
             )
             for (dom, named), n in counts.items()
@@ -765,6 +772,24 @@ async def studio_media(
         split_by_title=True,
     )
 
+    # The last practice score per domain.
+    #
+    # A practice pool has no row of its own to hang a score on — the questions
+    # are answered one at a time and graded in flight — so the pill showed a
+    # question count and nothing else, however many times it had been sat. The
+    # session record is where a practice sitting actually lands, so that is
+    # where the figure comes from: one read, newest first, first one per domain
+    # wins.
+    practice_scores: dict[str, float] = {}
+    for row in (
+        client.table("study_sessions").select("item_id, score_pct, created_at")
+        .eq("module_id", module_id).eq("user_id", user.id).eq("kind", "practice")
+        .order("created_at", desc=True).execute()
+    ).data or []:
+        key = row.get("item_id")
+        if key and key not in practice_scores and row.get("score_pct") is not None:
+            practice_scores[key] = float(row["score_pct"])
+
     practice: list[StudioSet] = []
     if domain_ids:
         practice = _by_domain(
@@ -773,6 +798,7 @@ async def studio_media(
                 "practice_questions",
              ).in_("domain_id", domain_ids).is_("exam_id", "null").execute()).data or [],
             "question",
+            scores=practice_scores,
         )
 
     # Practice exams only. The baseline is a `pre_assessment` and has its own
