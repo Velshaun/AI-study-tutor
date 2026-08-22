@@ -597,6 +597,9 @@ class StudioLecture(BaseModel):
     domain_title: str | None = None
     duration_secs: int | None = None
     status: str | None = None
+    # How far in the learner got. Carried so "time listened" can open the
+    # lectures it is actually counting, rather than every lecture that exists.
+    last_position_secs: int = 0
     created_at: datetime | None = None
 
 
@@ -667,7 +670,8 @@ async def studio_media(
     lecture_rows = (
         removal.live(
             client.table("lectures")
-            .select("id, domain_id, title, duration_secs, status, created_at"),
+            .select("id, domain_id, title, duration_secs, status, "
+                    "last_position_secs, created_at"),
             "lectures",
         ).eq("module_id", module_id).eq("user_id", user.id).execute()
     ).data or []
@@ -680,6 +684,7 @@ async def studio_media(
             domain_id=l.get("domain_id"),
             domain_title=title_of.get(l.get("domain_id")),
             duration_secs=l.get("duration_secs"), status=l.get("status"),
+            last_position_secs=l.get("last_position_secs") or 0,
             created_at=l.get("created_at"),
         )
         for l in lecture_rows

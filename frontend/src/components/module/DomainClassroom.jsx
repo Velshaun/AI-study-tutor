@@ -1,19 +1,16 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
-  BookOpen,
   CheckCircle2,
   ChevronDown,
   ClipboardList,
   Layers,
   Loader2,
   Mic,
-  Play,
   Plus,
   RotateCcw,
   Sparkles,
   Target,
-  Trash2,
   X,
 } from 'lucide-react'
 import { useState } from 'react'
@@ -24,7 +21,6 @@ import { useGeneration } from '../../hooks/useGeneration'
 import { usePreferences } from '../../hooks/usePreferences'
 import { useToast } from '../../hooks/useToast'
 import { api } from '../../lib/api'
-import { formatClock } from '../../lib/format'
 import * as lectures from '../../lib/lectures'
 import {
   PROGRESS_COPY,
@@ -35,6 +31,7 @@ import {
   statusOf,
 } from '../../lib/performance'
 import { path } from '../../routes'
+import MediaItemRow from './MediaItemRow'
 
 /**
  * The Classroom, organised the way the exam is: by domain.
@@ -556,66 +553,21 @@ function MediaAction({ kind, moduleId, domain, items = [], examCount }) {
 
       {open && has && (
         <ul className="border-t border-border/60">
-          {items.map((item) => {
-            const pending = kind === 'lecture' && !lectures.isReady(item.status)
-            return (
-              <li
-                key={item.id || item.title}
-                className="flex items-center gap-2 py-2 pe-2 ps-12 text-xs"
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-pri">{item.title}</span>
-                  <span className="block truncate text-[11px] text-sec">
-                    {pending
-                      ? lectures.generatingLabel(item.status)
-                      : detailOf(kind, item)}
-                  </span>
-                </span>
-                <button
-                  type="button"
-                  onClick={() => !pending && openItem(item)}
-                  disabled={pending}
-                  aria-label={`Open ${item.title}`}
-                  className="flex size-9 shrink-0 items-center justify-center rounded-lg
-                             text-accent2 transition-colors hover:bg-accent/10
-                             disabled:opacity-40"
-                >
-                  {kind === 'lecture'
-                    ? <Play size={14} aria-hidden="true" />
-                    : <BookOpen size={14} aria-hidden="true" />}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => confirmRemove(item)}
-                  disabled={remove.isPending}
-                  aria-label={`Remove ${item.title}`}
-                  className="flex size-9 shrink-0 items-center justify-center rounded-lg
-                             text-sec transition-colors hover:bg-danger/10
-                             hover:text-danger disabled:opacity-40"
-                >
-                  <Trash2 size={14} aria-hidden="true" />
-                </button>
-              </li>
-            )
-          })}
+          {items.map((item) => (
+            <MediaItemRow
+              key={item.id || item.title}
+              kind={kind}
+              item={item}
+              onOpen={openItem}
+              onRemove={confirmRemove}
+            />
+          ))}
         </ul>
       )}
     </div>
   )
 }
 
-/** The one line under an item's name — whatever that type measures itself in. */
-function detailOf(kind, item) {
-  if (kind === 'lecture') {
-    return item.duration_secs ? formatClock(item.duration_secs) : 'Lecture'
-  }
-  if (kind === 'quiz') {
-    return `${item.question_count || 0} questions${
-      item.score != null ? ` · last ${Math.round(item.score)}%` : ''
-    }`
-  }
-  return `${item.count || 0} ${kind === 'flashcards' ? 'cards' : 'questions'}`
-}
 
 function Heading({ Icon, children }) {
   return (
