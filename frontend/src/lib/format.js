@@ -59,9 +59,10 @@ export function domainPillLabel(status) {
       return 'complete'
     case 'in_progress':
       return 'in progress'
-    case 'unlocked':
-      return 'available'
     default:
-      return 'locked'
+      // Everything else is simply open. There is no 'locked' any more, and a
+      // default that says so would relabel every unrecognised status as a
+      // gate that no longer exists.
+      return 'available'
   }
 }

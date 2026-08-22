@@ -100,7 +100,8 @@ def store_flashcards(
             "user_id": user_id,
             "title": (title or "Imported flashcards")[:MAX_TITLE_CHARS],
             "description": "Imported flashcard deck",
-            "status": "locked",
+            "status": "unlocked",
+            "is_deck": True,
             "weight_pct": 0,
             "order_index": next_index,
         }).execute()

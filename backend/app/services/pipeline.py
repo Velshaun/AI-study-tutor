@@ -349,8 +349,12 @@ def write_domains(
             "description": domain.get("description") or "",
             "order_index": domain["order_index"],
             "weight_pct": domain["weight_pct"],
-            # The first domain is open; later ones unlock as study progresses.
-            "status": "unlocked" if domain["order_index"] == 1 else "locked",
+            # Every domain is open. It used to write 'locked' for everything
+            # after the first, and nothing anywhere ever unlocked one — so a
+            # learner whose baseline says domains two to four are their weakest
+            # was shut out of exactly the material they needed. Where to start
+            # is guidance now, and guidance belongs on the screen.
+            "status": "unlocked",
             "source": "ai",
         }
         for domain in domains

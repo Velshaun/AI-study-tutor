@@ -253,7 +253,11 @@ async def import_deck(
         "user_id": user.id,
         "title": name,
         "description": "Imported flashcard deck",
-        "status": "locked",  # skipped by bulk generate + exam weighting
+        "status": "unlocked",
+        # Not a blueprint domain: skipped by bulk generate, exam weighting and
+        # domain assignment. This used to ride on status='locked', which also
+        # meant "not earned yet" — one flag, two unrelated jobs.
+        "is_deck": True,
         "weight_pct": 0,
         "order_index": next_index,
     }).execute()

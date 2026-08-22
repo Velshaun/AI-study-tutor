@@ -451,7 +451,7 @@ def even_split(module_id: str, domains: list[dict[str, Any]]) -> int:
     """
     graded = [
         d for d in domains
-        if (d.get("weight_pct") or 0) or d.get("status") != "locked"
+        if (d.get("weight_pct") or 0) or not d.get("is_deck")
     ]
     if not graded:
         return 0
@@ -480,7 +480,7 @@ def apply_to_domains(
     written = 0
     for domain in domains:
         # Decks are zero-weight on purpose and are not part of the exam.
-        if not (domain.get("weight_pct") or 0) and domain.get("status") == "locked":
+        if not (domain.get("weight_pct") or 0) and domain.get("is_deck"):
             continue
         pct = match(domain.get("title") or "", weights)
         if pct is None:

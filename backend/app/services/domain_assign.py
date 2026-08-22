@@ -86,7 +86,7 @@ def domains_for(module_id: str, user_id: str) -> list[dict[str, Any]]:
         .eq("module_id", module_id).eq("user_id", user_id)
         .order("order_index").execute()
     ).data or []
-    return [d for d in rows if (d.get("weight_pct") or 0) > 0 or d.get("status") != "locked"]
+    return [d for d in rows if (d.get("weight_pct") or 0) > 0 or not d.get("is_deck")]
 
 
 def assign(

@@ -296,7 +296,7 @@ function StepDashboard() {
           {[
             ['Design Secure Architectures', 30, 'completed'],
             ['Design Resilient Architectures', 26, 'in progress'],
-            ['High-Performing Architectures', 24, 'locked'],
+            ['High-Performing Architectures', 24, 'not started'],
           ].map(([name, weight, state]) => (
             <div key={name} className="flex items-center gap-3">
               <span

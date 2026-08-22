@@ -75,7 +75,9 @@ class Domain(BaseModel):
     description: str = ""
     order_index: int | None = None
     weight_pct: float | None = None
-    status: str = "locked"
+    # 'unlocked' | 'in_progress' | 'completed'. There is no 'locked':
+    # every domain is open, and where to start is guidance on the screen.
+    status: str = "unlocked"
     completed_at: datetime | None = None
     # Lecture progress — populated on the module-detail route (not the dashboard
     # list) so the screen can show a per-domain progress bar and offer "Resume"
@@ -214,14 +216,14 @@ def _to_domain(d: dict[str, Any]) -> Domain:
         description=d.get("description") or "",
         order_index=d.get("order_index"),
         weight_pct=d.get("weight_pct"),
-        status=d.get("status") or "locked",
+        status=d.get("status") or "unlocked",
         completed_at=d.get("completed_at"),
         lecture_id=lec.get("id"),
         lecture_status=lec.get("status"),
         last_position_secs=lec.get("last_position_secs") or 0,
         lecture_duration_secs=lec.get("duration_secs"),
         review_later_count=d.get("_review_count") or 0,
-        is_imported_deck=bool(d.get("_is_deck")),
+        is_imported_deck=bool(d.get("is_deck") or d.get("_is_deck")),
     )
 
 

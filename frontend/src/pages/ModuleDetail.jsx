@@ -406,7 +406,9 @@ function MenuItem({ Icon, label, onClick, danger }) {
 
 /* --- share a domain to a group ------------------------------------------- */
 function ShareModal({ open, module, onClose }) {
-  const domains = (module.domains || []).filter((d) => d.status !== 'locked')
+  // Every domain is shareable. This filtered out locked ones, which was every
+  // domain past the first — so sharing a module shared a fifth of it.
+  const domains = (module.domains || []).filter((d) => !d.is_imported_deck)
 
   const { data: groups } = useQuery({
     queryKey: ['groups'],

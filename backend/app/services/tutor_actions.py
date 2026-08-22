@@ -410,6 +410,6 @@ def _first_domain(module_id: str, user_id: str) -> str | None:
         .order("order_index").execute()
     ).data or []
     for row in rows:
-        if (row.get("weight_pct") or 0) or row.get("status") != "locked":
+        if (row.get("weight_pct") or 0) or not row.get("is_deck"):
             return row["id"]
     return rows[0]["id"] if rows else None

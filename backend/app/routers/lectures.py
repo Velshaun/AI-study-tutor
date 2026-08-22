@@ -194,12 +194,6 @@ async def generate(
     """
     domain = _own_domain(payload.domain_id, user.id)
 
-    if domain.get("status") == "locked":
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "This domain is still locked — complete the preceding domain first.",
-        )
-
     client = _client()
 
     # A domain holds as many lectures as the learner asks for.
@@ -503,7 +497,11 @@ async def complete_lecture(
         {"status": "completed", "completed_at": now}
     ).eq("id", domain_id).execute()
 
-    # Unlock the next domain by order_index within the same module.
+    # Which domain comes next in the blueprint — a suggestion, not a gate.
+    #
+    # This used to *unlock* it, and was the only writer that ever moved a domain
+    # out of 'locked'. Nothing is locked now, so all that is left is naming
+    # where the learner might go, which is what the completion screen offers.
     siblings = (
         client.table("domains").select("*")
         .eq("module_id", domain["module_id"]).eq("user_id", user.id)
@@ -516,17 +514,10 @@ async def complete_lecture(
         if (d.get("order_index") or 0) > current_order and d["id"] != domain_id
     ]
 
-    next_domain = None
-    for candidate in following:
-        if candidate.get("status") == "locked":
-            client.table("domains").update({"status": "unlocked"}).eq(
-                "id", candidate["id"]
-            ).execute()
-            next_domain = candidate
-            break
-        if candidate.get("status") in ("unlocked", "in_progress"):
-            next_domain = candidate  # already open; nothing to unlock
-            break
+    next_domain = next(
+        (d for d in following if d.get("status") != "completed" and not d.get("is_deck")),
+        None,
+    )
 
     remaining = [
         d for d in siblings

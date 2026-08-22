@@ -349,7 +349,7 @@ async def preview_youtube(
     choices = [
         {"id": d["id"], "title": d.get("title") or ""}
         for d in rows
-        if (d.get("weight_pct") or 0) or d.get("status") != "locked"
+        if (d.get("weight_pct") or 0) or not d.get("is_deck")
     ]
 
     suggested = domain_assign.suggest_from_title(

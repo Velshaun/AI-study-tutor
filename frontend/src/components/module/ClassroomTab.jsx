@@ -23,6 +23,7 @@ import { api } from '../../lib/api'
 import * as lectures from '../../lib/lectures'
 import { path } from '../../routes'
 import ContainerSection from './ContainerSection'
+import ContinueCard from './ContinueCard'
 import BaselineSection from './BaselineSection'
 import SessionHistory from './SessionHistory'
 
@@ -160,13 +161,22 @@ export default function ClassroomTab({ moduleId, domains, examCount = 40 }) {
     queryFn: ({ signal }) => api.performance(moduleId, signal),
   })
 
-  const studyable = (domains || []).filter(
-    (d) => d.status !== 'locked' && !d.is_imported_deck,
-  )
+  // No status filter any more: nothing is locked, and the only domains that
+  // sit out of bulk generation are imported decks.
+  const studyable = (domains || []).filter((d) => !d.is_imported_deck)
 
   return (
     <div className="space-y-8">
       <ModuleKpis moduleId={moduleId} />
+
+      {/* Above everything: five domains of accumulating material is a wall, and
+          the answer to "what do I open" should not be somewhere inside it. */}
+      <ContinueCard
+        moduleId={moduleId}
+        domains={domains}
+        performance={performance}
+        hasBaseline={performance?.has_baseline ?? true}
+      />
 
       {/* Its own section, above practice exams and never mixed with them: the
           baseline is the line the others are measured against, not one of
@@ -254,9 +264,7 @@ function GenerateAll({ moduleId, domains, performance, examCount }) {
 
   // Imported decks are studied individually; a bulk generate shouldn't write a
   // lecture for someone's Quizlet export.
-  const unlocked = (domains || []).filter(
-    (d) => d.status !== 'locked' && !d.is_imported_deck,
-  )
+  const unlocked = (domains || []).filter((d) => !d.is_imported_deck)
 
   // The server's judgement of where the work is needed, as a plain multiplier
   // per domain. Weak domains rate above 1, strong ones below.
@@ -339,7 +347,7 @@ function GenerateAll({ moduleId, domains, performance, examCount }) {
         onClose={() => setAsking(null)}
         onGenerate={(values) => {
           if (!unlocked.length) {
-            toast.error('This module has no unlocked domains yet.')
+            toast.error('This module has no domains to generate for yet.')
             return
           }
           generate(asking, values)

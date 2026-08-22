@@ -30,6 +30,7 @@ import {
   sessionLabel,
   statusOf,
 } from '../../lib/performance'
+import { rankDomains } from '../../lib/priority'
 import { path } from '../../routes'
 import MediaItemRow from './MediaItemRow'
 
@@ -81,19 +82,39 @@ export default function DomainClassroom({
   moduleId, domains, media, performance, examCount,
 }) {
   const [open, setOpen] = useState(null)
+  // Priority by default. The blueprint order is still one tap away, because a
+  // vendor's own sequence is genuinely how some people revise — and because an
+  // app that will only show you its own opinion of the order is the lock again
+  // wearing a different hat.
+  const [sort, setSort] = useState('priority')
   const byDomain = groupByDomain(media)
   const scoreOf = Object.fromEntries(
     (performance?.domains || []).map((d) => [d.domain_id, d]),
   )
 
-  const studyable = (domains || []).filter((d) => !d.is_imported_deck)
+  const ranked = rankDomains(domains || [], performance)
+  const studyable = sort === 'priority'
+    ? ranked
+    : [...ranked].sort((a, b) => (a.order_index || 0) - (b.order_index || 0))
   const decks = (domains || []).filter((d) => d.is_imported_deck)
 
   if (!studyable.length && !decks.length) return null
 
   return (
     <section className="space-y-3">
-      <Heading Icon={Sparkles}>Domains</Heading>
+      <div className="flex items-center gap-2">
+        <Heading Icon={Sparkles}>Domains</Heading>
+        <span className="flex-1" />
+        {/* Two words, no chrome: this is a preference, not a feature. */}
+        <button
+          type="button"
+          onClick={() => setSort((s) => (s === 'priority' ? 'blueprint' : 'priority'))}
+          className="shrink-0 rounded-full px-2 py-1 text-[11px] font-medium
+                     text-sec transition-colors hover:text-pri"
+        >
+          {sort === 'priority' ? 'By priority' : 'By blueprint'}
+        </button>
+      </div>
       <div className="space-y-2">
         {studyable.map((domain, index) => (
           <DomainRow
@@ -101,8 +122,13 @@ export default function DomainClassroom({
             moduleId={moduleId}
             domain={domain}
             // "Topic 2: …" — the position on the blueprint is part of how a
-            // certification names its own domains, so it is part of the label.
-            ordinal={index + 1}
+            // certification names its own domains, so it is the blueprint's
+            // number and never the row's position, which now moves.
+            ordinal={domain.order_index || null}
+            // Marked on one row only. "Not yet recommended" on the other four
+            // reads as four rejections; one quiet nudge reads as a suggestion,
+            // which is what it is.
+            recommended={sort === 'priority' && index === 0 && studyable.length > 1}
             media={byDomain[domain.id] || emptyMedia()}
             score={scoreOf[domain.id]}
             examCount={examCount}
@@ -176,7 +202,7 @@ function groupByDomain(media) {
 }
 
 function DomainRow({
-  moduleId, domain, ordinal, media, score, examCount, expanded, onToggle,
+  moduleId, domain, ordinal, recommended, media, score, examCount, expanded, onToggle,
 }) {
   const tone = statusOf(score)
   const counts = {
@@ -202,6 +228,13 @@ function DomainRow({
             <span className="min-w-0 flex-1 truncate text-sm font-medium text-pri">
               {label}
             </span>
+            {recommended && (
+              <span className="shrink-0 rounded-full bg-accent/15 px-2 py-0.5
+                               text-[10px] font-semibold uppercase tracking-wider
+                               text-accent2">
+                Start here
+              </span>
+            )}
             {progress === 'complete' && (
               <CheckCircle2 size={15} className="shrink-0 text-success" aria-hidden="true" />
             )}
