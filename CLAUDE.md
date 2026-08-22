@@ -558,6 +558,17 @@ Status is now the gate everywhere (`lib/lectures.js`), the tile shows which
 stage it's at instead of accepting the tap, and anything offering to *open* a
 lecture waits on `GET /lectures/{id}/status` first.
 
+**A pending seek belongs to the player, not to the load that queued it.**
+`loadChunk` defers its seek to `loadedmetadata`, because a fresh `src` puts the
+element back to `readyState` 0 and a browser silently ignores `currentTime`
+written there. The offset therefore cannot live in that handler's closure: the
+learner can scrub while the chunk is still loading, and the handler would then
+undo it. It lives in a ref that any handler reads, so the newest wanted position
+wins and a seek the element refused lands as soon as it can. Loads carry a token
+for the same reason in reverse — `loadedmetadata` fires on the *element*, so a
+handler left over from a superseded load would otherwise seek the chunk that
+replaced it.
+
 **The player's `error` means "can't be opened", never "audio hiccup".** They
 were one field, and the screen redirects on the first — so a dropped connection
 mid-lecture would have read as "this lecture doesn't exist" and bounced the
@@ -645,7 +656,13 @@ Bugs the first layer could not have caught, and the later ones did:
   symptom was a `failure_kind` column that read `transient` for twenty-one
   videos that had been raised as permanent.
 - `loadChunk` reading `chunks` from state in the same tick `setChunks` was
-  called, so a freshly opened lecture never got a `src`. Every visible symptom
+  called, so a freshly opened lecture never got a `src`.
+- A seek written to an element still at `readyState` 0 being dropped by the
+  browser, and then a `loadedmetadata` handler holding the offset the lecture
+  *opened* at putting the element back there — so rewinding a freshly opened
+  lecture moved the bar, moved nothing else, and snapped back. Neither half is
+  visible in the code alone: one is platform behaviour and the other only bites
+  when the two race. Every visible symptom
   pointed elsewhere — the transcript scrubbed, the button flipped to "pause" —
   because all of that runs off state the audio element was never part of.
 
