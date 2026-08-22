@@ -279,10 +279,45 @@ thresholds (675/900, 500/800) that are not linear in questions correct, so
 anyone's grading. The threshold is stored *with* each attempt so changing it
 later never re-grades an old sitting.
 
+**One baseline, guarded on the row that can duplicate.**
+`practice_exams_one_pre_assessment_idx` makes sure a module holds one
+pre-assessment *exam*, and it has always held. Nothing guarded the *attempt* —
+so re-entering the paper and handing it in again wrote a second `exam_attempts`
+row against the same exam, same answers, same score, hours apart. The baseline
+is the line every later sitting is measured against; two of them is two
+different lines, and which wins depends on how a query happens to sort.
+`submit_exam` refuses a second attempt at a pre-assessment, and
+`exam_attempts_one_baseline_idx` says the same thing in the schema.
+
+The baseline is also excluded from the studio's exam list. It has its own
+section that draws it as a record with its paper attached; being handed back as
+a sittable pill as well was the way back in.
+
 **A pre-assessment is a flag, not a second code path.** Same generator, same
 weights, same runner — `kind='pre_assessment'` and `adaptive=false`, because a
 baseline weighted towards weaknesses the app hasn't observed yet would be
 measuring nothing twice.
+
+**Nothing may fail silently on the way out of a sitting.** A forty-question
+practice run ended with no score, no session record and no missed-questions
+prompt, because `PracticeMode` read `useSessionFinish(questions[0]?.module_id)`
+and a practice question carries its domain, never a module. The hook returned at
+its first line, and everything that happens at the end of a sitting lives behind
+that line. The set carries the module now — the end of a sitting is module-level
+work while a question is not — and a run finishing without one says so instead
+of absorbing it.
+
+`QuizRunner.finish` had no error handling at all: a rejected submit left its
+guard ref stuck true (so the hand-in button was dead for the session), showed
+nothing, and became an unhandled rejection. It also wrote `completed: true`
+*before* submitting, so a failed hand-in destroyed the resume as well as the
+score. A failed submit now says so, keeps every answer, offers a retry, and the
+run is marked complete only once the paper has landed.
+
+Practice answers are saved as they are given, not when the learner moves on: the
+server grades a practice answer and stores nothing, so `study_attempts` is the
+only durable copy, and saving on advance left the last answer of every run
+living solely in the tab.
 
 **Going back means something different in each runner, and the difference is
 where the answer lives.** A quiz or exam holds its answers on the client until
@@ -575,10 +610,27 @@ mid-lecture would have read as "this lecture doesn't exist" and bounced the
 learner out of it. A media error now sets `playbackError`, which shows as a
 strip above the controls and leaves the transcript where it is.
 
-**Generation outlives the screen that started it.** `GenerationProvider` sits in
-`RootLayout` (inside the router, above every route), so navigating away doesn't
-stop a job. Tiles show "Generating…" whenever the learner returns; completion
-raises a toast that offers to open the result.
+**Generation outlives the screen that started it — and is keyed to where the
+result will land.** `GenerationProvider` sits in `RootLayout` (inside the
+router, above every route), so navigating away doesn't stop a job. It always
+did: the promise outlives the render. What didn't survive was any *sign* of it,
+because `busy` was local state inside the row that was tapped — so returning to
+the Classroom mid-build showed a screen identical to the one before the tap. A
+job you cannot see is indistinguishable from one that never started.
+
+State is therefore keyed `module:domain:kind` rather than by whichever component
+started it, and the row that will hold the result reads its own status from
+anywhere. Failures are kept rather than flashed: a toast is gone in four seconds
+and somebody in another tab never saw it, so the row says what went wrong, with
+a retry and a dismiss, until one is pressed. Reverting quietly to "None yet" is
+the same fault as the invisible success, in the other direction.
+
+Deliberately not the job queue. A `jobs` row exists so an import can survive the
+tab closing; generation dies with the tab, so there is nothing on the far end of
+a subscription to hear from. It would also fight the queue in one specific way:
+a Gemini call runs 30–120s against a claim loop that reclaims on a heartbeat, so
+long single calls would need the heartbeat lifted or be reclaimed mid-flight and
+regenerate.
 
 **Pronunciation uses the Web Speech API, not server TTS.** Instant, free,
 offline in the PWA, and no round trip for a single word.
@@ -696,7 +748,9 @@ All twelve features from the August audit are shipped. Latest work, newest first
 `20260828000000` worker kinds · `20260829000000` frozen exam weights ·
 `20260830000000` playlist sources and debounced rebuild ·
 `20260831000000` question bank · `20260901000000` qa answer rest ·
-`20260902000000` soft delete media
+`20260902000000` soft delete media ·
+`20260903000000` one baseline attempt *(written, not applied — a duplicate row
+blocks it)*
 
 Applied through the Supabase **Management API** with a personal access token
 (`POST /v1/projects/{ref}/database/query`). The service-role key cannot run DDL,
