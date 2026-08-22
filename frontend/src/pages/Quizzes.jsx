@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, Play, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import GenerateForm from '../components/study/GenerateForm'
 import QuizRunner from '../components/study/QuizRunner'
@@ -20,11 +20,16 @@ import { useSessionFinish } from '../hooks/useSessionFinish'
  */
 export default function Quizzes() {
   const { domainId } = useParams()
+  const [search] = useSearchParams()
+  // The quiz the caller meant, when they arrived from a named row rather than
+  // from the list.
+  const wanted = search.get('quiz') || ''
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const confirm = useConfirm()
   const toast = useToast()
   const [active, setActive] = useState(null) // a quiz being run
+  const [dismissed, setDismissed] = useState(false) // backed out of the named one
   const [showForm, setShowForm] = useState(false)
 
   const { data, isPending, error } = useQuery({
@@ -73,14 +78,22 @@ export default function Quizzes() {
   const quizzes = Array.isArray(data) ? data : []
   const isAuth = error instanceof ApiError && error.isAuth
 
+  // Derived rather than synchronised into state on arrival: an effect that
+  // opens the named quiz would fight `setActive(null)`, reopening it the moment
+  // the learner pressed back. `dismissed` is the only extra state that needs.
+  const running = active || (dismissed ? null : quizzes.find((q) => q.id === wanted)) || null
+
   // --- Running a quiz -------------------------------------------------------
-  if (active) {
+  if (running) {
     return (
       <div className="space-y-6">
-        <PageTitle onBack={() => setActive(null)} backLabel="All quizzes">
-          {active.title}
+        <PageTitle
+          onBack={() => { setActive(null); setDismissed(true) }}
+          backLabel="All quizzes"
+        >
+          {running.title}
         </PageTitle>
-        <ResumableQuiz quiz={active} onSubmit={submitQuiz} />
+        <ResumableQuiz quiz={running} onSubmit={submitQuiz} />
       </div>
     )
   }

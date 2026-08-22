@@ -68,7 +68,9 @@ export function sessionLabel(entry) {
 /** Progress through a domain's study material, for the collapsed row. */
 export function mediaSummary({ lecture, flashcards, quizzes, practice }) {
   const parts = []
-  if (lecture) parts.push('Lecture')
+  // A number, not a flag: a domain holds as many lectures as were asked for,
+  // and "Lecture" beside three of them undersells what is there.
+  if (lecture) parts.push(`${lecture} lecture${lecture === 1 ? '' : 's'}`)
   if (flashcards) parts.push(`${flashcards} card${flashcards === 1 ? '' : 's'}`)
   if (quizzes) parts.push(`${quizzes} quiz${quizzes === 1 ? '' : 'zes'}`)
   if (practice) parts.push(`${practice} practice`)

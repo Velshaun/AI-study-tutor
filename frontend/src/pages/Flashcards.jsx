@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus } from 'lucide-react'
 import { useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import FlashcardDeck from '../components/study/FlashcardDeck'
 import { useAttempt } from '../hooks/useAttempt'
@@ -20,6 +20,11 @@ import { useSessionFinish } from '../hooks/useSessionFinish'
  */
 export default function Flashcards() {
   const { domainId } = useParams()
+  // Which deck of this domain, if the caller named one. A domain holds several
+  // now, and arriving from a named row into every card the domain has ever had
+  // is not opening the thing that was tapped.
+  const [search] = useSearchParams()
+  const deck = search.get('deck') || ''
   // Cards are fetched by domain, so the module comes off the cards
   // themselves — a container belongs to the module, not the domain.
   // A deck is keyed by its domain — the cards have no set of their own.
@@ -71,7 +76,11 @@ export default function Flashcards() {
     if (ok) remove.mutate(card)
   }
 
-  const cards = Array.isArray(data) ? data : []
+  const all = Array.isArray(data) ? data : []
+  // An unrecognised deck name shows the domain rather than an empty screen:
+  // the cards are the point, and a stale link should degrade, not dead-end.
+  const named = deck ? all.filter((c) => (c.deck_title || '') === deck) : []
+  const cards = named.length ? named : all
   const finishSession = useSessionFinish(cards[0]?.module_id)
   const isAuth = error instanceof ApiError && error.isAuth
 

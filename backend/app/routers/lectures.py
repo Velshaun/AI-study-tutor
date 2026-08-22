@@ -201,21 +201,40 @@ async def generate(
         )
 
     client = _client()
-    existing = (
+
+    # A domain holds as many lectures as the learner asks for.
+    #
+    # This used to find a lecture with the same voice and length and hand it
+    # back, or overwrite it on `regenerate` — one lecture per (domain, voice,
+    # length), forever. That is wrong for how the thing is actually used: a ten
+    # minute lecture is an introduction, and the second one is the next part of
+    # the subject rather than a correction of the first. Overwriting threw away
+    # the thing the learner had already listened to.
+    #
+    # The only reuse kept is the narrow one that stops a double tap costing two
+    # generations: something for this domain that is *still being written* is
+    # handed back rather than duplicated. A finished lecture is never reused —
+    # asking again means asking for another.
+    in_flight = (
         client.table("lectures").select("*")
         .eq("domain_id", payload.domain_id)
         .eq("user_id", user.id)
-        .eq("tutor_voice", payload.voice)
-        .eq("length_preference", payload.length)
+        .in_("status", ["pending", "generating_text", "generating_audio"])
         .limit(1).execute()
     ).data or []
+    if in_flight and not payload.regenerate:
+        return _to_lecture(in_flight[0], with_urls=True)
 
-    if existing and not payload.regenerate:
-        row = existing[0]
-        if row.get("status") in ("ready", "generating_text", "generating_audio"):
-            # Already have it (or it's on the way) — hand it back rather than
-            # paying for the same generation twice.
-            return _to_lecture(row, with_urls=True)
+    # `regenerate` replaces the newest one rather than adding to the pile —
+    # "make that again" is a complaint about the last one, not a request for a
+    # third.
+    existing = []
+    if payload.regenerate:
+        existing = (
+            client.table("lectures").select("*")
+            .eq("domain_id", payload.domain_id).eq("user_id", user.id)
+            .order("created_at", desc=True).limit(1).execute()
+        ).data or []
 
     module = (
         client.table("modules").select("*")

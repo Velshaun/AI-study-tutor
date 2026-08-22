@@ -60,6 +60,9 @@ class Flashcard(BaseModel):
     # the definition popover opens with no round trip.
     terms: list[dict[str, Any]] = Field(default_factory=list)
     difficulty: str | None = None
+    # Which deck this card was generated into. A domain holds several, so the
+    # title is how a caller asks for one of them rather than all of them.
+    deck_title: str = ""
     is_favourite: bool = False
     created_at: datetime | None = None
 
@@ -121,9 +124,27 @@ def _to_card(row: dict[str, Any]) -> Flashcard:
         front=row.get("front") or "",
         back=row.get("back") or "",
         difficulty=row.get("difficulty"),
+        deck_title=(row.get("deck_title") or "").strip(),
         is_favourite=bool(row.get("is_favourite")),
         created_at=row.get("created_at"),
     )
+
+
+def _unique_deck_title(domain_id: str, user_id: str, wanted: str) -> str:
+    """`wanted`, or `wanted (2)`, `wanted (3)`… if the domain already has it."""
+    if not wanted or not schema_features.has_column("flashcards", "deck_title"):
+        return wanted
+    rows = (
+        _client().table("flashcards").select("deck_title")
+        .eq("domain_id", domain_id).eq("user_id", user_id).execute()
+    ).data or []
+    taken = {(r.get("deck_title") or "").strip() for r in rows}
+    if wanted not in taken:
+        return wanted
+    n = 2
+    while f"{wanted} ({n})" in taken:
+        n += 1
+    return f"{wanted} ({n})"[:120]
 
 
 # --- Routes -----------------------------------------------------------------
@@ -155,6 +176,15 @@ async def generate(
     except GenerationError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
 
+    # Decks are grouped by title, so two batches that land on the same name
+    # would read as one deck of forty rather than two of twenty. The model has
+    # no way of knowing what it called the last one, so the collision is
+    # resolved here — a suffix, not a refusal, because the name it chose is
+    # still the best description of what the cards are about.
+    deck_title = _unique_deck_title(
+        payload.domain_id, user.id, (cards[0].get("deck_title") if cards else "") or "",
+    )
+
     rows = [
         {
             "domain_id": payload.domain_id,
@@ -164,7 +194,7 @@ async def generate(
             "back": c["back"],
             "difficulty": difficulty,
             "terms": c.get("terms") or [],
-            "deck_title": c.get("deck_title") or "",
+            "deck_title": deck_title,
         }
         for c in cards
     ]

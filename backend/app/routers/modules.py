@@ -595,8 +595,12 @@ class StudioLecture(BaseModel):
 
 
 class StudioSet(BaseModel):
-    """A per-domain deck/set (flashcards, practice questions)."""
+    """A deck or set. Several per domain, where the type supports it."""
 
+    # "<domain>:<deck title>" for decks, which have no row of their own, and
+    # just the domain id for pools that are genuinely one per domain. Whatever
+    # opens or removes one needs a handle, and this is it.
+    id: str = ""
     domain_id: str
     title: str = ""
     domain_title: str | None = None
@@ -694,43 +698,54 @@ async def studio_media(
         for q in quiz_rows
     ]
 
-    def _by_domain(rows: list[dict[str, Any]], noun: str) -> list[StudioSet]:
-        """Group a per-domain set, naming it after what it covers.
+    def _by_domain(
+        rows: list[dict[str, Any]], noun: str, *, split_by_title: bool = False,
+    ) -> list[StudioSet]:
+        """Group a set, naming it after what it covers.
 
         Decks and practice sets have no row of their own to hang a generated
         title on, so the name is built from the domain and the size — "Core CLI
         Commands — 50 cards" — which is what the learner is choosing between.
+
+        `split_by_title` makes a domain able to hold several. Cards carry a
+        `deck_title`, so two decks generated for the same domain are two decks
+        rather than one pile of cards: a second set made a week later is the
+        next batch, not a correction of the first, and merging them loses the
+        only handle the learner has on which was which. Practice questions have
+        no such handle and stay one pool per domain.
         """
-        counts: dict[str, int] = {}
-        newest: dict[str, Any] = {}
-        titles: dict[str, str] = {}
+        counts: dict[tuple[str, str], int] = {}
+        newest: dict[tuple[str, str], Any] = {}
         for r in rows:
             dom = r.get("domain_id")
             if not dom:
                 continue
-            counts[dom] = counts.get(dom, 0) + 1
-            named = (r.get("deck_title") or "").strip()
-            if named:
-                titles.setdefault(dom, named)
+            named = (r.get("deck_title") or "").strip() if split_by_title else ""
+            key = (dom, named)
+            counts[key] = counts.get(key, 0) + 1
             stamp = r.get("created_at")
-            if stamp and (dom not in newest or str(stamp) > str(newest[dom])):
-                newest[dom] = stamp
+            if stamp and (key not in newest or str(stamp) > str(newest[key])):
+                newest[key] = stamp
         return [
             StudioSet(
-                domain_id=d,
-                title=titles.get(d)
-                or f"{title_of.get(d) or 'Set'} — {n} {noun}{'' if n == 1 else 's'}",
-                domain_title=title_of.get(d),
+                # The id a client needs to open or delete this one. A deck has
+                # no row, so its identity is the pair that defines it.
+                id=f"{dom}:{named}" if split_by_title else dom,
+                domain_id=dom,
+                title=named
+                or f"{title_of.get(dom) or 'Set'} — {n} {noun}{'' if n == 1 else 's'}",
+                domain_title=title_of.get(dom),
                 count=n,
-                created_at=newest.get(d),
+                created_at=newest.get((dom, named)),
             )
-            for d, n in counts.items()
+            for (dom, named), n in counts.items()
         ]
 
     flashcards = _by_domain(
         (client.table("flashcards").select("domain_id, created_at, deck_title")
          .eq("module_id", module_id).eq("user_id", user.id).execute()).data or [],
         "card",
+        split_by_title=True,
     )
 
     practice: list[StudioSet] = []

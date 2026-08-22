@@ -8,6 +8,7 @@ import {
   Loader2,
   Mic,
   Play,
+  Plus,
   Sparkles,
   Target,
 } from 'lucide-react'
@@ -51,16 +52,19 @@ const MEDIA = {
   lecture: {
     Icon: Mic,
     label: 'Lecture',
+    plural: 'Lectures',
     busy: 'Building the lecture…',
   },
   flashcards: {
     Icon: Layers,
     label: 'Flashcards',
+    plural: 'Flashcard decks',
     busy: 'Writing cards…',
   },
   quiz: {
     Icon: ClipboardList,
     label: 'Quiz',
+    plural: 'Quizzes',
     busy: 'Writing questions…',
   },
   practice: {
@@ -121,7 +125,7 @@ export default function DomainClassroom({
 }
 
 function emptyMedia() {
-  return { lecture: null, flashcards: null, quizzes: [], practice: null }
+  return { lectures: [], flashcards: [], quizzes: [], practice: [] }
 }
 
 /** Everything generated, filed under the domain it was generated for. */
@@ -133,24 +137,37 @@ function groupByDomain(media) {
     return out[id]
   }
 
+  // Everything is a list.
+  //
+  // This used to keep one of each — `slot.lecture = lecture` — which was the
+  // whole of the one-per-domain limit: the data always held several, the
+  // grouping threw them away. A ten-minute lecture is an introduction, and the
+  // second one is the next part of the subject rather than a correction of the
+  // first.
+  //
+  // Counts are `list.length` rather than a number carried alongside, so a row
+  // reading "Lectures · 3" that opens to two entries is not a state this can
+  // reach.
   for (const lecture of media?.lectures || []) {
-    const slot = bucket(lecture.domain_id)
-    // A ready lecture always beats one still being built, so an expanded domain
-    // offers the finished thing rather than the spinner beside it.
-    if (slot && (!slot.lecture || lectures.isReady(lecture.status))) {
-      slot.lecture = lecture
-    }
+    bucket(lecture.domain_id)?.lectures.push(lecture)
   }
   for (const deck of media?.flashcards || []) {
-    const slot = bucket(deck.domain_id)
-    if (slot) slot.flashcards = deck
+    bucket(deck.domain_id)?.flashcards.push(deck)
   }
   for (const quiz of media?.quizzes || []) {
     bucket(quiz.domain_id)?.quizzes.push(quiz)
   }
   for (const set of media?.practice || []) {
-    const slot = bucket(set.domain_id)
-    if (slot) slot.practice = set
+    bucket(set.domain_id)?.practice.push(set)
+  }
+
+  // Newest first inside every row: the thing most likely to be wanted is the
+  // thing just made.
+  for (const slot of Object.values(out)) {
+    for (const key of ['lectures', 'flashcards', 'quizzes', 'practice']) {
+      slot[key].sort((a, b) =>
+        String(b.created_at || '').localeCompare(String(a.created_at || '')))
+    }
   }
   return out
 }
@@ -160,10 +177,12 @@ function DomainRow({
 }) {
   const tone = statusOf(score)
   const counts = {
-    lecture: Boolean(media.lecture),
-    flashcards: media.flashcards?.count || 0,
+    lecture: media.lectures.length,
+    // Cards across every deck of this domain — progress is about how much
+    // material exists, not how many piles it is in.
+    flashcards: media.flashcards.reduce((n, d) => n + (d.count || 0), 0),
     quizzes: media.quizzes.length,
-    practice: media.practice?.count || 0,
+    practice: media.practice.reduce((n, p) => n + (p.count || 0), 0),
   }
   const progress = domainProgress(score, counts)
   const label = ordinal ? `Topic ${ordinal}: ${domain.title}` : domain.title
@@ -215,20 +234,20 @@ function DomainRow({
             </p>
           )}
           <MediaAction
-            kind="lecture" moduleId={moduleId} domain={domain} item={media.lecture}
-            examCount={examCount}
+            kind="lecture" moduleId={moduleId} domain={domain}
+            items={media.lectures} examCount={examCount}
           />
           <MediaAction
             kind="flashcards" moduleId={moduleId} domain={domain}
-            item={media.flashcards} examCount={examCount}
+            items={media.flashcards} examCount={examCount}
           />
           <MediaAction
             kind="quiz" moduleId={moduleId} domain={domain}
-            item={media.quizzes[0]} examCount={examCount}
+            items={media.quizzes} examCount={examCount}
           />
           <MediaAction
             kind="practice" moduleId={moduleId} domain={domain}
-            item={media.practice} examCount={examCount}
+            items={media.practice} examCount={examCount}
           />
         </div>
       )}
@@ -267,29 +286,58 @@ function Strength({ score, tone }) {
 }
 
 /**
- * One media type within a domain: open it, or make it.
+ * One media type within a domain: how many there are, what they are called, and
+ * a way into each.
  *
  * The generate call carries this domain's id, which is the whole of what
  * "scoped to that domain automatically" means — there is no assignment step to
  * forget because there is no assignment step.
+ *
+ * The row used to be a single button holding a single item, which is what made
+ * the Classroom one-of-each: a second lecture had nowhere to be drawn, so
+ * generation was written to reuse or overwrite instead. Now the row is a count
+ * plus the names, and tapping it opens the list in place rather than navigating
+ * away — the reason to look is usually to pick between two of them, and a
+ * screen change to answer "which ones do I have" costs more than it tells.
  */
-function MediaAction({ kind, moduleId, domain, item, examCount }) {
+function MediaAction({ kind, moduleId, domain, items = [], examCount }) {
   const cfg = MEDIA[kind]
   const navigate = useNavigate()
   const toast = useToast()
   const queryClient = useQueryClient()
   const { preferences } = usePreferences()
   const [busy, setBusy] = useState(false)
+  const [open, setOpen] = useState(false)
 
-  const lectureBuilding =
-    kind === 'lecture' && item && !lectures.isReady(item.status)
-  const exists = Boolean(item) && !lectureBuilding
+  // A lecture still being written counts towards the row — the learner asked
+  // for it and wants to see it coming — but cannot be opened.
+  const building = items.filter(
+    (i) => kind === 'lecture' && !lectures.isReady(i.status),
+  )
+  const count = items.length
+  const has = count > 0
 
-  function openIt() {
-    if (kind === 'lecture') navigate(path('lecture', { id: item.id }))
-    else if (kind === 'flashcards') navigate(path('flashcards', { domainId: domain.id }))
-    else if (kind === 'quiz') navigate(path('quizzes', { domainId: domain.id }))
-    else navigate(path('practiceMode', { domainId: domain.id }))
+  // Open the one that was tapped, not the type it belongs to.
+  //
+  // Decks and quizzes live on domain-scoped screens that list everything the
+  // domain holds, which was right when a domain held one. Naming the item in
+  // the query string keeps those screens as they are and still lands on the
+  // thing the learner pointed at. Practice questions are genuinely one pool per
+  // domain, so there is nothing to name.
+  function openItem(item) {
+    if (kind === 'lecture') {
+      navigate(path('lecture', { id: item.id }))
+    } else if (kind === 'flashcards') {
+      const deck = item.title && item.id?.includes(':') ? item.id.split(':').slice(1).join(':') : ''
+      navigate(
+        path('flashcards', { domainId: domain.id }) +
+          (deck ? `?deck=${encodeURIComponent(deck)}` : ''),
+      )
+    } else if (kind === 'quiz') {
+      navigate(`${path('quizzes', { domainId: domain.id })}?quiz=${item.id}`)
+    } else {
+      navigate(path('practiceMode', { domainId: domain.id }))
+    }
   }
 
   const build = useMutation({
@@ -321,70 +369,142 @@ function MediaAction({ kind, moduleId, domain, item, examCount }) {
       queryClient.invalidateQueries({ queryKey: ['studio', moduleId] })
       queryClient.invalidateQueries({ queryKey: ['module', moduleId] })
       toast.success(`${cfg.label} ready for ${domain.title}`)
+      // Open the list so the new one is visible where it landed, rather than
+      // behind a row that still reads the same as before.
+      setOpen(true)
     },
     onError: (e) =>
       toast.error(e?.message || `Couldn’t build the ${cfg.label.toLowerCase()}`),
     onSettled: () => setBusy(false),
   })
 
-  const working = busy || build.isPending || lectureBuilding
-  const subtitle = lectureBuilding
-    ? lectures.generatingLabel(item.status)
-    : kind === 'lecture' && item?.duration_secs
-      ? formatClock(item.duration_secs)
-      : kind === 'flashcards' && item?.count
-        ? `${item.count} cards`
-        : kind === 'quiz' && item
-          ? `${item.question_count} questions${
-              item.score != null ? ` · last ${Math.round(item.score)}%` : ''
-            }`
-          : kind === 'practice' && item?.count
-            ? `${item.count} questions`
-            : 'Not generated yet'
+  const working = busy || build.isPending
+
+  // The names, comma-separated, on one line. Truncation is the browser's job —
+  // `truncate` clips with an ellipsis at whatever width there is, which is the
+  // only thing that stays right across a phone and a desktop. Wrapping was the
+  // alternative and would push every other row down the screen.
+  const preview = items.map((i) => i.title).filter(Boolean).join(', ')
+  const subtitle = working
+    ? cfg.busy
+    : !has
+      ? 'None yet'
+      : building.length
+        ? `${preview} · ${building.length} still building`
+        : preview
 
   return (
-    <button
-      onClick={() => {
-        if (working) return
-        if (exists) return openIt()
-        setBusy(true)
-        build.mutate()
-      }}
-      disabled={working}
-      aria-busy={working}
-      className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors ${
-        working
-          ? 'bg-surface2 opacity-70'
-          : exists
-            ? 'bg-surface2 hover:bg-surface2/70'
-            : 'border border-dashed border-border hover:border-accent/50'
-      }`}
-    >
-      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent2">
-        {working ? (
-          <Loader2 size={15} className="animate-spin" aria-hidden="true" />
+    <div className={`overflow-hidden rounded-xl ${
+      has ? 'bg-surface2' : 'border border-dashed border-border'
+    }`}>
+      <div className="flex items-center gap-3 px-3 py-2.5">
+        <button
+          type="button"
+          onClick={() => (has ? setOpen((v) => !v) : (setBusy(true), build.mutate()))}
+          disabled={working}
+          aria-expanded={has ? open : undefined}
+          className="flex min-w-0 flex-1 items-center gap-3 text-left"
+        >
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent2">
+            {working ? (
+              <Loader2 size={15} className="animate-spin" aria-hidden="true" />
+            ) : (
+              <cfg.Icon size={15} aria-hidden="true" />
+            )}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm text-pri">
+              {count > 1 ? cfg.plural || cfg.label : cfg.label}
+              {/* Only when there is more than one. A "1" beside every row is
+                  noise, and practice questions are one pool per domain by
+                  design — the size of that pool belongs in the subtitle, not
+                  in a badge claiming the domain holds one of something. */}
+              {count > 1 && (
+                <span className="ml-1.5 text-xs font-normal text-sec">{count}</span>
+              )}
+            </span>
+            <span className="block truncate text-xs text-sec">{subtitle}</span>
+          </span>
+          {has && !working && (
+            <ChevronDown
+              size={15}
+              aria-hidden="true"
+              className={`shrink-0 text-sec transition-transform ${open ? 'rotate-180' : ''}`}
+            />
+          )}
+        </button>
+
+        {/* Making another is one tap even once the list is long — accumulating
+            is the point, so "add" cannot be buried inside the list it adds to.
+            On an empty row the whole row already generates, so this is a label
+            rather than a second button competing with it. */}
+        {!working && (has ? (
+          <button
+            type="button"
+            onClick={() => { setBusy(true); build.mutate() }}
+            aria-label={`Generate another ${cfg.label.toLowerCase()} for ${domain.title}`}
+            className="flex size-8 shrink-0 items-center justify-center rounded-lg
+                       text-accent2 transition-colors hover:bg-accent/10"
+          >
+            <Plus size={15} aria-hidden="true" />
+          </button>
         ) : (
-          <cfg.Icon size={15} aria-hidden="true" />
-        )}
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm text-pri">{cfg.label}</span>
-        <span className="block truncate text-xs text-sec">
-          {working && !lectureBuilding ? cfg.busy : subtitle}
-        </span>
-      </span>
-      {!working &&
-        (exists ? (
-          kind === 'lecture' ? (
-            <Play size={15} className="shrink-0 text-accent2" aria-hidden="true" />
-          ) : (
-            <BookOpen size={15} className="shrink-0 text-accent2" aria-hidden="true" />
-          )
-        ) : (
-          <span className="shrink-0 text-xs font-medium text-accent2">Generate</span>
+          <span className="shrink-0 pe-1 text-xs font-medium text-accent2">
+            Generate
+          </span>
         ))}
-    </button>
+      </div>
+
+      {open && has && (
+        <ul className="border-t border-border/60">
+          {items.map((item) => {
+            const pending = kind === 'lecture' && !lectures.isReady(item.status)
+            return (
+              <li
+                key={item.id || item.title}
+                className="flex items-center gap-2 py-2 pe-2 ps-12 text-xs"
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-pri">{item.title}</span>
+                  <span className="block truncate text-[11px] text-sec">
+                    {pending
+                      ? lectures.generatingLabel(item.status)
+                      : detailOf(kind, item)}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => !pending && openItem(item)}
+                  disabled={pending}
+                  aria-label={`Open ${item.title}`}
+                  className="flex size-9 shrink-0 items-center justify-center rounded-lg
+                             text-accent2 transition-colors hover:bg-accent/10
+                             disabled:opacity-40"
+                >
+                  {kind === 'lecture'
+                    ? <Play size={14} aria-hidden="true" />
+                    : <BookOpen size={14} aria-hidden="true" />}
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </div>
   )
+}
+
+/** The one line under an item's name — whatever that type measures itself in. */
+function detailOf(kind, item) {
+  if (kind === 'lecture') {
+    return item.duration_secs ? formatClock(item.duration_secs) : 'Lecture'
+  }
+  if (kind === 'quiz') {
+    return `${item.question_count || 0} questions${
+      item.score != null ? ` · last ${Math.round(item.score)}%` : ''
+    }`
+  }
+  return `${item.count || 0} ${kind === 'flashcards' ? 'cards' : 'questions'}`
 }
 
 function Heading({ Icon, children }) {
