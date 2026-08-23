@@ -195,6 +195,7 @@ export default function ModuleDetail() {
       />
 
       <AddSourceSheet
+        onError={(m) => toast.error(m)}
         open={showAdd}
         moduleId={id}
         onClose={() => setShowAdd(false)}

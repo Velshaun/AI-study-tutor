@@ -819,8 +819,11 @@ async def studio_media(
     # one baseline forever; the only honest number of ways to start a second is
     # none.
     exam_rows = (
-        client.table("practice_exams")
-        .select("id, title, total_points, duration_minutes, created_at, kind")
+        removal.live(
+            client.table("practice_exams")
+            .select("id, title, total_points, duration_minutes, created_at, kind"),
+            "practice_exams",
+        )
         .eq("module_id", module_id).eq("user_id", user.id)
         .neq("kind", "pre_assessment")
         .order("created_at", desc=True).execute()

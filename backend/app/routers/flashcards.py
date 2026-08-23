@@ -276,7 +276,19 @@ async def import_deck(
         }
         for front, back in cards
     ]
-    client.table("flashcards").insert(rows).execute()
+    # The domain was created to hold these cards. If they do not land it is not
+    # an empty deck, it is a heading with nothing under it and no way to fill
+    # it — so it goes back too.
+    try:
+        written = (client.table("flashcards").insert(rows).execute()).data
+    except Exception:
+        written = None
+    if not written:
+        client.table("domains").delete().eq("id", domain_id).execute()
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "Could not save those cards — nothing was imported.",
+        )
 
     return ImportResult(domain_id=domain_id, domain_title=name, count=len(rows))
 

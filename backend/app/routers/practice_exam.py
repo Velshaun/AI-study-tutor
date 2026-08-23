@@ -39,7 +39,9 @@ from pydantic import BaseModel, Field
 
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import exam_catalog, exam_profile, performance, schema_features
+from app.services import (
+    exam_catalog, exam_profile, performance, removal, schema_features,
+)
 from app.services.ai_service import (
     MAX_QUIZ_QUESTIONS,
     GenerationError,
@@ -968,7 +970,9 @@ async def list_exams(
     user: AuthUser = Depends(get_current_user),
 ) -> list[PracticeExam]:
     """A module's past exams (metadata only — no questions)."""
-    query = _client().table("practice_exams").select("*").eq("user_id", user.id)
+    query = removal.live(
+        _client().table("practice_exams").select("*"), "practice_exams",
+    ).eq("user_id", user.id)
     if module_id:
         query = query.eq("module_id", module_id)
     rows = (query.order("created_at", desc=True).execute()).data or []
@@ -1289,8 +1293,19 @@ async def delete_exam(
     exam_id: str,
     user: AuthUser = Depends(get_current_user),
 ) -> None:
-    """Delete an exam; its questions cascade."""
+    """Remove an exam from the learner's screens.
+
+    Not a delete. `exam_attempts.exam_id` cascades, so deleting a paper deleted
+    every sitting of it — the score, the per-domain breakdown, the baseline
+    comparison, and the inputs that decide what gets generated next. A sitting
+    is the most expensive thing a learner produces here, and clearing a paper
+    off a list is not a request to forget having taken it.
+    """
     _own_exam(exam_id, user.id)
-    _client().table("practice_exams").delete().eq("id", exam_id).eq(
-        "user_id", user.id
-    ).execute()
+    table = _client().table("practice_exams")
+    if removal.supported("practice_exams"):
+        table.update(removal.stamp()).eq("id", exam_id).eq(
+            "user_id", user.id
+        ).execute()
+    else:
+        table.delete().eq("id", exam_id).eq("user_id", user.id).execute()

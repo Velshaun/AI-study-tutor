@@ -481,9 +481,27 @@ def _write_exam(*, module_id, user_id, questions, title) -> str:
     if not exam:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Could not create that set.")
     exam_id = exam[0]["id"]
-    client.table("practice_questions").insert(
-        [{**q, "exam_id": exam_id} for q in questions]
-    ).execute()
+    # Two writes, and the second one can fail on its own.
+    #
+    # Nothing checked it, so a failed question insert left an exam row with no
+    # questions in it: listed in the Classroom, tappable, and answering with a
+    # 409 the moment it was opened. The parent goes back if the children do not
+    # arrive — there is no transaction to lean on through PostgREST, so this is
+    # the compensating delete.
+    try:
+        written = (
+            client.table("practice_questions").insert(
+                [{**q, "exam_id": exam_id} for q in questions]
+            ).execute()
+        ).data
+    except Exception:
+        written = None
+    if not written:
+        client.table("practice_exams").delete().eq("id", exam_id).execute()
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "Could not save the questions for that set — nothing was created.",
+        )
     return exam_id
 
 

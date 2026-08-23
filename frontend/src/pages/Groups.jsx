@@ -9,6 +9,7 @@ import PageTitle from '../components/PageTitle'
 import SectionHeader from '../components/SectionHeader'
 import Toggle from '../components/Toggle'
 import { useAuth } from '../hooks/useAuth'
+import { useToast } from '../hooks/useToast'
 import { api, ApiError } from '../lib/api'
 
 /**
@@ -30,6 +31,7 @@ export default function Groups() {
 
 /* --- list ---------------------------------------------------------------- */
 function GroupList({ onOpen }) {
+  const toast = useToast()
   const queryClient = useQueryClient()
   const [showCreate, setShowCreate] = useState(false)
   const [showJoin, setShowJoin] = useState(false)
@@ -46,6 +48,7 @@ function GroupList({ onOpen }) {
       setShowCreate(false)
       onOpen(group.id)
     },
+      onError: (e) => toast.error(e?.message || 'Could not create that group.'),
   })
 
   const join = useMutation({
@@ -55,6 +58,7 @@ function GroupList({ onOpen }) {
       setShowJoin(false)
       onOpen(group.id)
     },
+      onError: (e) => toast.error(e?.message || 'Could not join with that code.'),
   })
 
   const groups = Array.isArray(data) ? data : []
@@ -212,6 +216,7 @@ function JoinModal({ open, onClose, onSubmit, pending, error, onDismissError }) 
 
 /* --- detail -------------------------------------------------------------- */
 function GroupDetail({ groupId, onBack }) {
+  const toast = useToast()
   const { user } = useAuth()
   const queryClient = useQueryClient()
   const invalidate = () =>
@@ -233,10 +238,12 @@ function GroupDetail({ groupId, onBack }) {
   const leave = useMutation({
     mutationFn: () => api.leaveGroup(groupId, user?.id),
     onSuccess: onBack,
+      onError: (e) => toast.error(e?.message || 'Could not leave that group.'),
   })
   const destroy = useMutation({
     mutationFn: () => api.deleteGroup(groupId),
     onSuccess: onBack,
+      onError: (e) => toast.error(e?.message || 'Could not delete that group.'),
   })
 
   const [copied, setCopied] = useState(false)

@@ -3,6 +3,7 @@ import { Pencil } from 'lucide-react'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { useToast } from '../../hooks/useToast'
 import { api } from '../../lib/api'
 import { path } from '../../routes'
 
@@ -29,6 +30,7 @@ function updatedLabel(iso) {
 }
 
 export default function ModuleCard({ module, active = false }) {
+  const toast = useToast()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
@@ -47,6 +49,7 @@ export default function ModuleCard({ module, active = false }) {
   const rename = useMutation({
     mutationFn: (title) => api.renameModule(module.id, title),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['modules'] }),
+      onError: (e) => toast.error(e?.message || 'Could not rename that module.'),
   })
 
   function open() {

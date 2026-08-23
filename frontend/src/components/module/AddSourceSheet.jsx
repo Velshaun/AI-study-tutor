@@ -52,7 +52,9 @@ import {
  * seven ways in, so the fastest way to import a playlist was to create a module
  * from something else first.
  */
-export default function AddSourceSheet({ open, moduleId, onClose, onImportCsv }) {
+export default function AddSourceSheet({
+  open, moduleId, onClose, onImportCsv, onError,
+}) {
   const navigate = useNavigate()
   // One input, retargeted per route. The `accept` list (and `capture`) is what
   // decides which app a phone opens, and setting it at click time keeps that
@@ -212,8 +214,13 @@ export default function AddSourceSheet({ open, moduleId, onClose, onImportCsv })
               // ?csv=1 opens the importer on arrival, so the dashboard route
               // ends in the same place the in-module one starts.
               navigate(`${path('module', { id: created.id })}?csv=1`)
-            } catch {
-              // As above.
+            } catch (e) {
+              // A toast is not shouting into an empty room: ToastProvider sits
+              // above the router, so it shows whether or not this sheet is
+              // still mounted. Without it, tapping this from the dashboard and
+              // hitting a failure did nothing at all, which is the same
+              // silence as a button that is not wired up.
+              onError?.(e?.message || 'Could not start a new module.')
             }
           }}
         />
@@ -242,10 +249,8 @@ export default function AddSourceSheet({ open, moduleId, onClose, onImportCsv })
             try {
               const created = await api.createModule()
               navigate(path('importSources', { id: created.id }))
-            } catch {
-              // The screen it would have opened is the only thing lost; the
-              // sheet has already closed, so a toast would be shouting into an
-              // empty room. The learner can try again.
+            } catch (e) {
+              onError?.(e?.message || 'Could not start a new module.')
             }
           }}
         />

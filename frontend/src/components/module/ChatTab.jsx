@@ -249,6 +249,7 @@ export default function ChatTab({ moduleId }) {
   const clear = useMutation({
     mutationFn: () => api.clearTutor(moduleId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tutor', moduleId] }),
+      onError: (e) => toast.error(e?.message || 'Could not clear the conversation.'),
   })
 
   const add = useMutation({

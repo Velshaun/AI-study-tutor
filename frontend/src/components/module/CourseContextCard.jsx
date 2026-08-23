@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, FileText, Loader2, Type, Upload, X } from 'lucide-react'
 import { useRef, useState } from 'react'
 
+import { useToast } from '../../hooks/useToast'
 import { api } from '../../lib/api'
 import ErrorBanner from '../ErrorBanner'
 
@@ -14,6 +15,7 @@ import ErrorBanner from '../ErrorBanner'
  * accepts either.
  */
 export default function CourseContextCard({ moduleId }) {
+  const toast = useToast()
   const queryClient = useQueryClient()
   const fileInput = useRef(null)
   const [mode, setMode] = useState('paste') // 'paste' | 'upload'
@@ -48,6 +50,7 @@ export default function CourseContextCard({ moduleId }) {
   const clear = useMutation({
     mutationFn: () => api.clearCourseContext(moduleId),
     onSuccess: invalidate,
+      onError: (e) => toast.error(e?.message || 'Could not clear the course context.'),
   })
 
   const existing = data?.course_context

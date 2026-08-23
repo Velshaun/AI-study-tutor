@@ -156,7 +156,16 @@ def store_questions(
         q.to_row(position=i, origin=ORIGIN, exam_id=exam_id, batch_id=batch_id)
         for i, q in enumerate(questions)
     ], "practice_questions")
-    client.table("practice_questions").insert(rows).execute()
+    # An imported paper with no questions is an empty exam the learner cannot
+    # sit and cannot tell apart from a real one. If the questions do not land,
+    # the paper goes with them.
+    try:
+        written = (client.table("practice_questions").insert(rows).execute()).data
+    except Exception:
+        written = None
+    if not written:
+        client.table("practice_exams").delete().eq("id", exam_id).execute()
+        raise RuntimeError("Could not store the imported questions.")
     return {"kind": "questions", "questions": len(questions), "exam_id": exam_id}
 
 

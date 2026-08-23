@@ -8,6 +8,7 @@ import {
 import { useRef, useState } from 'react'
 
 import { useConfirm } from '../../hooks/useConfirm'
+import { useToast } from '../../hooks/useToast'
 import { api } from '../../lib/api'
 import {
   UPLOAD_ACCEPT,
@@ -30,6 +31,7 @@ import ErrorBanner from '../ErrorBanner'
 
 
 export default function SourcesCard({ moduleId, sources, moduleStatus }) {
+  const toast = useToast()
   const queryClient = useQueryClient()
   const confirm = useConfirm()
   const fileInput = useRef(null)
@@ -62,6 +64,7 @@ export default function SourcesCard({ moduleId, sources, moduleStatus }) {
   const remove = useMutation({
     mutationFn: (id) => api.deleteSource(id),
     onSuccess: refresh,
+      onError: (e) => toast.error(e?.message || 'Could not remove that source.'),
   })
 
   async function confirmRemove(source) {

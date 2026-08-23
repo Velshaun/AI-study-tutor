@@ -55,6 +55,7 @@ export default function Flashcards() {
     mutationFn: (card) => api.favouriteFlashcard(card.id),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: ['flashcards', domainId] }),
+      onError: (e) => toast.error(e?.message || 'Could not update that card.'),
   })
 
   const remove = useMutation({

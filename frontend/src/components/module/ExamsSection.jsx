@@ -50,17 +50,19 @@ export default function ExamsSection({ moduleId, exams = [], questionCount, onDe
 
   async function remove(exam) {
     const ok = await confirm({
-      title: 'Delete this exam?',
-      message: 'This cannot be undone.',
-      confirmLabel: 'Delete',
-      danger: true,
+      title: 'Remove this exam?',
+      // It used to say this could not be undone, and it was worse than that:
+      // `exam_attempts.exam_id` cascades, so deleting a paper deleted every
+      // sitting of it. Neither is true now.
+      message: 'It comes off this screen. Any score you earned on it stays.',
+      confirmLabel: 'Remove',
     })
     if (!ok) return
     try {
       await api.deleteExam(exam.id)
-      toast.success('Exam deleted')
+      toast.success('Exam removed')
     } catch (e) {
-      toast.error(e?.message || 'Could not delete that exam.')
+      toast.error(e?.message || 'Could not remove that exam.')
     } finally {
       onDeleted?.()
     }

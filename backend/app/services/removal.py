@@ -28,7 +28,8 @@ from app.services import schema_features
 COLUMN = "deleted_at"
 
 # Everything a learner can remove from the Classroom.
-TABLES = ("lectures", "quizzes", "flashcards", "practice_questions")
+TABLES = ("lectures", "quizzes", "flashcards", "practice_questions",
+          "practice_exams")
 
 
 def supported(table: str) -> bool:

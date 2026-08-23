@@ -9,6 +9,7 @@ import EmptyState from '../components/EmptyState'
 import PageTitle from '../components/PageTitle'
 import SectionHeader from '../components/SectionHeader'
 import { UPLOAD_ACCEPT, useModuleUpload } from '../hooks/useModuleUpload'
+import { useToast } from '../hooks/useToast'
 import { api, ApiError } from '../lib/api'
 import { ROUTES } from '../routes'
 
@@ -23,6 +24,7 @@ import { ROUTES } from '../routes'
 const PROCESSING = ['processing', 'parsing', 'analysing', 'queued']
 
 export default function Dashboard() {
+  const toast = useToast()
   const fileInput = useRef(null)
   const upload = useModuleUpload()
 
@@ -142,6 +144,7 @@ export default function Dashboard() {
     <Shell onUpload={openPicker}>
       {hiddenInput}
       <AddSourceSheet
+        onError={(m) => toast.error(m)}
         open={showAdd}
         moduleId={null}
         onClose={() => setShowAdd(false)}
