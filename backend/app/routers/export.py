@@ -14,10 +14,12 @@ from __future__ import annotations
 import csv
 import io
 import json
-from datetime import datetime, timezone
+import threading
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -43,10 +45,48 @@ class NotesExport(BaseModel):
     sections: list[dict] = Field(default_factory=list)
 
 
+# --- Rate limit -------------------------------------------------------------
+# The three body-driven exports below take a payload and hand back a formatted
+# file. They read nothing and own nothing, so there is no data to expose and
+# requiring a session would be shape without substance — but an open endpoint
+# that does work is a free formatting service for whoever finds it. A per-caller
+# ceiling is the proportionate answer: generous enough that nobody exporting
+# their own decks will ever meet it, low enough not to be worth a script.
+_EXPORT_LIMIT = 30
+_EXPORT_WINDOW = timedelta(minutes=1)
+_export_hits: dict[str, list[datetime]] = defaultdict(list)
+_export_lock = threading.Lock()
+
+
+def _rate_limit(request: Request) -> None:
+    """Allow `_EXPORT_LIMIT` exports a minute per caller."""
+    who = (request.client.host if request.client else "") or "unknown"
+    now = datetime.now(timezone.utc)
+    with _export_lock:
+        recent = [t for t in _export_hits[who] if now - t < _EXPORT_WINDOW]
+        if len(recent) >= _EXPORT_LIMIT:
+            _export_hits[who] = recent
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                "That’s a lot of exports at once — try again in a minute.",
+            )
+        recent.append(now)
+        _export_hits[who] = recent
+        # Forget callers who have gone quiet, so this tracks who is here rather
+        # than everyone who ever was.
+        if len(_export_hits) > 512:
+            for key in [k for k, v in _export_hits.items()
+                        if not v or now - v[-1] > _EXPORT_WINDOW]:
+                _export_hits.pop(key, None)
+
+
 # --- Routes ---------------------------------------------------------------
 @router.post("/flashcards/csv")
-async def export_flashcards_csv(payload: FlashcardExport) -> Response:
+async def export_flashcards_csv(
+    payload: FlashcardExport, request: Request,
+) -> Response:
     """Return a CSV (front,back) suitable for importing into Anki/Quizlet."""
+    _rate_limit(request)
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(["front", "back"])
@@ -61,7 +101,10 @@ async def export_flashcards_csv(payload: FlashcardExport) -> Response:
 
 
 @router.post("/flashcards/json")
-async def export_flashcards_json(payload: FlashcardExport) -> Response:
+async def export_flashcards_json(
+    payload: FlashcardExport, request: Request,
+) -> Response:
+    _rate_limit(request)
     filename = f"{_slug(payload.title)}.json"
     body = json.dumps(payload.model_dump(), indent=2, ensure_ascii=False)
     return Response(
@@ -72,8 +115,11 @@ async def export_flashcards_json(payload: FlashcardExport) -> Response:
 
 
 @router.post("/notes/markdown")
-async def export_notes_markdown(payload: NotesExport) -> Response:
+async def export_notes_markdown(
+    payload: NotesExport, request: Request,
+) -> Response:
     """Render a notes document (sections of {heading, body, key_points}) to Markdown."""
+    _rate_limit(request)
     lines: list[str] = [f"# {payload.title}", ""]
     for section in payload.sections:
         heading = section.get("heading", "Section")

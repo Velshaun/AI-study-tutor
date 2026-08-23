@@ -26,6 +26,8 @@ payload), which keeps answering a single read — see ``submit_answer``.
 from __future__ import annotations
 
 import logging
+import os
+import socket
 import threading
 from typing import Any
 
@@ -65,16 +67,28 @@ EXPLAIN_BATCH_SIZE = 40
 # ten takes minutes, the backfill takes far less.
 FIRST_CHUNK = 10
 
-# Domains with a backfill already running, so a poll (or a second tab) can't
-# start a duplicate. Per-process, which matches the deployment: the guard is a
-# courtesy anyway — the backfill re-reads the set before it writes, and passes
-# what already exists to the generator so it can't repeat questions.
+# A backfill is claimed in the database, not in this process.
+#
+# This was a `set` and a `threading.Lock`, which holds for exactly one process.
+# The moment the API runs a second uvicorn worker or a second Railway replica,
+# two requests for the same domain both see a free slot and both generate:
+# duplicate questions and two Gemini bills for one set. Nothing announces that
+# day, it simply arrives — and the same reasoning already put `claim_job` in
+# Postgres rather than in memory.
+#
+# `claim_backfill` is `on conflict do nothing`: exactly one inserter wins the
+# primary key and Postgres decides which, so there is no window between
+# checking and taking. A claim whose process died is taken over once stale,
+# because the alternative is a domain that can never be generated again.
+_WORKER = f"{socket.gethostname()}:{os.getpid()}"
+# True where the RPCs exist, so the API can deploy ahead of the migration —
+# falling back to the old per-process guard, which is what it did before.
+_CLAIM_RPC: bool | None = None
 _backfilling: set[str] = set()
 _backfill_lock = threading.Lock()
 
 
-def _claim_backfill(domain_id: str) -> bool:
-    """Take the backfill slot for a domain, if it's free."""
+def _claim_local(domain_id: str) -> bool:
     with _backfill_lock:
         if domain_id in _backfilling:
             return False
@@ -82,12 +96,54 @@ def _claim_backfill(domain_id: str) -> bool:
         return True
 
 
+def _claim_backfill(domain_id: str) -> bool:
+    """Take the backfill slot for a domain, if it's free."""
+    global _CLAIM_RPC
+    if _CLAIM_RPC is False:
+        return _claim_local(domain_id)
+    try:
+        result = _client().rpc(
+            "claim_backfill", {"p_domain_id": domain_id, "p_worker": _WORKER},
+        ).execute()
+        _CLAIM_RPC = True
+        return bool(result.data)
+    except Exception as exc:  # noqa: BLE001 — deploying ahead of the migration
+        if _CLAIM_RPC is None:
+            logger.warning(
+                "claim_backfill is unavailable, so duplicate generation is only "
+                "guarded within this process: %s", exc,
+            )
+        _CLAIM_RPC = False
+        return _claim_local(domain_id)
+
+
 def _release_backfill(domain_id: str) -> None:
     with _backfill_lock:
         _backfilling.discard(domain_id)
+    if _CLAIM_RPC is False:
+        return
+    try:
+        _client().rpc("release_backfill", {"p_domain_id": domain_id}).execute()
+    except Exception as exc:  # noqa: BLE001 — a stuck claim expires on its own
+        logger.warning("could not release the backfill claim for %s: %s",
+                       domain_id, exc)
 
 
 def _is_backfilling(domain_id: str) -> bool:
+    """Is somebody already generating this domain's set?
+
+    Read rather than claimed, so a poll can tell the learner "still writing"
+    without taking the slot from whoever is actually writing.
+    """
+    if _CLAIM_RPC is not False:
+        try:
+            rows = (
+                _client().table("backfill_claims").select("domain_id")
+                .eq("domain_id", domain_id).limit(1).execute()
+            ).data or []
+            return bool(rows)
+        except Exception:  # noqa: BLE001 — fall through to the local set
+            pass
     with _backfill_lock:
         return domain_id in _backfilling
 

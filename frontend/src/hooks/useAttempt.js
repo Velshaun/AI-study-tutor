@@ -1,7 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { useToast } from './useToast'
 import { api } from '../lib/api'
 
 /**
@@ -25,21 +24,19 @@ import { api } from '../lib/api'
 const SAVE_DEBOUNCE_MS = 600
 
 export function useAttempt(itemType, itemId) {
-  const toast = useToast()
-  // Said once per run, not once per save.
+  // Shown for as long as it is true, not announced once.
   //
   // These writes were `.catch(() => {})` — progress is a convenience, and a
-  // failed one must not interrupt a question. But total silence is how a
-  // learner works through forty questions with nothing being kept and no way
-  // to know. Once is enough to change what they do; every tick would be noise
-  // they learn to ignore, which is the same as silence again.
-  const warned = useRef(false)
+  // failed one must not interrupt a question, so this never blocks the run. But
+  // a toast is four seconds against a forty-minute sitting, and somebody who
+  // looked away has been told nothing. `failing` stays true until a save works,
+  // so the warning is on screen the whole time the risk is real, and gone the
+  // moment it isn't.
+  const [failing, setFailing] = useState(false)
   const saveFailed = useCallback((e) => {
     console.error('[attempt] progress save failed', e)
-    if (warned.current) return
-    warned.current = true
-    toast.error('Your progress isn’t being saved — check your connection.')
-  }, [toast])
+    setFailing(true)
+  }, [])
   // Set when the learner restarts, so the run stops offering what it just threw
   // away — the cached response is deliberately not refetched.
   const [discarded, setDiscarded] = useState(false)
@@ -63,7 +60,9 @@ export function useAttempt(itemType, itemId) {
     if (!itemId || !pending.current) return
     const body = pending.current
     pending.current = null
-    api.saveAttempt(itemType, itemId, body).catch(saveFailed)
+    api.saveAttempt(itemType, itemId, body)
+      .then(() => setFailing(false))
+      .catch(saveFailed)
   }, [itemType, itemId, saveFailed])
 
   /** Record progress. `completed` marks the run finished. */
@@ -113,6 +112,9 @@ export function useAttempt(itemType, itemId) {
   return {
     loading: Boolean(itemId) && isPending,
     restored: hasProgress ? data : null,
+    // True while the last save failed and none has succeeded since. The runner
+    // renders it; the run carries on regardless.
+    failing,
     save,
     clear,
   }

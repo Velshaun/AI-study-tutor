@@ -92,6 +92,14 @@ function SessionPill({ session, moduleId }) {
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm text-pri">
             {session.title || KIND_LABEL[session.kind] || 'Session'}
+            {/* The sitting stands; the thing it was of has been cleared away.
+                Without this the title reads as something still there. */}
+            {session.item_removed && (
+              <span className="ms-1.5 rounded-full bg-surface2 px-1.5 py-0.5
+                               text-[10px] font-medium uppercase tracking-wider text-sec">
+                Removed
+              </span>
+            )}
           </span>
           <span className="block text-xs text-sec">
             {KIND_LABEL[session.kind] || session.kind}

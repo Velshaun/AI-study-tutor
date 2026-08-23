@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { planExpansions } from '../../lib/terms'
 import { toResults } from '../../lib/session'
 import FlagToggle from './FlagToggle'
+import ProgressWarning from './ProgressWarning'
 import QuestionNavigator from './QuestionNavigator'
 import ResultsGrid from './ResultsGrid'
 import TermSheet from './TermSheet'
@@ -465,6 +466,8 @@ export default function QuizRunner({
 
   return (
     <div className="space-y-5">
+      <ProgressWarning failing={attempt?.failing} />
+
       {/* Progress */}
       <div className="space-y-1.5">
         <div className="flex items-center justify-between text-xs text-sec">

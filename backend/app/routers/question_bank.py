@@ -17,7 +17,7 @@ opt-in" means in practice, and is worth keeping true as things get added.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import question_bank as bank
+from app.services import question_bank as bank, removal
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +126,10 @@ class StudySession(BaseModel):
     id: str
     kind: str
     item_id: str | None = None
+    # The thing this was a sitting of has since been removed from the screens.
+    # The record stays — that is the whole point of keeping it — but a title the
+    # learner deliberately cleared away should say why it is still here.
+    item_removed: bool = False
     title: str = ""
     total: int = 0
     correct: int = 0
@@ -206,8 +210,29 @@ async def list_sessions(
         .eq("module_id", module_id).eq("user_id", user.id)
         .order("created_at", desc=True).limit(min(limit, 100)).execute()
     ).data or []
+    # Which of these point at something the learner has since removed. One
+    # batched read per table rather than one per row.
+    removed: set[str] = set()
+    for kind, table in (("quiz", "quizzes"), ("exam", "practice_exams")):
+        ids = [r["item_id"] for r in rows if r.get("kind") == kind and r.get("item_id")]
+        if not ids or not removal.supported(table):
+            continue
+        try:
+            live = {
+                x["id"] for x in (
+                    removal.live(_client().table(table).select("id"), table)
+                    .in_("id", list(set(ids))).execute()
+                ).data or []
+            }
+            removed |= {i for i in ids if i not in live}
+        except Exception:  # noqa: BLE001 — a label must not break the list
+            logger.warning("could not resolve removed %s for the history", table)
+
     return [
-        StudySession(**{k: v for k, v in r.items() if k in StudySession.model_fields})
+        StudySession(**{
+            **{k: v for k, v in r.items() if k in StudySession.model_fields},
+            "item_removed": r.get("item_id") in removed,
+        })
         for r in rows
     ]
 
@@ -426,6 +451,22 @@ async def generate_from_container(
             "have no options to choose between.",
         )
 
+    # A second identical set, a minute later, is a double tap rather than a
+    # decision. Generating the same thing again is sometimes exactly what
+    # somebody wants — a week later, from a pool that has changed — so this
+    # refuses only the window where it cannot be.
+    recent = _recent_identical(
+        module_id=module_id, user_id=user.id, media=payload.media,
+        title=payload.title or f"From your {container} questions",
+        count=len(questions),
+    )
+    if recent:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "You just made this one — it's in your review set. Give it a few "
+            "minutes if you want another.",
+        )
+
     created_id = None
     if payload.media == "practice_exam":
         created_id = _write_exam(
@@ -463,6 +504,42 @@ async def generate_from_container(
             if skipped else ""
         ),
     )
+
+
+# How long an identical set counts as the same request rather than a new one.
+DUPLICATE_WINDOW = timedelta(minutes=5)
+
+
+def _recent_identical(
+    *, module_id: str, user_id: str, media: str, title: str, count: int,
+) -> bool:
+    """Was this exact set built moments ago?
+
+    Same module, same title, same number of questions, inside the window. Not a
+    content hash: the pool is ordered and scoped the same way for the same
+    dials, so two runs a minute apart produce the same set — and a hash would
+    also refuse a genuinely-wanted rebuild whose questions happened to match.
+    """
+    since = (datetime.now(timezone.utc) - DUPLICATE_WINDOW).isoformat()
+    table, size_column = (
+        ("quizzes", "question_count") if media == "quiz"
+        else ("practice_exams", "total_points") if media == "practice_exam"
+        else (None, None)
+    )
+    if not table:
+        # Cards are added to a deck rather than replacing one, so a second run
+        # is additive and refusing it would lose material.
+        return False
+    try:
+        rows = (
+            _client().table(table).select(f"id, {size_column}")
+            .eq("module_id", module_id).eq("user_id", user_id)
+            .eq("title", title[:200]).gte("created_at", since)
+            .limit(5).execute()
+        ).data or []
+    except Exception:  # noqa: BLE001 — a duplicate check must never block work
+        return False
+    return any((r.get(size_column) or 0) == count for r in rows)
 
 
 def _write_exam(*, module_id, user_id, questions, title) -> str:

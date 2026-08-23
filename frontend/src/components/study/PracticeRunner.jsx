@@ -10,6 +10,7 @@ import TermSheet from './TermSheet'
 import TermText from './TermText'
 import { toResults } from '../../lib/session'
 import FlagToggle from './FlagToggle'
+import ProgressWarning from './ProgressWarning'
 
 /**
  * Practice Exam Mode runner — spec 6.4 / Prompt 11.
@@ -217,6 +218,8 @@ export default function PracticeRunner({
 
   return (
     <div className="space-y-5">
+      <ProgressWarning failing={attempt?.failing} />
+
       {/* Progress */}
       <div className="space-y-1.5">
         <div className="flex items-center justify-between text-xs text-sec">
