@@ -48,6 +48,7 @@ const Settings = lazy(() => import('./pages/Settings'))
 const Favourites = lazy(() => import('./pages/Favourites'))
 const DesignSystem = lazy(() => import('./pages/DesignSystem'))
 const NotFound = lazy(() => import('./pages/NotFound'))
+const TourPreview = lazy(() => import('./pages/TourPreview')) // PoC
 
 /**
  * Route-level error fallback. The commonest cause here is a stale build after a
@@ -84,6 +85,10 @@ export const routeConfig = [
     children: [
       // The only screen a signed-out visitor can reach. An already-authenticated
       // user is redirected away from it.
+      // Onboarding proof of concept — unguarded so it can be walked without an
+      // account that has actually reached each feature.
+      { path: '/tour-preview', element: <TourPreview /> },
+
       {
         element: <PublicOnly />,
         children: [{ path: ROUTES.login, element: <Login /> }],

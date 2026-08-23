@@ -309,3 +309,32 @@
 @utility skeleton {
   @apply animate-pulse rounded-lg bg-surface2;
 }
+
+/* The tour card's entrance.
+ *
+ * CSS rather than a JS animation, and with no fill-mode, for the reason
+ * `.step-in` exists: a JS animation that never advances leaves the element
+ * invisible, and an element that explains the screen must never be the one
+ * that fails to appear. */
+@keyframes tour-card-in {
+  from { opacity: 0; transform: translateY(6px) scale(.98); }
+  to   { opacity: 1; transform: none; }
+}
+.tour-card-in { animation: tour-card-in .34s cubic-bezier(.32,.72,0,1); }
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-card-in { animation: none; }
+}
+
+/* The unmet-feature dot. Slow enough to read as an invitation rather than an
+ * alarm — this sits on ten things at once, so it has to be ignorable. */
+@keyframes tour-pulse {
+  0%   { transform: scale(1);   opacity: .6; }
+  70%  { transform: scale(2.2); opacity: 0; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+.tour-pulse { animation: tour-pulse 2.4s cubic-bezier(0,0,.2,1) infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-pulse { animation: none; }
+}
