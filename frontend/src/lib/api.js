@@ -469,6 +469,7 @@ export const api = {
   submitQuiz: (id, answers) =>
     apiFetch(`/quizzes/${id}/submit`, { method: 'POST', body: { answers } }),
   favouriteQuiz: (id) => apiFetch(`/quizzes/${id}/favourite`, { method: 'PATCH' }),
+  quizById: (quizId, signal) => apiFetch(`/quizzes/one/${quizId}`, { signal }),
   deleteQuiz: (id) => apiFetch(`/quizzes/${id}`, { method: 'DELETE' }),
 
   // Favourites (all starred items, grouped by type)

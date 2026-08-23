@@ -79,6 +79,9 @@ class GenerateRequest(BaseModel):
     # 'recent' | 'oldest' | 'random'
     which: str = "recent"
     title: str | None = None
+    # Narrow to one domain's misses. Absent means the whole module, which is
+    # what the classroom-level control asks for.
+    domain_id: str | None = None
 
 
 class GenerateResponse(BaseModel):
@@ -148,14 +151,6 @@ async def record_session(
     total = len(results)
     correct = sum(1 for r in results if r.get("correct"))
 
-    # Anything carrying a bank link is a re-run of a banked question, so this
-    # is where auto-graduation actually happens.
-    for result in results:
-        entry_id = (result.get("bank_entry_id")
-                    if isinstance(result, dict) else None)
-        if entry_id:
-            bank.record_answer(entry_id, bool(result.get("correct")))
-
     row = (
         _client().table("study_sessions").insert({
             "user_id": user.id,
@@ -171,6 +166,29 @@ async def record_session(
     ).data
     if not row:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Could not save that session.")
+    session_id = row[0]["id"]
+
+    # Auto-graduation, after the sitting exists.
+    #
+    # This loop used to run *before* the insert, which meant there was no
+    # session id to attribute an answer to — the streak was a bare counter and
+    # two correct answers in one run graduated a question. The row has to be
+    # written first so each answer can say which sitting it belonged to.
+    #
+    # First occurrence wins, here as well as in the runner. The client already
+    # sends only first answers, but a streak is the thing a client bug would
+    # inflate, and the rule is cheap to hold in both places.
+    seen: set[str] = set()
+    for result in results:
+        entry_id = (result.get("bank_entry_id")
+                    if isinstance(result, dict) else None)
+        if not entry_id or entry_id in seen:
+            continue
+        seen.add(entry_id)
+        bank.record_answer(
+            entry_id, bool(result.get("correct")), session_id=session_id,
+        )
+
     return StudySession(**{k: v for k, v in row[0].items()
                            if k in StudySession.model_fields})
 
@@ -386,10 +404,13 @@ async def generate_from_container(
 
     entries = bank.list_entries(
         user_id=user.id, module_id=module_id, container=container,
+        domain_id=payload.domain_id,
     )
     if not entries:
         raise HTTPException(
-            status.HTTP_409_CONFLICT, "There's nothing in there yet.",
+            status.HTTP_409_CONFLICT,
+            "You haven't missed anything in this domain yet."
+            if payload.domain_id else "There's nothing in there yet.",
         )
 
     chosen = bank.scope(entries, how_many=payload.how_many, which=payload.which)
@@ -415,6 +436,10 @@ async def generate_from_container(
         created_id = _write_quiz(
             module_id=module_id, user_id=user.id, questions=questions,
             title=payload.title or f"From your {container} questions",
+            # A domain-scoped set belongs to that domain and lands in its
+            # accordion; a whole-module one has no domain to belong to and
+            # lands in the module's review set.
+            domain_id=payload.domain_id,
         )
     else:
         created_id = _write_flashcards(
@@ -462,11 +487,28 @@ def _write_exam(*, module_id, user_id, questions, title) -> str:
     return exam_id
 
 
-def _write_quiz(*, module_id, user_id, questions, title) -> str:
-    # Quiz questions live in jsonb, so the bank link rides inside the object —
-    # see the note in the migration.
+def _write_quiz(*, module_id, user_id, questions, title, domain_id=None) -> str:
+    """A quiz from container entries. `domain_id` is None for a whole-module set.
+
+    Two things here were silently wrong for every quiz this ever wrote.
+
+    The question text went in under `prompt`, and `quizzes._to_quiz` reads
+    `question` — so the row was complete, the options were right, and every
+    question rendered blank. Nothing failed; the toast was honest and the quiz
+    was useless.
+
+    And `question_count` was never written, so the pill had no size to show.
+
+    Quiz questions live in jsonb, so the bank link rides inside the object —
+    see the note in the migration. Which is only useful if it survives the trip
+    out again; see `quizzes.Question`, which used to drop it.
+    """
     payload = [
         {
+            # `question`, because that is the key the reader wants. Both are
+            # written for one release so a client mid-deploy sees text either
+            # way; the duplicate comes out once nothing reads `prompt`.
+            "question": q["prompt"],
             "prompt": q["prompt"],
             "options": q["options"],
             "correct_index": q["correct_index"],
@@ -477,8 +519,10 @@ def _write_quiz(*, module_id, user_id, questions, title) -> str:
     quiz = (
         _client().table("quizzes").insert({
             "module_id": module_id,
+            "domain_id": domain_id,
             "user_id": user_id,
             "title": title[:200],
+            "question_count": len(payload),
             "questions": payload,
         }).execute()
     ).data

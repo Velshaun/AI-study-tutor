@@ -48,6 +48,19 @@ class GenerateRequest(BaseModel):
 class Question(BaseModel):
     index: int
     question: str
+    # Which container entry this came from, for a quiz generated out of the
+    # missed pool. Undeclared, Pydantic dropped it on the way out — so the
+    # client never saw it, the session record carried nothing, and
+    # auto-graduation could not fire for a container quiz at all. The same
+    # class of silence as `SessionResult.bank_entry_id`.
+    bank_entry_id: str | None = None
+    # The quiz's domain, stamped onto every question.
+    #
+    # A question in a quiz has no domain of its own — the quiz has one, and the
+    # questions belong to it. Undeclared, every result banked from a quiz went
+    # into the missed pool with `domain_id` null, so "drill what I missed in
+    # this domain" could never find any of it.
+    domain_id: str | None = None
     options: list[str]
     correct_index: int
     explanation: str = ""
@@ -129,7 +142,9 @@ def _to_quiz(row: dict[str, Any]) -> Quiz:
     questions = [
         Question(
             index=i,
-            question=q.get("question") or "",
+            question=q.get("question") or q.get("prompt") or "",
+            bank_entry_id=q.get("bank_entry_id"),
+            domain_id=q.get("domain_id") or row.get("domain_id"),
             options=q.get("options") or [],
             correct_index=int(q.get("correct_index", 0)),
             explanation=q.get("explanation") or "",
@@ -196,6 +211,21 @@ async def generate(
     if not inserted.data:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Could not save the quiz.")
     return _to_quiz(inserted.data[0])
+
+
+@router.get("/one/{quiz_id}", response_model=Quiz)
+async def get_one(
+    quiz_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> Quiz:
+    """One quiz, by its own id.
+
+    Every other way in is keyed by domain, which is right for a quiz about a
+    domain and impossible for one generated from a container — its questions
+    come from every domain at once, so it has no domain to be listed under.
+    Declared above `/{domain_id}` so the literal path wins the match.
+    """
+    return _to_quiz(_own_quiz(quiz_id, user.id))
 
 
 @router.get("/{domain_id}", response_model=list[Quiz])

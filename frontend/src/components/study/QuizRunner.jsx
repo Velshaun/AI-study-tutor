@@ -57,6 +57,7 @@ function clock(totalSeconds) {
 
 export default function QuizRunner({
   quiz, onSubmit, onRestart, attempt, renderResult, onAnswer, onFinished,
+  retryWrong = false,
 }) {
   const questions = quiz.questions || []
   const durationMinutes = quiz.duration_minutes || 0
@@ -89,6 +90,25 @@ export default function QuizRunner({
   // and is undone by simply not confirming. Independent of the outcome:
   // flagging a question you then get right is the useful case.
   const [flags, setFlags] = useState(() => new Set())
+  // The answers that count, and the practice that follows them.
+  //
+  // `answers` is what the learner most recently chose; `firstAnswers` is what
+  // they chose the *first* time and never changes afterwards. Everything
+  // measured — the submitted score, the session record, the streak that decides
+  // graduation — reads the second. The retry cycle is a study mechanic, and a
+  // mechanic that can rewrite the measurement is not a measurement.
+  const firstAnswersRef = useRef(
+    (() => {
+      const blank = questions.map(() => null)
+      const previous = saved?.answers || []
+      return blank.map((_, i) => (previous[i] === undefined ? null : previous[i]))
+    })(),
+  )
+  // The queue of questions to come back to, once the paper has been through
+  // once. Empty until the last question is answered; refilled with whatever is
+  // still wrong after each pass.
+  const [retryQueue, setRetryQueue] = useState([])
+  const [cycling, setCycling] = useState(false)
   // Kept so the results screen can draw the tiles without recomputing
   // during render — the server's key only arrives with the submission.
   const [sessionResults, setSessionResults] = useState([])
@@ -261,7 +281,13 @@ export default function QuizRunner({
     next[index] = optionIndex
     answersRef.current = next
     setAnswers(next)
-    persist(index, next)
+    // First answer wins, once, for ever. A retry writes to `answers` so the
+    // screen can show what was just chosen, and never here.
+    if (firstAnswersRef.current[index] == null) {
+      firstAnswersRef.current = [...firstAnswersRef.current]
+      firstAnswersRef.current[index] = optionIndex
+    }
+    persist(index, firstAnswersRef.current)
   }
 
   /** Move to a question. Every route between questions comes through here. */
@@ -269,7 +295,7 @@ export default function QuizRunner({
     if (to < 0 || to >= questions.length || to === index) return
     setIndex(to)
     setVisited((seen) => new Set(seen).add(to))
-    persist(to, answersRef.current)
+    persist(to, firstAnswersRef.current)
   }
 
   /** Save where the learner is, with the deadline a timed run has to keep. */
@@ -283,18 +309,67 @@ export default function QuizRunner({
     })
   }
 
+  /** Which questions were wrong on the answer that counted. */
+  function wrongFirstTime() {
+    return questions
+      .map((question, i) => {
+        const key = question?.correct_index ?? revealed[i]?.correct_index ?? null
+        const given = firstAnswersRef.current[i]
+        return key != null && given !== key ? i : null
+      })
+      .filter((i) => i !== null)
+  }
+
   async function next() {
-    if (index < questions.length - 1) {
+    if (!cycling && index < questions.length - 1) {
       goTo(index + 1)
       return
     }
-    await finish(answers)
+
+    // End of the paper. Cycle back through what was missed, if asked to.
+    //
+    // Deliberately after the whole paper rather than immediately on a wrong
+    // answer: coming straight back to a question you have just been shown the
+    // answer to tests nothing but short-term memory, which is the opposite of
+    // what the missed pool is for.
+    if (retryWrong) {
+      const remaining = (cycling ? retryQueue.slice(1) : wrongFirstTime())
+        .filter((i) => {
+          const key = questions[i]?.correct_index ?? revealed[i]?.correct_index ?? null
+          // Still wrong on the most recent attempt, so still worth another go.
+          return key == null || answersRef.current[i] !== key
+        })
+      if (remaining.length) {
+        setCycling(true)
+        setRetryQueue(remaining)
+        setIndex(remaining[0])
+        setVisited((seen) => new Set(seen).add(remaining[0]))
+        return
+      }
+      if (cycling) {
+        setCycling(false)
+        setRetryQueue([])
+      }
+    }
+
+    await finish(firstAnswersRef.current)
+  }
+
+  /** Re-open a question for practice. Records nothing; the first answer stands. */
+  function retryCurrent() {
+    const next = [...answersRef.current]
+    next[index] = null
+    answersRef.current = next
+    setAnswers(next)
   }
 
   function restart() {
     setIndex(0)
     answersRef.current = questions.map(() => null)
     setAnswers(answersRef.current)
+    firstAnswersRef.current = questions.map(() => null)
+    setRetryQueue([])
+    setCycling(false)
     setVisited(new Set([0]))
     setFinished(false)
     setResult(null)
@@ -346,6 +421,16 @@ export default function QuizRunner({
                   ? 'Getting there. Worth another pass.'
                   : 'This one needs more review.'}
           </p>
+          {/* The score is the first answers, and it says so. Showing 10/10
+              because the cycle was eventually cleared would be a lie the
+              strength calculation does not share — and the streak that decides
+              graduation is counted from the same first answers. */}
+          {retryWrong && result.total > result.correct && (
+            <p className="text-xs text-sec">
+              That&rsquo;s your first answer to each — you cleared the rest on
+              the way through.
+            </p>
+          )}
         </div>
         <button onClick={restart} className="btn-primary">
           <RotateCcw size={16} aria-hidden="true" />
@@ -537,24 +622,45 @@ export default function QuizRunner({
         </div>
       )}
 
+      {/* The cycle, said out loud. Somebody sent back to a question they have
+          already answered needs to know why, and that it is not being marked
+          again — otherwise it reads as the app losing their answer. */}
+      {cycling && (
+        <p className="rounded-xl bg-accent/10 px-3 py-2 text-xs leading-relaxed text-accent2">
+          Going back over what you missed — {retryQueue.length} to go. Your score
+          is already recorded; this round is practice.
+        </p>
+      )}
+
       <div className="flex gap-3">
         <button
           onClick={() => goTo(index - 1)}
-          disabled={index === 0}
+          disabled={index === 0 || cycling}
           className="btn-secondary min-h-11 shrink-0 px-4 disabled:opacity-40"
         >
           <ChevronLeft size={16} aria-hidden="true" />
           Previous
         </button>
-        <button
-          onClick={next}
-          disabled={!answered || submitting}
-          className="btn-primary flex-1 disabled:opacity-60"
-        >
-          {submitting
-            ? 'Handing in…'
-            : index < questions.length - 1 ? 'Next question' : 'Finish & score'}
-        </button>
+        {/* Wrong again during the cycle: another go, rather than moving on.
+            The queue keeps it until it is right, which is the whole mechanic. */}
+        {cycling && showState && chosen !== correctIndex ? (
+          <button onClick={retryCurrent} className="btn-primary flex-1">
+            <RotateCcw size={16} aria-hidden="true" />
+            Try this one again
+          </button>
+        ) : (
+          <button
+            onClick={next}
+            disabled={!answered || submitting}
+            className="btn-primary flex-1 disabled:opacity-60"
+          >
+            {submitting
+              ? 'Handing in…'
+              : cycling
+                ? (retryQueue.length > 1 ? 'Next' : 'Finish')
+                : index < questions.length - 1 ? 'Next question' : 'Finish & score'}
+          </button>
+        )}
       </div>
 
       <TermSheet term={openTerm} onClose={() => setOpenTerm(null)} />

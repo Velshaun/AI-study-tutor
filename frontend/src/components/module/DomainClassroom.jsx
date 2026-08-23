@@ -33,6 +33,7 @@ import {
 import { rankDomains } from '../../lib/priority'
 import { path } from '../../routes'
 import MediaItemRow from './MediaItemRow'
+import SectionHeading from './SectionHeading'
 
 /**
  * The Classroom, organised the way the exam is: by domain.
@@ -78,21 +79,52 @@ const MEDIA = {
   },
 }
 
+/**
+ * The chosen order, remembered per module.
+ *
+ * A preference you have to set again every visit is one people stop using. Per
+ * module rather than globally, because a module you know well and one you have
+ * just started are not the same question.
+ */
+function useSortPreference(moduleId) {
+  const key = `domain-sort:${moduleId}`
+  const [sort, setSort] = useState(() => {
+    try {
+      return window.localStorage.getItem(key) === 'priority' ? 'priority' : 'blueprint'
+    } catch {
+      // Private browsing, or storage disabled. The default is still right.
+      return 'blueprint'
+    }
+  })
+  const choose = (next) => {
+    setSort(next)
+    try {
+      window.localStorage.setItem(key, next)
+    } catch { /* not worth an error over a sort order */ }
+  }
+  return [sort, choose]
+}
+
 export default function DomainClassroom({
   moduleId, domains, media, performance, examCount,
 }) {
   const [open, setOpen] = useState(null)
-  // Priority by default. The blueprint order is still one tap away, because a
-  // vendor's own sequence is genuinely how some people revise — and because an
-  // app that will only show you its own opinion of the order is the lock again
-  // wearing a different hat.
-  const [sort, setSort] = useState('priority')
+  // Blueprint order by default: it is the order the learner already recognises
+  // from the vendor's own objectives, and a default you recognise is worth more
+  // than one that is cleverer. Priority is a tap away, and the recommendation
+  // itself does not depend on the sort — the "start here" marker follows the
+  // top-ranked domain wherever it happens to sit, so the default view still
+  // carries the guidance that replaced the lock.
+  const [sort, setSort] = useSortPreference(moduleId)
   const byDomain = groupByDomain(media)
   const scoreOf = Object.fromEntries(
     (performance?.domains || []).map((d) => [d.domain_id, d]),
   )
 
   const ranked = rankDomains(domains || [], performance)
+  // Ranked first either way: the recommendation is a property of the learner's
+  // standing, not of how the list happens to be sorted.
+  const recommendedId = ranked.length > 1 ? ranked[0].id : null
   const studyable = sort === 'priority'
     ? ranked
     : [...ranked].sort((a, b) => (a.order_index || 0) - (b.order_index || 0))
@@ -102,21 +134,39 @@ export default function DomainClassroom({
 
   return (
     <section className="space-y-3">
-      <div className="flex items-center gap-2">
-        <Heading Icon={Sparkles}>Domains</Heading>
-        <span className="flex-1" />
-        {/* Two words, no chrome: this is a preference, not a feature. */}
-        <button
-          type="button"
-          onClick={() => setSort((s) => (s === 'priority' ? 'blueprint' : 'priority'))}
-          className="shrink-0 rounded-full px-2 py-1 text-[11px] font-medium
-                     text-sec transition-colors hover:text-pri"
-        >
-          {sort === 'priority' ? 'By priority' : 'By blueprint'}
-        </button>
+      <SectionHeading Icon={Sparkles}>Domains</SectionHeading>
+
+      {/* A segmented control, not a text button.
+          The previous version was two words in the corner that read as a label,
+          so nobody knew sorting existed at all — an affordance has to show both
+          what is selected *and* that there is something else to select. Its own
+          line rather than beside the heading, because at 375px a heading plus a
+          two-option control leaves neither enough room. */}
+      <div
+        role="group"
+        aria-label="Order the domains"
+        className="flex items-center gap-1 rounded-full bg-surface2 p-1"
+      >
+        {[
+          ['blueprint', 'Exam order'],
+          ['priority', 'What to study'],
+        ].map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setSort(id)}
+            aria-pressed={sort === id}
+            className={[
+              'min-h-9 flex-1 rounded-full px-3 text-xs font-medium transition-colors',
+              sort === id ? 'bg-accent text-white' : 'text-sec hover:text-pri',
+            ].join(' ')}
+          >
+            {label}
+          </button>
+        ))}
       </div>
       <div className="space-y-2">
-        {studyable.map((domain, index) => (
+        {studyable.map((domain) => (
           <DomainRow
             key={domain.id}
             moduleId={moduleId}
@@ -128,7 +178,7 @@ export default function DomainClassroom({
             // Marked on one row only. "Not yet recommended" on the other four
             // reads as four rejections; one quiet nudge reads as a suggestion,
             // which is what it is.
-            recommended={sort === 'priority' && index === 0 && studyable.length > 1}
+            recommended={domain.id === recommendedId}
             media={byDomain[domain.id] || emptyMedia()}
             score={scoreOf[domain.id]}
             examCount={examCount}
@@ -285,8 +335,73 @@ function DomainRow({
             kind="practice" moduleId={moduleId} domain={domain}
             items={media.practice} examCount={examCount}
           />
+
+          {/* Below the four, and separated from them.
+              This is a *source*, not a media type: it makes something out of
+              what the learner already got wrong here. Listing it as a fifth row
+              would read as a fifth thing they have, which is the one thing it
+              is not. */}
+          <DomainDrill moduleId={moduleId} domain={domain} />
         </div>
       )}
+    </div>
+  )
+}
+
+/** Build a quiz from what was missed *in this domain*. */
+function DomainDrill({ moduleId, domain }) {
+  const toast = useToast()
+  const queryClient = useQueryClient()
+  const generation = useGeneration()
+  const working = generation.isGenerating(moduleId, 'drill', domain.id)
+
+  function build() {
+    return generation.start({
+      moduleId,
+      domainId: domain.id,
+      kind: 'drill',
+      label: `Drill for ${domain.title}`,
+      run: async () => {
+        const made = await api.generateFromContainer(moduleId, 'missed', {
+          media: 'quiz',
+          how_many: 'all',
+          which: 'recent',
+          domain_id: domain.id,
+          title: `${domain.title} — what you missed`,
+        })
+        queryClient.invalidateQueries({ queryKey: ['studio', moduleId] })
+        return made?.created_id ? path('quizById', { quizId: made.created_id }) : undefined
+      },
+    })
+  }
+
+  return (
+    <div className="mt-1 border-t border-dashed border-border pt-3">
+      <button
+        type="button"
+        onClick={() => build().catch((e) =>
+          toast.error(e?.message || 'Nothing missed in this domain yet.'))}
+        disabled={working}
+        className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left
+                   transition-colors hover:bg-surface2 disabled:opacity-60"
+      >
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg
+                         bg-warning/10 text-warning">
+          {working ? (
+            <Loader2 size={15} className="animate-spin" aria-hidden="true" />
+          ) : (
+            <Target size={15} aria-hidden="true" />
+          )}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm text-pri">
+            {working ? 'Building your drill…' : 'Drill what you missed here'}
+          </span>
+          <span className="block truncate text-xs text-sec">
+            A quiz from this domain&rsquo;s missed and flagged questions
+          </span>
+        </span>
+      </button>
     </div>
   )
 }
@@ -602,11 +717,3 @@ function MediaAction({ kind, moduleId, domain, items = [], examCount }) {
 }
 
 
-function Heading({ Icon, children }) {
-  return (
-    <h2 className="flex items-center gap-2 border-l-2 border-accent pl-2.5 text-xs font-bold uppercase tracking-[0.14em] text-accent2">
-      {Icon && <Icon size={13} aria-hidden="true" />}
-      {children}
-    </h2>
-  )
-}

@@ -9,6 +9,7 @@ import { api } from '../../lib/api'
 import { summarise } from '../../lib/session'
 import GenerateFromPool from '../study/GenerateFromPool'
 import ResultsGrid from '../study/ResultsGrid'
+import SectionHeading from './SectionHeading'
 
 /**
  * Every past sitting, and every one of them still a source.
@@ -45,10 +46,7 @@ export default function SessionHistory({ moduleId }) {
 
   return (
     <section className="space-y-3">
-      <h2 className="flex items-center gap-2 border-l-2 border-accent pl-2.5 text-xs font-bold uppercase tracking-[0.14em] text-accent2">
-        <History size={13} aria-hidden="true" />
-        Past sessions
-      </h2>
+      <SectionHeading Icon={History}>Past sessions</SectionHeading>
       <div className="space-y-2">
         {sessions.map((session) => (
           <SessionPill key={session.id} session={session} moduleId={moduleId} />

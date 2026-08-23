@@ -16,6 +16,10 @@ export const ROUTES = {
   lecture: '/lecture/:id',
   flashcards: '/flashcards/:domainId',
   quizzes: '/quizzes/:domainId',
+  // One quiz by its own id. A quiz generated from a container has no domain —
+  // its questions come from all of them — so the domain-keyed route above can
+  // never name it.
+  quizById: '/quiz/:quizId',
   // Practice exams are module-level (weighted across a module's domains).
   practice: '/practice/:moduleId',
   // Practice Exam Mode (§6.4) is domain-scoped: per-question feedback + Why Card.

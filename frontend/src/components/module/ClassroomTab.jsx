@@ -24,8 +24,10 @@ import * as lectures from '../../lib/lectures'
 import { path } from '../../routes'
 import ContainerSection from './ContainerSection'
 import ContinueCard from './ContinueCard'
+import ReviewSetSection from './ReviewSetSection'
 import BaselineSection from './BaselineSection'
 import SessionHistory from './SessionHistory'
+import SectionHeading from './SectionHeading'
 
 /**
  * Classroom tab — the module organised the way its exam is.
@@ -141,7 +143,7 @@ const GENERATORS = {
   },
 }
 
-export default function ClassroomTab({ moduleId, domains, examCount = 40 }) {
+export default function ClassroomTab({ moduleId, moduleTitle, domains, examCount = 40 }) {
   const queryClient = useQueryClient()
 
   const { data: media, isPending } = useQuery({
@@ -202,10 +204,7 @@ export default function ClassroomTab({ moduleId, domains, examCount = 40 }) {
           which is exactly where practice exams sit — so they sit alongside
           them rather than inside the domain list. */}
       <section className="space-y-3">
-        <h2 className="flex items-center gap-2 border-l-2 border-accent pl-2.5 text-xs font-bold uppercase tracking-[0.14em] text-accent2">
-          <Target size={13} aria-hidden="true" />
-          Your own questions
-        </h2>
+        <SectionHeading Icon={Target}>Your own questions</SectionHeading>
         <ContainerSection moduleId={moduleId} container="missed" />
         <ContainerSection moduleId={moduleId} container="qa" />
       </section>
@@ -213,6 +212,15 @@ export default function ClassroomTab({ moduleId, domains, examCount = 40 }) {
       {/* Every finished sitting, still a source. A results screen lasts as long
           as someone stands in front of it; what they got wrong is worth more
           than that. */}
+      {/* Beside the containers, because that is where it was made — and
+          because material spanning the whole blueprint is the same shape of
+          thing as a practice exam, not a topic. */}
+      <ReviewSetSection
+        moduleId={moduleId}
+        moduleTitle={moduleTitle}
+        quizzes={media?.module_quizzes || []}
+      />
+
       <SessionHistory moduleId={moduleId} />
 
       {isPending ? (
@@ -294,10 +302,7 @@ function GenerateAll({ moduleId, domains, performance, examCount }) {
 
   return (
     <section className="space-y-3">
-      <h2 className="flex items-center gap-2 border-l-2 border-accent pl-2.5 text-xs font-bold uppercase tracking-[0.14em] text-accent2">
-        <Sparkles size={13} aria-hidden="true" />
-        Generate across every domain
-      </h2>
+      <SectionHeading Icon={Sparkles}>Generate across every domain</SectionHeading>
       {adaptive && (
         <p className="px-1 text-xs text-sec">
           Weighted towards the domains you&rsquo;re finding hardest.

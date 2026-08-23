@@ -38,3 +38,20 @@ export function listenedDetail(lecture) {
   if (whole && heard >= whole - 10) return `finished · ${formatClock(whole)}`
   return `${formatClock(heard)} of ${formatClock(whole)}`
 }
+
+/**
+ * What to call the module's cross-domain review material.
+ *
+ * The module's own name, plus two words saying what the section holds — it is
+ * both missed questions and flagged ones, so neither word alone is honest.
+ *
+ * A trailing exam code goes: "LPI Linux Essentials (010-160) Review Set" is a
+ * header nobody can skim, and the code is the one part of the title that says
+ * nothing a learner looking at their own module needs told.
+ */
+export function reviewSetName(moduleTitle) {
+  const trimmed = (moduleTitle || '').replace(/\s*\([^)]*\)\s*$/, '').trim()
+  if (!trimmed) return 'Review set'
+  const short = trimmed.length > 28 ? `${trimmed.slice(0, 27).trimEnd()}…` : trimmed
+  return `${short} Review Set`
+}

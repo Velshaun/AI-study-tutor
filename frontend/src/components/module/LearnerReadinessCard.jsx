@@ -4,6 +4,7 @@ import { useState } from 'react'
 
 import { api } from '../../lib/api'
 import { STATUS, displayScore, sessionLabel, statusOf } from '../../lib/performance'
+import SectionHeading from './SectionHeading'
 
 /**
  * Learner readiness — how is this learner performing, domain by domain?
@@ -64,10 +65,7 @@ export default function LearnerReadinessCard({ moduleId }) {
 
   return (
     <section className="space-y-3">
-      <h2 className="flex items-center gap-2 border-l-2 border-success pl-2.5 text-xs font-bold uppercase tracking-[0.14em] text-success">
-        <GraduationCap size={13} aria-hidden="true" />
-        How you&rsquo;re doing
-      </h2>
+      <SectionHeading Icon={GraduationCap} tone="success">How you&rsquo;re doing</SectionHeading>
       <p className="px-1 text-xs text-sec">
         Your performance across {data.attempts} sitting{data.attempts === 1 ? '' : 's'}.
         Adding material won&rsquo;t change this.

@@ -44,6 +44,9 @@ QA = "qa"
 CONTAINERS = (MISSED, QA)
 
 # Correct answers in a row before an entry retires itself.
+# Correct sittings, not correct answers — see `record_answer`. Consecutive:
+# getting it wrong again resets to zero, because if you had it right and then
+# lost it, the right one was probably the fluke.
 GRADUATION_STREAK = 2
 
 # What a generated set may contain. "Everything" respects this and says so —
@@ -189,28 +192,51 @@ def mirror_lecture_qa(
         return False
 
 
-def record_answer(bank_entry_id: str, correct: bool) -> dict[str, Any] | None:
-    """Update an entry's streak after it was answered again.
+def record_answer(
+    bank_entry_id: str, correct: bool, *, session_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Update an entry's streak after it was answered in a sitting.
 
     The whole of auto-graduation. Called when a question carrying a
     `bank_entry_id` is answered, which only happens for questions generated
     *from* a container — an ordinary question has no entry to update.
+
+    One pass per sitting, whatever happened inside it.
+    ==================================================
+
+    This counted correct *answers* and knew nothing about sittings, so a
+    question appearing twice in one set — or answered twice in one run —
+    graduated on the spot. Two correct answers a minute apart is not evidence
+    of recall; the whole reason the threshold is two is that a lucky guess does
+    not repeat a week later.
+
+    `last_session_id` is the guard, and it lives here rather than in the caller
+    because the caller is not the only thing that will ever write an answer.
+    The retry cycle leans on it too: a learner cycling back through what they
+    got wrong is practising, and practice must not be able to promote anything.
     """
     if not available() or not bank_entry_id:
         return None
 
     rows = (
-        _client().table("question_bank").select("id, correct_streak")
+        _client().table("question_bank").select("id, correct_streak, last_session_id")
         .eq("id", bank_entry_id).limit(1).execute()
     ).data or []
     if not rows:
         return None
 
+    if session_id and rows[0].get("last_session_id") == session_id:
+        # Already counted this sitting. Not an error and not worth a log line:
+        # it is the ordinary outcome of answering something twice in one run.
+        return None
+
     streak = (rows[0].get("correct_streak") or 0) + 1 if correct else 0
     patch: dict[str, Any] = {"correct_streak": streak, "updated_at": _now()}
+    if session_id:
+        patch["last_session_id"] = session_id
     if correct and streak >= GRADUATION_STREAK:
         patch["graduated_at"] = _now()
-        logger.info("Bank entry %s graduated after %d correct in a row",
+        logger.info("Bank entry %s graduated after %d correct sittings",
                     bank_entry_id, streak)
     elif not correct:
         # Coming back from retirement is the honest outcome of getting it wrong
@@ -235,12 +261,16 @@ def delete_entry(entry_id: str, user_id: str) -> bool:
 # --- reading ----------------------------------------------------------------
 def list_entries(
     *, user_id: str, module_id: str, container: str,
-    include_graduated: bool = False,
+    include_graduated: bool = False, domain_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """One container's entries, oldest first.
 
     Oldest first because that is the order the scoping dial's "oldest" wants,
     and reversing a list is cheaper than a second query.
+
+    `domain_id` narrows to what was missed *in* one domain — the difference
+    between "drill this topic" and "drill everything I have got wrong", which
+    are different sittings with different purposes.
     """
     if not available():
         return []
@@ -251,6 +281,8 @@ def list_entries(
     )
     if not include_graduated:
         query = query.is_("graduated_at", "null")
+    if domain_id:
+        query = query.eq("domain_id", domain_id)
     return (query.order("created_at").execute()).data or []
 
 

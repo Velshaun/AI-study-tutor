@@ -7,6 +7,7 @@ import { useConfirm } from '../../hooks/useConfirm'
 import { useToast } from '../../hooks/useToast'
 import { api } from '../../lib/api'
 import { path } from '../../routes'
+import SectionHeading from './SectionHeading'
 
 /**
  * Practice exams, and every sitting of one.
@@ -67,10 +68,7 @@ export default function ExamsSection({ moduleId, exams = [], questionCount, onDe
 
   return (
     <section className="space-y-3">
-      <h2 className="flex items-center gap-2 border-l-2 border-accent pl-2.5 text-xs font-bold uppercase tracking-[0.14em] text-accent2">
-        <ClipboardList size={13} aria-hidden="true" />
-        Practice exams
-      </h2>
+      <SectionHeading Icon={ClipboardList}>Practice exams</SectionHeading>
       <p className="px-1 text-xs text-sec">
         The whole blueprint at once, weighted the way the real paper is.
       </p>

@@ -654,6 +654,12 @@ class StudioMedia(BaseModel):
     quizzes: list[StudioQuiz] = Field(default_factory=list)
     practice: list[StudioSet] = Field(default_factory=list)
     exams: list[StudioExam] = Field(default_factory=list)
+    # Quizzes belonging to the whole module rather than one domain — generated
+    # from a container, whose questions come from every domain at once. They
+    # were being returned in `quizzes`, where the Classroom groups by domain
+    # and `bucket(null)` quietly dropped them: created successfully, reported
+    # successfully, and visible nowhere.
+    module_quizzes: list[StudioQuiz] = Field(default_factory=list)
 
 
 @router.get("/{module_id}/studio", response_model=StudioMedia)
@@ -705,20 +711,23 @@ async def studio_media(
     quiz_rows = (
         removal.live(
             client.table("quizzes")
-            .select("id, domain_id, title, question_count, score, created_at"),
+            .select("id, domain_id, title, question_count, score, created_at, questions"),
             "quizzes",
         ).eq("module_id", module_id).eq("user_id", user.id).execute()
     ).data or []
-    quizzes = [
+    all_quizzes = [
         StudioQuiz(
             id=q["id"], domain_id=q.get("domain_id"),
             domain_title=title_of.get(q.get("domain_id")),
             title=q.get("title") or "Quiz",
-            question_count=q.get("question_count") or 0, score=q.get("score"),
+            question_count=q.get("question_count") or len(q.get("questions") or []),
+            score=q.get("score"),
             created_at=q.get("created_at"),
         )
         for q in quiz_rows
     ]
+    quizzes = [q for q in all_quizzes if q.domain_id]
+    module_quizzes = [q for q in all_quizzes if not q.domain_id]
 
     def _by_domain(
         rows: list[dict[str, Any]], noun: str, *, split_by_title: bool = False,
@@ -829,7 +838,7 @@ async def studio_media(
 
     return StudioMedia(
         lectures=lectures, flashcards=flashcards, quizzes=quizzes,
-        practice=practice, exams=exams,
+        practice=practice, exams=exams, module_quizzes=module_quizzes,
     )
 
 

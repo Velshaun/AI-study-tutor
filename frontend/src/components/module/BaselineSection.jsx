@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { api } from '../../lib/api'
 import ResultsGrid from '../study/ResultsGrid'
 import PreAssessmentCard from './PreAssessmentCard'
+import SectionHeading from './SectionHeading'
 
 /**
  * The pre-assessment, and what has changed since.
@@ -42,9 +43,7 @@ export default function BaselineSection({ moduleId, questionCount, canTake }) {
 
   return (
     <section className="space-y-3">
-      <h2 className="flex items-center gap-2 border-l-2 border-accent pl-2.5 text-xs font-bold uppercase tracking-[0.14em] text-accent2">
-        Where you started
-      </h2>
+      <SectionHeading>Where you started</SectionHeading>
 
       <div className="card space-y-3">
         <div className="flex items-center gap-4">

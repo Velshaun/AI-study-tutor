@@ -172,6 +172,7 @@ export default function ModuleDetail() {
         <div className="space-y-6">
           <ClassroomTab
             moduleId={id}
+            moduleTitle={module.title}
             domains={domains}
             examCount={module.practice_question_count || 40}
           />

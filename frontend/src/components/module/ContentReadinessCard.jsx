@@ -3,6 +3,7 @@ import { ChevronDown, Library, Loader2 } from 'lucide-react'
 import { useState } from 'react'
 
 import { api } from '../../lib/api'
+import SectionHeading from './SectionHeading'
 
 /**
  * Content readiness — does the app hold enough material to teach this exam?
@@ -76,10 +77,7 @@ export default function ContentReadinessCard({ moduleId }) {
 
   return (
     <section className="space-y-3">
-      <h2 className="flex items-center gap-2 border-l-2 border-accent2 pl-2.5 text-xs font-bold uppercase tracking-[0.14em] text-accent2">
-        <Library size={13} aria-hidden="true" />
-        Your material
-      </h2>
+      <SectionHeading Icon={Library}>Your material</SectionHeading>
       <p className="px-1 text-xs text-sec">
         How much of the exam your uploaded sources can actually teach.
       </p>
