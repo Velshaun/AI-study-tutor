@@ -150,7 +150,7 @@ def _unique_deck_title(domain_id: str, user_id: str, wanted: str) -> str:
 # --- Routes -----------------------------------------------------------------
 @router.post("/generate", response_model=list[Flashcard],
              status_code=status.HTTP_201_CREATED)
-async def generate(
+def generate(
     payload: GenerateRequest,
     user: AuthUser = Depends(get_current_user),
 ) -> list[Flashcard]:

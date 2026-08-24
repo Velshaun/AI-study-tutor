@@ -1,6 +1,7 @@
 import { Suspense } from 'react'
 import { Outlet, ScrollRestoration } from 'react-router-dom'
 
+import GenerationBanner from '../components/GenerationBanner'
 import { GenerationProvider } from '../context/GenerationProvider'
 
 /** Shown while a lazily-loaded route chunk arrives. Mirrors the placeholder
@@ -34,6 +35,9 @@ export default function RootLayout() {
         <Suspense fallback={<RouteFallback />}>
           <Outlet />
         </Suspense>
+        {/* Inside the provider, above every route: generation is visible from
+            any screen, not only the one holding the row that started it. */}
+        <GenerationBanner />
       </GenerationProvider>
     </>
   )

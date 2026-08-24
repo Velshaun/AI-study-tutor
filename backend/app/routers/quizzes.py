@@ -169,7 +169,7 @@ def _to_quiz(row: dict[str, Any]) -> Quiz:
 
 # --- Routes -----------------------------------------------------------------
 @router.post("/generate", response_model=Quiz, status_code=status.HTTP_201_CREATED)
-async def generate(
+def generate(
     payload: GenerateRequest,
     user: AuthUser = Depends(get_current_user),
 ) -> Quiz:

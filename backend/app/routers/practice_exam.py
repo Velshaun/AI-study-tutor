@@ -712,7 +712,7 @@ def _imported_to_exam_q(row: dict[str, Any], index: int) -> ExamQuestion | None:
 
 @router.post("/generate", response_model=PracticeExam,
              status_code=status.HTTP_201_CREATED)
-async def generate_exam(
+def generate_exam(
     payload: GenerateRequest,
     user: AuthUser = Depends(get_current_user),
 ) -> PracticeExam:
@@ -721,6 +721,31 @@ async def generate_exam(
     client = _client()
     difficulty = (payload.difficulty or _preferred_difficulty(user.id)).lower()
     kind = "pre_assessment" if payload.kind == "pre_assessment" else "practice"
+
+    # A module holds exactly one pre-assessment, and the unique index makes
+    # sure of it — at insert time. This check has to run *before* generation,
+    # because the insert happens after: without it, asking for a baseline that
+    # already existed generated the full paper (ninety questions, minutes of
+    # Gemini calls) and then died on the constraint, having spent everything
+    # and produced nothing. If the paper exists unsat, hand it back; if it has
+    # been sat, the sitting is the permanent record and the answer is no.
+    if kind == "pre_assessment":
+        existing = (
+            client.table("practice_exams").select("*")
+            .eq("module_id", payload.module_id).eq("user_id", user.id)
+            .eq("kind", "pre_assessment").limit(1).execute()
+        ).data or []
+        if existing:
+            sat = (
+                client.table("exam_attempts").select("id")
+                .eq("exam_id", existing[0]["id"]).limit(1).execute()
+            ).data or []
+            if sat:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "You have already taken this module's baseline assessment.",
+                )
+            return _to_exam(existing[0], _exam_questions(existing[0]["id"]))
 
     domains = (
         client.table("domains").select("*")
@@ -1230,7 +1255,7 @@ async def answer_question(
 
 
 @router.post("/{exam_id}/submit", response_model=ExamResult)
-async def submit_exam(
+def submit_exam(
     exam_id: str,
     payload: SubmitRequest,
     user: AuthUser = Depends(get_current_user),

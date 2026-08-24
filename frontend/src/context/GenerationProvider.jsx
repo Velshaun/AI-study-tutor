@@ -48,6 +48,7 @@ export function GenerationProvider({ children }) {
   // updaters (twice in StrictMode), so reading state that way made a second
   // pass believe the job already existed and drop it on the floor.
   const running = useRef(new Set())
+  const controllers = useRef(new Map())
 
   const setJob = useCallback((key, value) => {
     setJobs((current) => {
@@ -83,17 +84,28 @@ export function GenerationProvider({ children }) {
       if (running.current.has(key)) return
 
       const attempt = async () => {
+        // One controller per attempt, so cancelling aborts the network call
+        // rather than merely hiding the spinner over a request that is still
+        // billing Gemini and will still land.
+        const controller = new AbortController()
+        controllers.current.set(key, controller)
         running.current.add(key)
         clearFailure(key)
         setJob(key, { label, startedAt: Date.now() })
         try {
-          const destination = await run()
+          const destination = await run({ signal: controller.signal })
           toast.success(`${label} generated successfully — tap to view`, {
             action: destination
               ? { label: 'View', onClick: () => navigate(destination) }
               : undefined,
           })
         } catch (e) {
+          // Cancelled is not failed. The learner asked for this outcome, so
+          // there is no failure row to leave and nothing to retry.
+          if (e?.name === 'AbortError') {
+            toast.success(`${label} cancelled`)
+            return
+          }
           const message = e?.message || `Could not generate ${label.toLowerCase()}`
           // Kept on the row as well as raised as a toast. The toast is for
           // whoever is looking; the row is for whoever comes back later.
@@ -102,6 +114,7 @@ export function GenerationProvider({ children }) {
           }))
           toast.error(message, { action: { label: 'Retry', onClick: attempt } })
         } finally {
+          controllers.current.delete(key)
           running.current.delete(key)
           setJob(key, null)
         }
@@ -122,7 +135,9 @@ export function GenerationProvider({ children }) {
         failures[keyOf(moduleId, kind, domainId)] || null,
       dismissFailure: (moduleId, kind, domainId) =>
         clearFailure(keyOf(moduleId, kind, domainId)),
-      /** Every job in flight, for a global indicator if one is ever wanted. */
+      /** Abort a running job. The network call dies with it. */
+      cancel: (key) => controllers.current.get(key)?.abort(),
+      /** Every job in flight — the banner and the rows both read this. */
       jobs,
     }),
     [clearFailure, failures, jobs, start],

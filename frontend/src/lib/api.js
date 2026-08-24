@@ -343,8 +343,8 @@ export const api = {
   // Lectures (domain-scoped get-or-generate for the study links)
   lectureForDomain: (domainId, signal) =>
     apiFetch(`/lectures/${domainId}`, { signal }),
-  generateLecture: (body) =>
-    apiFetch('/lectures/generate', { method: 'POST', body }),
+  generateLecture: (body, signal) =>
+    apiFetch('/lectures/generate', { method: 'POST', body, signal }),
   // Is it playable yet? Generation returns a row long before there is audio in
   // it, so anything offering to open a lecture polls this first.
   lectureStatus: (lectureId, signal) =>
@@ -371,8 +371,8 @@ export const api = {
     apiFetch(`/practice-exam/imported/${batchId}/favourite`, { method: 'PATCH' }),
   deleteImported: (batchId) =>
     apiFetch(`/practice-exam/imported/${batchId}`, { method: 'DELETE' }),
-  generateExam: (body) =>
-    apiFetch('/practice-exam/generate', { method: 'POST', body }),
+  generateExam: (body, signal) =>
+    apiFetch('/practice-exam/generate', { method: 'POST', body, signal }),
   // Reveal one exam question's answer, once it has been answered. The paper
   // itself ships without its key so a sitting can't be inflated by reading the
   // response — see the runner.
@@ -454,8 +454,8 @@ export const api = {
   // Flashcards
   flashcards: (domainId, signal) =>
     apiFetch(`/flashcards/${domainId}`, { signal }),
-  generateFlashcards: (body) =>
-    apiFetch('/flashcards/generate', { method: 'POST', body }),
+  generateFlashcards: (body, signal) =>
+    apiFetch('/flashcards/generate', { method: 'POST', body, signal }),
   // Import a deck from parsed CSV rows. body: { name, cards: [{front, back}] }
   importFlashcards: (moduleId, body) =>
     apiFetch('/flashcards/import', {
@@ -468,8 +468,8 @@ export const api = {
 
   // Quizzes
   quizzes: (domainId, signal) => apiFetch(`/quizzes/${domainId}`, { signal }),
-  generateQuiz: (body) =>
-    apiFetch('/quizzes/generate', { method: 'POST', body }),
+  generateQuiz: (body, signal) =>
+    apiFetch('/quizzes/generate', { method: 'POST', body, signal }),
   submitQuiz: (id, answers) =>
     apiFetch(`/quizzes/${id}/submit`, { method: 'POST', body: { answers } }),
   favouriteQuiz: (id) => apiFetch(`/quizzes/${id}/favourite`, { method: 'PATCH' }),

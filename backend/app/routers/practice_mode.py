@@ -501,7 +501,7 @@ def _generate_into(
 
 # --- Routes -----------------------------------------------------------------
 @router.get("/{domain_id}/questions", response_model=PracticeSet)
-async def get_questions(
+def get_questions(
     domain_id: str,
     count: int | None = Query(
         None, ge=1, le=MAX_COUNT,

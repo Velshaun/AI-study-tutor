@@ -506,14 +506,14 @@ function MediaAction({ kind, moduleId, domain, items = [], examCount }) {
       domainId: domain.id,
       kind,
       label: `${cfg.label} for ${domain.title}`,
-      run: async () => {
+      run: async ({ signal } = {}) => {
         let destination
         if (kind === 'lecture') {
           const lecture = await api.generateLecture({
             domain_id: domain.id,
             voice: preferences.tutor_voice,
             length: preferences.lecture_length,
-          })
+          }, signal)
           // The endpoint answers before there is any audio; waiting is what
           // makes the "View" that follows tell the truth.
           if (lecture?.id) {
@@ -521,14 +521,14 @@ function MediaAction({ kind, moduleId, domain, items = [], examCount }) {
             destination = path('lecture', { id: lecture.id })
           }
         } else if (kind === 'flashcards') {
-          await api.generateFlashcards({ domain_id: domain.id, count: 20 })
+          await api.generateFlashcards({ domain_id: domain.id, count: 20 }, signal)
           destination = path('flashcards', { domainId: domain.id })
         } else if (kind === 'quiz') {
           await api.generateQuiz({
             domain_id: domain.id,
             difficulty: preferences.quiz_difficulty,
             question_count: 10,
-          })
+          }, signal)
           destination = path('quizzes', { domainId: domain.id })
         } else {
           await api.practiceQuestions(domain.id, { count: examCount })

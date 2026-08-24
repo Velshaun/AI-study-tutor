@@ -147,7 +147,14 @@ def generate_text(lecture_id: str, domain: dict[str, Any], module: dict[str, Any
     from google import genai
     from google.genai import types
 
-    client = genai.Client(api_key=settings.gemini_api_key)
+    # Its own client with a longer leash than the shared 30s: a full lecture
+    # script streams for well over a minute legitimately, and killing it at the
+    # question-generation deadline would break every long lecture. Streaming is
+    # also its own liveness signal — chunks either arrive or the read times out.
+    client = genai.Client(
+        api_key=settings.gemini_api_key,
+        http_options=types.HttpOptions(timeout=180_000),
+    )
     channel = f"lecture:{lecture_id}"
     parts: list[str] = []
     pending = 0

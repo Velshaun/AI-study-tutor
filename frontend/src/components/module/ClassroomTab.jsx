@@ -81,7 +81,7 @@ const GENERATORS = {
   lecture: {
     Icon: Mic,
     label: 'Lecture',
-    async run(domains, values) {
+    async run(domains, values, _need, signal) {
       let first = null
       for (const domain of domains) {
         if (domain.lecture_id && lectures.isReady(domain.lecture_status)) {
@@ -92,7 +92,7 @@ const GENERATORS = {
           domain_id: domain.id,
           voice: values.voice,
           length: values.length,
-        })
+        }, signal)
         first = first || lecture?.id
       }
       if (!first) return null
@@ -106,10 +106,10 @@ const GENERATORS = {
   flashcards: {
     Icon: Layers,
     label: 'Flashcards',
-    async run(domains, values, need) {
+    async run(domains, values, need, signal) {
       const counts = allocate(values.count, domains, need)
       for (const [i, domain] of domains.entries()) {
-        await api.generateFlashcards({ domain_id: domain.id, count: counts[i] })
+        await api.generateFlashcards({ domain_id: domain.id, count: counts[i] }, signal)
       }
       return domains[0] ? path('flashcards', { domainId: domains[0].id }) : null
     },
@@ -117,14 +117,14 @@ const GENERATORS = {
   quiz: {
     Icon: CheckCircle2,
     label: 'Quiz',
-    async run(domains, values, need) {
+    async run(domains, values, need, signal) {
       const counts = allocate(values.count, domains, need)
       for (const [i, domain] of domains.entries()) {
         await api.generateQuiz({
           domain_id: domain.id,
           difficulty: values.difficulty,
           question_count: counts[i],
-        })
+        }, signal)
       }
       return domains[0] ? path('quizzes', { domainId: domains[0].id }) : null
     },
@@ -288,8 +288,8 @@ function GenerateAll({ moduleId, domains, performance, examCount }) {
       moduleId,
       kind,
       label: cfg.label,
-      run: async () => {
-        const destination = await cfg.run(unlocked, values, adaptive ? need : null)
+      run: async ({ signal } = {}) => {
+        const destination = await cfg.run(unlocked, values, adaptive ? need : null, signal)
         for (const key of ['studio', 'module', 'module-stats', 'performance']) {
           queryClient.invalidateQueries({ queryKey: [key, moduleId] })
         }

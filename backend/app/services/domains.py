@@ -35,7 +35,11 @@ logger = logging.getLogger(__name__)
 # transient, and without a retry a single blip fails the whole ingestion run —
 # which on the free tier happens often enough to matter.
 RETRY_STATUSES = ("503", "429", "500", "UNAVAILABLE", "RESOURCE_EXHAUSTED",
-                  "INTERNAL", "overloaded", "high demand")
+                  "INTERNAL", "overloaded", "high demand",
+                  # A per-call deadline expiring is the definition of worth one
+                  # more try — without these markers the new timeout raised
+                  # straight through and the retry loop never got a turn.
+                  "timed out", "Timeout", "timeout", "DEADLINE_EXCEEDED")
 MAX_ATTEMPTS = 4
 BASE_BACKOFF_SECS = 3.0
 
@@ -98,8 +102,20 @@ def _client():
     if not settings.gemini_api_key:
         raise DomainExtractionError("GEMINI_API_KEY is not configured.")
     from google import genai
+    from google.genai import types
 
-    return genai.Client(api_key=settings.gemini_api_key)
+    # A deadline on every call. The SDK's default is effectively none, so a
+    # stalled connection hung its caller indefinitely — the retry loop never
+    # even got a turn, because attempt one never returned. With a deadline the
+    # timeout is transient, the retries actually run, and a genuine outage
+    # surfaces as an error the learner can retry instead of a spinner that
+    # never stops.
+    return genai.Client(
+        api_key=settings.gemini_api_key,
+        http_options=types.HttpOptions(
+            timeout=int(settings.gemini_timeout_secs * 1000),
+        ),
+    )
 
 
 def _is_transient(exc: Exception) -> bool:

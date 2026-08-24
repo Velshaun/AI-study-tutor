@@ -73,6 +73,12 @@ class Settings:
         # gemini-1.5-* are retired; 2.5-flash is the cheapest tier that supports
         # both Google Search grounding and response_schema, which §4.3 needs.
         self.gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        # Per-call deadline for generation requests. There was no timeout at
+        # all, so a stalled connection held its caller — and, until the
+        # endpoints moved off the event loop, the whole API — forever. Normal
+        # question-generation calls answer in 10-15s; anything past this is a
+        # hang, not a slow success.
+        self.gemini_timeout_secs: float = float(os.getenv("GEMINI_TIMEOUT_SECS", "30"))
         self.openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
         self.openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         # Whisper, for audio sources (§4.3 step 2).
