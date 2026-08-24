@@ -171,7 +171,8 @@ async def upload_sources(
             raise HTTPException(
                 status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
                 f"We can't read {upload.filename or 'that file'} yet. "
-                "Try a PDF, a photo of your notes (JPG, PNG, HEIC), a screen "
+                "Try a PDF, a Word document, a PowerPoint deck, a spreadsheet, "
+                "a photo of your notes (JPG, PNG, HEIC), a screen "
                 "recording (MP4, MOV, WEBM), audio (MP3, M4A, WAV), a CSV, or "
                 "a text file.",
             )

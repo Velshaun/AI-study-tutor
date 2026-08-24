@@ -40,6 +40,23 @@ const KINDS = {
     mimes: ['audio/*'],
     label: 'audio',
   },
+  document: {
+    // Word, PowerPoint and Excel — the modern zip formats extract cleanly;
+    // the legacy binaries are accepted here and sorted out server-side, where
+    // a mislabelled modern file passes and a genuine Word-97 binary refuses
+    // with the one-step fix. Refusing .doc at the picker would just read as
+    // "broken" to whoever was handed one by their lecturer.
+    exts: ['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xlsm', 'xls'],
+    mimes: [
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ],
+    label: 'document',
+  },
   csv: {
     exts: ['csv', 'tsv'],
     mimes: ['text/csv', 'text/tab-separated-values'],
@@ -69,8 +86,9 @@ export const LIBRARY_ACCEPT = [
 
 /** Documents only, for a file browser that shouldn't show the camera roll. */
 export const DOCUMENT_ACCEPT = [
-  ...dotted('pdf'), ...dotted('csv'), ...dotted('text'), ...dotted('audio'),
-  'application/pdf', 'text/csv', 'text/plain', 'audio/*',
+  ...dotted('pdf'), ...dotted('document'), ...dotted('csv'), ...dotted('text'),
+  ...dotted('audio'),
+  'application/pdf', ...KINDS.document.mimes, 'text/csv', 'text/plain', 'audio/*',
 ].join(',')
 
 export const IMAGE_ACCEPT = [...dotted('image'), ...mimesFor('image')].join(',')
@@ -78,7 +96,7 @@ export const VIDEO_ACCEPT = [...dotted('video'), ...mimesFor('video')].join(',')
 
 /** Human list for the hint under a dropzone. */
 export const SUPPORTED_SUMMARY =
-  'PDF, photos, screen recordings, audio, CSV or text'
+  'PDF, Word, PowerPoint, Excel, photos, screen recordings, audio, CSV or text'
 
 /**
  * What kind of file this is: 'pdf' | 'image' | 'video' | 'audio' | 'csv' |
@@ -99,6 +117,7 @@ export function classifyFile(file) {
   if (mime.startsWith('video/')) return 'video'
   if (mime.startsWith('audio/')) return 'audio'
   if (mime === 'application/pdf') return 'pdf'
+  if (KINDS.document.mimes.includes(mime)) return 'document'
   if (mime === 'text/csv' || mime === 'text/tab-separated-values') return 'csv'
   if (mime.startsWith('text/')) return 'text'
   return null
@@ -128,7 +147,8 @@ export function rejectionMessage(rejected) {
   const subject =
     names.length === 1 ? `“${names[0]}”` : `${names.length} of those files`
   return (
-    `We can't read ${subject} yet. Try a PDF, a photo of your notes ` +
+    `We can't read ${subject} yet. Try a PDF, a Word or PowerPoint file, ` +
+    `a spreadsheet, a photo of your notes ` +
     `(JPG, PNG, HEIC), a screen recording (MP4, MOV), audio (MP3, M4A, WAV), ` +
     `a CSV, or a text file.`
   )

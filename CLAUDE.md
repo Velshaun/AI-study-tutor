@@ -38,7 +38,7 @@ supabase/migrations/   timestamped, idempotent, safe to re-run
 | `tutor` | Module context, material assessment, question answering |
 | `coverage` | Chunked full reading of sources; the stored per-domain map |
 | `link_check` / `dead_links` | Validating discovered URLs; learner reports feeding back |
-| `extraction` | PDF, text, audio, **image (Gemini vision)**, **video (frames + narration)** |
+| `extraction` | PDF, text, audio, **image (Gemini vision)**, **video (frames + narration)**, **Office docs (docx/pptx/xlsx; legacy binaries refuse with the fix)** |
 | `pipeline` | Ingestion, and the guard that stops it destroying study content |
 | `performance` | Rolling per-domain strength, adaptive weighting, attempt records |
 | `ingest` | The parse boundary: pasted material in, canonical records out |

@@ -24,6 +24,7 @@ from app.database import get_supabase
 from app.services.extraction import (  # noqa: F401 - re-exported for callers
     AUDIO_EXTS,
     IMAGE_EXTS,
+    DOCUMENT_EXTS,
     PDF_EXTS,
     SUPPORTED_EXTS,
     TEXT_EXTS,
@@ -48,6 +49,19 @@ def safe_filename(name: str) -> str:
     return (name or "upload")[:120]
 
 
+# The MIME spellings browsers use for Office uploads. Extensions decide first,
+# as everywhere; these catch a file picked with no extension at all.
+DOCUMENT_MIMES = {
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel.sheet.macroenabled.12",
+}
+
+
 def detect_source_type(filename: str, content_type: str | None = None) -> str:
     """Classify an upload into the parser that should handle it.
 
@@ -61,6 +75,13 @@ def detect_source_type(filename: str, content_type: str | None = None) -> str:
 
     if ext in PDF_EXTS or mime.startswith("application/pdf"):
         return "pdf"
+    # Office documents, before the generic branches: their MIME types are all
+    # application/*, so nothing below would ever claim them, but the extension
+    # check must run before text/ — a .docx exported from Google Drive
+    # sometimes arrives as text/plain, and reading zip bytes as prose yields
+    # mojibake, not material.
+    if ext in DOCUMENT_EXTS or mime in DOCUMENT_MIMES:
+        return "document"
     if ext in IMAGE_EXTS or mime.startswith("image/"):
         return "image"
     # Video before audio: a screen recording carries its content on screen, and

@@ -20,6 +20,7 @@ import hashlib
 import io
 import logging
 import mimetypes
+import zipfile
 import re
 import threading
 import time
@@ -47,7 +48,20 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".gif", ".bmp"
 # alongside. Container formats that can hold either (mp4, webm) land here: the
 # video extractor falls back to transcription when there is nothing to see.
 VIDEO_EXTS = {".mp4", ".mov", ".webm", ".m4v", ".avi", ".mkv"}
-SUPPORTED_EXTS = PDF_EXTS | AUDIO_EXTS | TEXT_EXTS | IMAGE_EXTS | VIDEO_EXTS
+# Office documents. The modern formats (.docx, .pptx, .xlsx) are zip archives
+# of XML and extract cleanly; the legacy binaries (.doc, .ppt, .xls) are OLE
+# compound files that nothing pure-Python reads reliably. They are *accepted*
+# — refusing at the picker reads as "broken" — and then either turn out to be
+# mislabelled modern files (common: a renamed docx, an RTF wearing a .doc
+# suffix), or refuse loudly with the one-step fix. Silently feeding a
+# best-effort OLE scrape to generation would put garbage in every quiz built
+# from it, which is worse than an honest no.
+DOC_EXTS = {".docx", ".doc"}
+SLIDE_EXTS = {".pptx", ".ppt"}
+SHEET_EXTS = {".xlsx", ".xlsm", ".xls"}
+DOCUMENT_EXTS = DOC_EXTS | SLIDE_EXTS | SHEET_EXTS
+SUPPORTED_EXTS = (PDF_EXTS | AUDIO_EXTS | TEXT_EXTS | IMAGE_EXTS | VIDEO_EXTS
+                  | DOCUMENT_EXTS)
 
 # Vision sampling. A screen recording repeats itself for seconds at a time, so
 # a handful of well-spaced frames carries almost all of its text.
@@ -225,6 +239,194 @@ def _wait_for_youtube_turn() -> None:
         if wait > 0:
             time.sleep(wait)
         _YT_LAST = time.monotonic()
+
+
+# --- Office documents --------------------------------------------------------
+# The OOXML formats are walked with the stdlib (zipfile + defusedxml, which is
+# already a dependency) rather than python-docx/python-pptx: text and tables
+# are all generation needs, and skipping lxml keeps the deploy image where it
+# is. Excel goes through openpyxl because raw cell values are genuinely hard
+# to read — dates are stored as serial numbers, and a glossary that renders
+# its dates as 45123.0 is quiet corruption.
+
+_OLE_MAGIC = b"\xd0\xcf\x11\xe0"
+
+
+def _xml_root(archive: "zipfile.ZipFile", name: str):
+    from defusedxml import ElementTree as SafeET
+
+    return SafeET.fromstring(archive.read(name))
+
+
+def _legacy_office(data: bytes, filename: str, save_as: str) -> str | None:
+    """Handle a legacy Office extension that is not actually legacy.
+
+    Most .doc files in circulation today are a renamed .docx (zip magic) or an
+    RTF wearing the wrong suffix. Both extract fine. A genuine Word-97 OLE
+    binary raises with the one-step fix instead, because every pure-Python OLE
+    scrape produces exactly the garbage-in this app refuses to build questions
+    from. Returns None when the modern parser should take over.
+    """
+    if data[:2] == b"PK":
+        return None  # actually OOXML — let the modern parser have it
+    if data[:5] == b"{\\rtf":
+        # RTF: drop control words and group braces, keep the text runs.
+        text = data.decode("latin-1", errors="ignore")
+        text = re.sub(r"\\'[0-9a-f]{2}", " ", text)
+        text = re.sub(r"\\[a-zA-Z]+-?\d* ?", " ", text)
+        text = text.replace("{", " ").replace("}", " ")
+        return normalise(text)
+    if data[:4] == _OLE_MAGIC:
+        raise ExtractionError(
+            f"{filename} is in the old binary Office format, which can't be "
+            f"read reliably. Open it and save it as {save_as}, then upload "
+            "that."
+        )
+    return None
+
+
+def extract_docx(data: bytes, filename: str = "document.docx") -> str:
+    """Word: paragraphs in order, tables flattened to pipe-separated rows.
+
+    The structure that matters to generation survives — paragraph breaks and
+    table rows, which is what glossaries and objective maps live in. Heading
+    levels are flattened to plain paragraphs: the model reads prose, and a
+    lost bold costs nothing where a lost table row costs a definition.
+    """
+    legacy = _legacy_office(data, filename, "a .docx")
+    if legacy is not None:
+        return _some_text(legacy, filename)
+    W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            root = _xml_root(archive, "word/document.xml")
+    except ExtractionError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise ExtractionError(f"Could not read {filename}: {exc}") from exc
+
+    def para_text(p) -> str:
+        return "".join(t.text or "" for t in p.iter(f"{W}t"))
+
+    out: list[str] = []
+    body = root.find(f"{W}body")
+    for child in (body if body is not None else root):
+        if child.tag == f"{W}p":
+            out.append(para_text(child))
+        elif child.tag == f"{W}tbl":
+            for row in child.iter(f"{W}tr"):
+                cells = [
+                    " ".join(para_text(p) for p in cell.iter(f"{W}p")).strip()
+                    for cell in row.iter(f"{W}tc")
+                ]
+                out.append(" | ".join(cells))
+    joined = "\n\n".join(x for x in out if x.strip())
+    return _some_text(normalise(joined), filename)
+
+
+def extract_pptx(data: bytes, filename: str = "slides.pptx") -> str:
+    """PowerPoint: every text run, slide by slide, speaker notes included.
+
+    Slides are numbered in the output because a deck's structure *is* its
+    slide boundaries — "slide 12" is how a learner and their lecturer both
+    refer to the material. Speaker notes ride along: on a teaching deck they
+    often hold more of the lesson than the bullets do.
+    """
+    legacy = _legacy_office(data, filename, "a .pptx")
+    if legacy is not None:
+        return _some_text(legacy, filename)
+    A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            names = archive.namelist()
+            slides = sorted(
+                (n for n in names
+                 if n.startswith("ppt/slides/slide") and n.endswith(".xml")),
+                key=lambda n: int(re.sub(r"\D", "", n) or 0),
+            )
+            out = []
+            for i, slide in enumerate(slides, start=1):
+                runs = [t.text or ""
+                        for t in _xml_root(archive, slide).iter(f"{A}t")]
+                text = normalise(" ".join(runs))
+                note_name = slide.replace("slides/slide", "notesSlides/notesSlide")
+                if note_name in names:
+                    note = normalise(" ".join(
+                        t.text or ""
+                        for t in _xml_root(archive, note_name).iter(f"{A}t")
+                    ))
+                    if note:
+                        text = f"{text}\n{note}" if text else note
+                if text:
+                    out.append(f"[Slide {i}] {text}")
+    except ExtractionError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise ExtractionError(f"Could not read {filename}: {exc}") from exc
+    return _some_text("\n\n".join(out), filename)
+
+
+def extract_xlsx(data: bytes, filename: str = "sheet.xlsx") -> str:
+    """Excel: rows flattened to pipe-separated text, sheet by sheet.
+
+    A spreadsheet earns its place here when it is words in a grid — a
+    glossary, an objectives map, notes in cells. One that is mostly numbers
+    has nothing to teach from, and rather than feeding a wall of figures to
+    generation it refuses and says so.
+    """
+    legacy = _legacy_office(data, filename, "an .xlsx")
+    if legacy is not None:
+        return _some_text(legacy, filename)
+    try:
+        from openpyxl import load_workbook
+
+        book = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        out = []
+        for sheet in book.worksheets:
+            rows = []
+            for row in sheet.iter_rows(values_only=True):
+                cells = ["" if v is None else str(v).strip() for v in row]
+                if any(cells):
+                    rows.append(" | ".join(cells).rstrip(" |"))
+            if rows:
+                out.append(f"[Sheet: {sheet.title}]\n" + "\n".join(rows))
+        book.close()
+    except ExtractionError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise ExtractionError(f"Could not read {filename}: {exc}") from exc
+
+    text = normalise("\n\n".join(out))
+    letters = sum(ch.isalpha() for ch in text)
+    if not text or letters < max(80, len(text) * 0.30):
+        raise ExtractionError(
+            f"{filename} is mostly numbers — there's nothing to teach from. "
+            "Spreadsheets work here when they hold words: a glossary, an "
+            "objectives map, notes in cells."
+        )
+    return text
+
+
+def _some_text(text: str, filename: str) -> str:
+    if not text.strip():
+        raise ExtractionError(
+            f"No readable text found in {filename}. If it's a scan or a deck "
+            "of images, upload the pages as photos instead — those are read "
+            "with vision."
+        )
+    return text
+
+
+def extract_document(data: bytes, filename: str = "document") -> str:
+    """Dispatch an Office document by its extension."""
+    ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+    if ext in DOC_EXTS:
+        return extract_docx(data, filename)
+    if ext in SLIDE_EXTS:
+        return extract_pptx(data, filename)
+    if ext in SHEET_EXTS:
+        return extract_xlsx(data, filename)
+    raise ExtractionError(f"Unsupported document type: {filename}")
 
 
 def extract_youtube(url: str) -> str:
@@ -538,6 +740,8 @@ def extract_source(
         return extract_pdf(_require(data, "PDF"))
     if source_type == "text":
         return extract_text_file(_require(data, "text file"))
+    if source_type == "document":
+        return extract_document(_require(data, "document"), filename)
     if source_type == "audio":
         return extract_audio(_require(data, "audio"), filename)
     if source_type == "image":
