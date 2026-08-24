@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, ClipboardList, Loader2, Plus, Trash2 } from 'lucide-react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import ShowAllToggle from './ShowAllToggle'
 import SwipeToDelete from '../study/SwipeToDelete'
 import { useConfirm } from '../../hooks/useConfirm'
 import { useToast } from '../../hooks/useToast'
@@ -21,6 +23,9 @@ import SectionHeading from './SectionHeading'
  * that did it was reachable only by typing its URL — so an imported past paper
  * could be sat but a generated one could not be made.
  */
+// The recent slice worth showing unprompted.
+const RECENT_RESULTS = 3
+
 export default function ExamsSection({ moduleId, exams = [], questionCount, onDeleted }) {
   const navigate = useNavigate()
   const toast = useToast()
@@ -38,6 +43,10 @@ export default function ExamsSection({ moduleId, exams = [], questionCount, onDe
   const history = (Array.isArray(attempts) ? attempts : []).filter(
     (a) => a.kind !== 'pre_assessment',
   )
+  // Last three by default, same reasoning as past sessions: results accumulate
+  // forever, and the recent ones are the ones being compared against.
+  const [showAllResults, setShowAllResults] = useState(false)
+  const visibleHistory = showAllResults ? history : history.slice(0, RECENT_RESULTS)
 
   const build = useMutation({
     mutationFn: () => api.generateExam({ module_id: moduleId }),
@@ -157,7 +166,7 @@ export default function ExamsSection({ moduleId, exams = [], questionCount, onDe
             Exam results
           </p>
           <div className="space-y-1.5">
-            {history.map((a) => (
+            {visibleHistory.map((a) => (
               <div key={a.id} className="group flex items-center justify-between gap-2">
                 <p className="min-w-0 flex-1 truncate text-sm text-pri">
                   {a.title || 'Practice exam'}
@@ -189,6 +198,13 @@ export default function ExamsSection({ moduleId, exams = [], questionCount, onDe
                 </button>
               </div>
             ))}
+            <ShowAllToggle
+              total={history.length}
+              shown={RECENT_RESULTS}
+              expanded={showAllResults}
+              onToggle={() => setShowAllResults((v) => !v)}
+              noun="results"
+            />
           </div>
         </div>
       )}

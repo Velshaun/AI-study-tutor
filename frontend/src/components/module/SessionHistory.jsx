@@ -10,6 +10,7 @@ import { summarise } from '../../lib/session'
 import GenerateFromPool from '../study/GenerateFromPool'
 import ResultsGrid from '../study/ResultsGrid'
 import SectionHeading from './SectionHeading'
+import ShowAllToggle from './ShowAllToggle'
 
 /**
  * Every past sitting, and every one of them still a source.
@@ -30,6 +31,9 @@ const MEDIA = [
   { id: 'flashcards', label: 'Flashcards', Icon: Layers },
 ]
 
+// The recent slice worth showing unprompted.
+const RECENT_SESSIONS = 4
+
 const KIND_LABEL = {
   exam: 'Exam', quiz: 'Quiz', flashcards: 'Flashcards', practice: 'Practice',
 }
@@ -41,6 +45,11 @@ export default function SessionHistory({ moduleId }) {
     enabled: Boolean(moduleId),
   })
   const sessions = Array.isArray(data) ? data : []
+  // Newest four by default. The list grows with every sitting, forever, and
+  // the recent ones are what anyone comes back for — the rest stay one tap
+  // away rather than running down the page.
+  const [showAll, setShowAll] = useState(false)
+  const visible = showAll ? sessions : sessions.slice(0, RECENT_SESSIONS)
 
   if (isPending || !sessions.length) return null
 
@@ -48,9 +57,16 @@ export default function SessionHistory({ moduleId }) {
     <section className="space-y-3">
       <SectionHeading Icon={History}>Past sessions</SectionHeading>
       <div className="space-y-2">
-        {sessions.map((session) => (
+        {visible.map((session) => (
           <SessionPill key={session.id} session={session} moduleId={moduleId} />
         ))}
+        <ShowAllToggle
+          total={sessions.length}
+          shown={RECENT_SESSIONS}
+          expanded={showAll}
+          onToggle={() => setShowAll((v) => !v)}
+          noun="sessions"
+        />
       </div>
     </section>
   )
