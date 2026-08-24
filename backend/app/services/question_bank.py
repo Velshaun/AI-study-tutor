@@ -356,6 +356,16 @@ def to_question(entry: dict[str, Any], position: int) -> dict[str, Any] | None:
         "correct_index": correct,
         "points": 1,
         "position": position,
+        # The snapshot kept the explanation precisely so a re-served question
+        # could still teach; dropping it here made every container-generated
+        # question reveal nothing where a regular one explains itself. Type
+        # determines behaviour — how the question was made must not.
+        "explanation": (snapshot.get("explanation") or "").strip(),
+        # The domain the miss happened in. Without it, an attempt at a
+        # container exam graded with no per-domain breakdown, so the sitting
+        # contributed nothing to strength — a regular exam's twin in every way
+        # except the one that feeds everything downstream.
+        "domain_id": entry.get("domain_id"),
         # The link that makes auto-graduation work: answering this updates the
         # entry it came from.
         "bank_entry_id": entry["id"],

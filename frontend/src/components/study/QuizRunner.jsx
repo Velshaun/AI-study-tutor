@@ -82,6 +82,9 @@ export default function QuizRunner({
     return Number.isFinite(left) ? Math.max(0, left) : durationMinutes * 60
   })
   const [timedOut, setTimedOut] = useState(false)
+  // The clock ran out over an untouched paper. A peek is not a sitting: nothing
+  // is submitted, graded or recorded — the sitting simply never happened.
+  const [discarded, setDiscarded] = useState(false)
   // A hand-in that failed, and whether one is in flight. Held apart from the
   // per-question error: this one is about the paper, not the question.
   const [submitError, setSubmitError] = useState(null)
@@ -242,7 +245,17 @@ export default function QuizRunner({
       setRemaining(left)
       if (left === 0) {
         clearInterval(id)
-        // Time's up: hand in the paper exactly as it stands.
+        // Time's up. A paper with nothing answered is discarded, not handed
+        // in: grading it would write a zero into the history, the baseline
+        // comparison and the per-domain strength every later paper is
+        // weighted by — over a screen somebody merely opened. The server
+        // refuses this case too; discarding here means it is never even asked.
+        if (!answersRef.current.some((a) => a != null)) {
+          setDiscarded(true)
+          attempt?.clear?.()
+          return
+        }
+        // Otherwise: hand in the paper exactly as it stands.
         finish(answersRef.current, { expired: true })
       }
     }, 1000)
@@ -371,6 +384,7 @@ export default function QuizRunner({
     firstAnswersRef.current = questions.map(() => null)
     setRetryQueue([])
     setCycling(false)
+    setDiscarded(false)
     setVisited(new Set([0]))
     setFinished(false)
     setResult(null)
@@ -383,6 +397,27 @@ export default function QuizRunner({
     // Starting over discards the saved run rather than resuming into it.
     attempt?.clear?.()
     onRestart?.()
+  }
+
+  if (discarded) {
+    return (
+      <div className="card flex flex-col items-center gap-4 py-10 text-center">
+        <Clock size={26} className="text-sec" aria-hidden="true" />
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-pri">
+            Time ran out before you answered anything
+          </p>
+          <p className="text-xs text-sec">
+            Nothing was graded or recorded — this doesn&rsquo;t count as a
+            sitting, and none of your scores have moved.
+          </p>
+        </div>
+        <button onClick={restart} className="btn-primary">
+          <RotateCcw size={16} aria-hidden="true" />
+          Start fresh
+        </button>
+      </div>
+    )
   }
 
   // An exam has more to say at the end than a quiz does — a per-domain

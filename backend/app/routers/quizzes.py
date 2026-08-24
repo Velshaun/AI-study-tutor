@@ -254,6 +254,14 @@ async def submit(
     if not questions:
         raise HTTPException(status.HTTP_409_CONFLICT, "This quiz has no questions.")
 
+    # Same rule as exams: a quiz score feeds domain strength, and a paper with
+    # nothing answered is a peek, not a sitting.
+    if not any(a is not None for a in payload.answers):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Nothing was answered, so this quiz wasn't graded or recorded.",
+        )
+
     results: list[QuestionResult] = []
     correct = 0
     for i, q in enumerate(questions):

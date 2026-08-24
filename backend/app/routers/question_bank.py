@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import question_bank as bank, removal
+from app.services import exam_profile, question_bank as bank, removal
 
 logger = logging.getLogger(__name__)
 
@@ -532,7 +532,13 @@ def _recent_identical(
         return False
     try:
         rows = (
-            _client().table(table).select(f"id, {size_column}")
+            # Live rows only. The window exists to absorb a double tap, and a
+            # set the learner has since deleted is not a double tap — it is a
+            # decision, and "you just made this" about something they removed
+            # blocks the exact regeneration the delete was clearing room for.
+            removal.live(
+                _client().table(table).select(f"id, {size_column}"), table,
+            )
             .eq("module_id", module_id).eq("user_id", user_id)
             .eq("title", title[:200]).gte("created_at", since)
             .limit(5).execute()
@@ -549,9 +555,13 @@ def _write_exam(*, module_id, user_id, questions, title) -> str:
             "module_id": module_id,
             "user_id": user_id,
             "title": title[:200],
-            # No timer. A revision set built from your own mistakes is for
-            # working through, not for sitting under exam conditions.
-            "duration_minutes": 0,
+            # Timed like any other paper. It briefly shipped with no timer on
+            # the theory that a revision set is for working through — but a
+            # practice exam is a type, and the type is what decides behaviour,
+            # not how the questions were sourced. Same per-question rate the
+            # regular generator uses, so a 20-question set gets a 20-question
+            # clock rather than a 40-question one.
+            "duration_minutes": exam_profile.exam_duration_minutes(len(questions)),
             "total_points": len(questions),
         }).execute()
     ).data
@@ -567,9 +577,15 @@ def _write_exam(*, module_id, user_id, questions, title) -> str:
     # the compensating delete.
     try:
         written = (
-            client.table("practice_questions").insert(
-                [{**q, "exam_id": exam_id} for q in questions]
-            ).execute()
+            client.table("practice_questions").insert([
+                {
+                    **{k: v for k, v in q.items() if k != "explanation"},
+                    # Where `submit_exam` reads the graded explanation from.
+                    "expected_answer": q.get("explanation") or "",
+                    "exam_id": exam_id,
+                }
+                for q in questions
+            ]).execute()
         ).data
     except Exception:
         written = None
@@ -607,6 +623,13 @@ def _write_quiz(*, module_id, user_id, questions, title, domain_id=None) -> str:
             "prompt": q["prompt"],
             "options": q["options"],
             "correct_index": q["correct_index"],
+            # A regular quiz explains itself after each answer, and the reveal
+            # is most of why a study quiz exists. The snapshot kept the
+            # explanation; it rides along so this quiz behaves like any other.
+            "explanation": q.get("explanation") or "",
+            # Which domain the original miss belonged to, so re-missing this
+            # question banks it back under the right heading.
+            "domain_id": q.get("domain_id"),
             "bank_entry_id": q["bank_entry_id"],
         }
         for q in questions

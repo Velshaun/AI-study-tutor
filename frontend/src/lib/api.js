@@ -403,6 +403,10 @@ export const api = {
   // One stored exam with its questions — generated or imported, same shape.
   exam: (examId, signal) => apiFetch(`/practice-exam/${examId}`, { signal }),
   deleteExam: (examId) => apiFetch(`/practice-exam/${examId}`, { method: 'DELETE' }),
+  // Removes one recorded sitting outright — strength is derived from the
+  // attempts on every read, so deleting the row reverses everything it fed.
+  deleteExamAttempt: (attemptId) =>
+    apiFetch(`/practice-exam/attempt/${attemptId}`, { method: 'DELETE' }),
   // `deck` names one of the domain's decks; omitting it removes every card the
   // domain holds, which is what this meant when a domain could only hold one.
   deleteFlashcardDeck: (domainId, deck) =>

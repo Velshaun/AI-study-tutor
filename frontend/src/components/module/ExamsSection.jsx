@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, ClipboardList, Loader2, Plus } from 'lucide-react'
+import { ChevronRight, ClipboardList, Loader2, Plus, Trash2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 
 import SwipeToDelete from '../study/SwipeToDelete'
@@ -47,6 +47,31 @@ export default function ExamsSection({ moduleId, exams = [], questionCount, onDe
     },
     onError: (e) => toast.error(e?.message || 'Could not build a practice exam.'),
   })
+
+  // Deleting a recorded sitting reverses it: strength is derived from the
+  // attempts on every read, so the scores recover the moment this lands.
+  const removeAttempt = useMutation({
+    mutationFn: (id) => api.deleteExamAttempt(id),
+    onSuccess: () => {
+      for (const key of ['exam-attempts', 'performance', 'baseline', 'module-stats']) {
+        queryClient.invalidateQueries({ queryKey: [key, moduleId] })
+      }
+      toast.success('Result deleted — your scores have been recalculated.')
+    },
+    onError: (e) => toast.error(e?.message || 'Could not delete that result.'),
+  })
+
+  async function confirmDeleteAttempt(a) {
+    const ok = await confirm({
+      title: 'Delete this result?',
+      message:
+        `${Math.round(a.score)}% (${a.correct} of ${a.total}) comes out of your `
+        + 'history, and its effect on your domain scores is reversed.',
+      confirmLabel: 'Delete result',
+      danger: true,
+    })
+    if (ok) removeAttempt.mutate(a.id)
+  }
 
   async function remove(exam) {
     const ok = await confirm({
@@ -133,7 +158,7 @@ export default function ExamsSection({ moduleId, exams = [], questionCount, onDe
           </p>
           <div className="space-y-1.5">
             {history.map((a) => (
-              <div key={a.id} className="flex items-baseline justify-between gap-2">
+              <div key={a.id} className="group flex items-center justify-between gap-2">
                 <p className="min-w-0 flex-1 truncate text-sm text-pri">
                   {a.title || 'Practice exam'}
                   <span className="text-sec">
@@ -151,6 +176,17 @@ export default function ExamsSection({ moduleId, exams = [], questionCount, onDe
                 >
                   {Math.round(a.score)}%
                 </p>
+                <button
+                  type="button"
+                  onClick={() => confirmDeleteAttempt(a)}
+                  disabled={removeAttempt.isPending}
+                  aria-label={`Delete this ${Math.round(a.score)}% result`}
+                  className="flex size-8 shrink-0 items-center justify-center rounded-lg
+                             text-sec transition-colors hover:bg-danger/10
+                             hover:text-danger disabled:opacity-40"
+                >
+                  <Trash2 size={14} aria-hidden="true" />
+                </button>
               </div>
             ))}
           </div>

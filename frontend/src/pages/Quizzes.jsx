@@ -95,7 +95,7 @@ export default function Quizzes() {
         >
           {running.title}
         </PageTitle>
-        <ResumableQuiz quiz={running} onSubmit={submitQuiz} />
+        <ResumableQuiz quiz={running} onSubmit={submitQuiz} retryWrong />
       </div>
     )
   }
@@ -175,7 +175,7 @@ export default function Quizzes() {
  * Split out because the attempt is keyed by quiz id: mounting it only once a
  * quiz is open keeps the hook unconditional and starts a clean run per quiz.
  */
-function ResumableQuiz({ quiz, onSubmit }) {
+function ResumableQuiz({ quiz, onSubmit, retryWrong = false }) {
   const attempt = useAttempt('quiz', quiz.id)
   // The module comes from the quiz rather than the route: quizzes are opened by
   // domain, and a container belongs to the module above it.
@@ -185,6 +185,7 @@ function ResumableQuiz({ quiz, onSubmit }) {
     <QuizRunner
       quiz={quiz}
       attempt={attempt}
+      retryWrong={retryWrong}
       onSubmit={(answers) => onSubmit(quiz, answers)}
       onFinished={({ results }) =>
         finishSession({

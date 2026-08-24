@@ -1075,6 +1075,42 @@ async def get_attempt(
     return _to_attempt(rows[0])
 
 
+@router.delete("/attempt/{attempt_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_attempt(
+    attempt_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> None:
+    """Delete one recorded sitting, reversing its effect on every score.
+
+    A hard delete, unlike everything else here, and deliberately: per-domain
+    strength is derived from `exam_attempts` on every read rather than stored,
+    so removing the row *is* the reversal — display, internal, the baseline
+    comparison and adaptive weighting all recover on the next read with nothing
+    else to unwind. Soft-deleting would keep the poison in the series.
+
+    The pre-assessment is the one exception. It is the line every later sitting
+    is measured against, and deleting it would also re-open the one-sitting
+    guard on the baseline paper — so it stays, permanently, as designed.
+    """
+    if not performance.available():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Attempt not found.")
+    rows = (
+        _client().table("exam_attempts").select("id, kind")
+        .eq("id", attempt_id).eq("user_id", user.id).limit(1).execute()
+    ).data or []
+    if not rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Attempt not found.")
+    if (rows[0].get("kind") or "practice") == "pre_assessment":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "The baseline assessment is a permanent record — every later "
+            "sitting is measured against it, so it can't be deleted.",
+        )
+    _client().table("exam_attempts").delete().eq("id", attempt_id).eq(
+        "user_id", user.id
+    ).execute()
+
+
 @router.get("/{exam_id}", response_model=PracticeExam)
 async def get_exam(
     exam_id: str,
@@ -1232,6 +1268,18 @@ async def submit_exam(
     questions = _exam_questions(exam_id)
     if not questions:
         raise HTTPException(status.HTTP_409_CONFLICT, "This exam has no questions.")
+
+    # A paper with nothing answered is not a sitting, and grading it writes a
+    # zero into everything downstream: the history, the baseline comparison,
+    # and the per-domain strength every later paper is weighted by. Opening an
+    # exam and walking away — or a timer expiring over an untouched one — is a
+    # peek, and a peek must never move a score. The client discards this case
+    # before submitting; this is the guard for every other way in.
+    if not any(a is not None for a in payload.answers):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Nothing was answered, so this sitting wasn't graded or recorded.",
+        )
 
     results: list[QuestionResult] = []
     correct = 0
