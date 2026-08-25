@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   CheckCircle2,
@@ -32,6 +32,7 @@ import {
 } from '../../lib/performance'
 import { rankDomains } from '../../lib/priority'
 import { path } from '../../routes'
+import GenerateFromPool from '../study/GenerateFromPool'
 import MediaItemRow from './MediaItemRow'
 import SectionHeading from './SectionHeading'
 
@@ -204,7 +205,7 @@ export default function DomainClassroom({
 }
 
 function emptyMedia() {
-  return { lectures: [], flashcards: [], quizzes: [], practice: [] }
+  return { lectures: [], flashcards: [], quizzes: [], practice: [], review: [] }
 }
 
 /** Everything generated, filed under the domain it was generated for. */
@@ -234,7 +235,16 @@ function groupByDomain(media) {
     bucket(deck.domain_id)?.flashcards.push(deck)
   }
   for (const quiz of media?.quizzes || []) {
-    bucket(quiz.domain_id)?.quizzes.push(quiz)
+    // A review quiz — built from the missed pool — lives in the domain's
+    // drill section, not its Quiz row. What you got wrong is a different
+    // shelf from what there is to learn.
+    if (quiz.is_review) bucket(quiz.domain_id)?.review.push({ ...quiz, kind: 'quiz' })
+    else bucket(quiz.domain_id)?.quizzes.push(quiz)
+  }
+  for (const exam of media?.exams || []) {
+    // Only drill exams carry a domain; regular papers span the blueprint and
+    // stay in the module-wide section.
+    if (exam.domain_id) bucket(exam.domain_id)?.review.push({ ...exam, kind: 'exam' })
   }
   for (const set of media?.practice || []) {
     bucket(set.domain_id)?.practice.push(set)
@@ -243,7 +253,7 @@ function groupByDomain(media) {
   // Newest first inside every row: the thing most likely to be wanted is the
   // thing just made.
   for (const slot of Object.values(out)) {
-    for (const key of ['lectures', 'flashcards', 'quizzes', 'practice']) {
+    for (const key of ['lectures', 'flashcards', 'quizzes', 'practice', 'review']) {
       slot[key].sort((a, b) =>
         String(b.created_at || '').localeCompare(String(a.created_at || '')))
     }
@@ -341,47 +351,121 @@ function DomainRow({
               what the learner already got wrong here. Listing it as a fifth row
               would read as a fifth thing they have, which is the one thing it
               is not. */}
-          <DomainDrill moduleId={moduleId} domain={domain} />
+          <DomainDrill moduleId={moduleId} domain={domain} review={media.review} />
         </div>
       )}
     </div>
   )
 }
 
-/** Build a quiz from what was missed *in this domain*. */
-function DomainDrill({ moduleId, domain }) {
+/**
+ * The drill: what this domain's missed and flagged questions can become.
+ *
+ * Three rules, all about consent to ceremony. The pool it draws from is this
+ * domain's alone — domain two's drill never touches domain three's mistakes.
+ * At twenty items or fewer the only question worth asking is "as what?", so a
+ * type tap generates everything, no dials. Past twenty the same dials as the
+ * module-level containers appear — how many, which end — because "all fifty"
+ * stops being the obvious answer, and the control is the same component so
+ * "the thirty oldest" cannot quietly mean something different here.
+ *
+ * What gets generated lands in the review list directly below, and the drill
+ * stays available — the pool keeps refilling, so the button must too.
+ */
+const DRILL_ALL_BELOW = 20
+
+const REVIEW_MEDIA = [
+  { id: 'quiz', label: 'Quiz' },
+  { id: 'practice_exam', label: 'Practice exam' },
+  { id: 'flashcards', label: 'Flashcards' },
+]
+
+function DomainDrill({ moduleId, domain, review = [] }) {
   const toast = useToast()
+  const confirm = useConfirm()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const generation = useGeneration()
   const working = generation.isGenerating(moduleId, 'drill', domain.id)
+  const [picking, setPicking] = useState(false)
+  const [dials, setDials] = useState(false)
 
-  function build() {
+  // This domain's slice of the missed pool. The count decides which door
+  // opens, so it has to be the real number, not the module-wide one.
+  const { data } = useQuery({
+    queryKey: ['container', moduleId, 'missed', domain.id],
+    queryFn: ({ signal }) => api.container(moduleId, 'missed', signal, domain.id),
+    enabled: Boolean(moduleId && domain.id),
+  })
+  const pool = Array.isArray(data) ? data : []
+
+  function build({ media, how_many = 'all', which = 'recent' }) {
+    setPicking(false)
+    setDials(false)
     return generation.start({
       moduleId,
       domainId: domain.id,
       kind: 'drill',
       label: `Drill for ${domain.title}`,
-      run: async () => {
+      run: async ({ signal } = {}) => {
         const made = await api.generateFromContainer(moduleId, 'missed', {
-          media: 'quiz',
-          how_many: 'all',
-          which: 'recent',
+          media, how_many, which,
           domain_id: domain.id,
           title: `${domain.title} — what you missed`,
-        })
+        }, signal)
         queryClient.invalidateQueries({ queryKey: ['studio', moduleId] })
-        return made?.created_id ? path('quizById', { quizId: made.created_id }) : undefined
+        queryClient.invalidateQueries({ queryKey: ['container', moduleId, 'missed', domain.id] })
+        if (made?.media === 'quiz' && made?.created_id) {
+          return path('quizById', { quizId: made.created_id })
+        }
+        if (made?.media === 'practice_exam' && made?.created_id) {
+          return path('examRun', { examId: made.created_id })
+        }
+        return path('flashcards', { domainId: domain.id })
       },
     })
   }
 
+  function openDrill() {
+    if (!pool.length) {
+      toast.error('Nothing missed or flagged in this domain yet.')
+      return
+    }
+    if (pool.length <= DRILL_ALL_BELOW) setPicking((v) => !v)
+    else setDials(true)
+  }
+
+  function openItem(item) {
+    if (item.kind === 'exam') navigate(path('examRun', { examId: item.id }))
+    else navigate(path('quizById', { quizId: item.id }))
+  }
+
+  const removeReview = useMutation({
+    mutationFn: (item) =>
+      item.kind === 'exam' ? api.deleteExam(item.id) : api.deleteQuiz(item.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['studio', moduleId] })
+      toast.success('Removed')
+    },
+    onError: (e) => toast.error(e?.message || 'Couldn’t remove that'),
+  })
+
+  async function confirmRemove(item) {
+    const ok = await confirm({
+      title: `Remove “${item.title}”?`,
+      message: 'It comes off this screen. The questions it was built from stay in your pool.',
+      confirmLabel: 'Remove',
+    })
+    if (ok) removeReview.mutate(item)
+  }
+
   return (
-    <div className="mt-1 border-t border-dashed border-border pt-3">
+    <div className="mt-1 space-y-2 border-t border-dashed border-border pt-3">
       <button
         type="button"
-        onClick={() => build().catch((e) =>
-          toast.error(e?.message || 'Nothing missed in this domain yet.'))}
+        onClick={openDrill}
         disabled={working}
+        aria-expanded={pool.length <= DRILL_ALL_BELOW ? picking : undefined}
         className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left
                    transition-colors hover:bg-surface2 disabled:opacity-60"
       >
@@ -396,12 +480,65 @@ function DomainDrill({ moduleId, domain }) {
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm text-pri">
             {working ? 'Building your drill…' : 'Drill what you missed here'}
+            {!working && pool.length > 0 && (
+              <span className="ml-1.5 text-xs font-normal text-sec">{pool.length}</span>
+            )}
           </span>
           <span className="block truncate text-xs text-sec">
-            A quiz from this domain&rsquo;s missed and flagged questions
+            {pool.length
+              ? `${pool.length} missed or flagged question${pool.length === 1 ? '' : 's'} in this domain`
+              : 'Nothing missed or flagged here yet'}
           </span>
         </span>
       </button>
+
+      {/* Twenty or fewer: the only question is "as what?" — one tap, all of
+          them, no dials. */}
+      {picking && !working && (
+        <div className="flex gap-2 ps-11">
+          {REVIEW_MEDIA.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => build({ media: m.id })}
+              className="min-h-9 flex-1 rounded-full bg-surface2 px-2 text-xs
+                         font-medium text-pri transition-colors hover:bg-accent/10
+                         hover:text-accent2"
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Past twenty: the same dials the module-level containers use. */}
+      <GenerateFromPool
+        open={dials}
+        onClose={() => setDials(false)}
+        onGenerate={build}
+        available={pool.length}
+        title={`Drill ${domain.title}`}
+      />
+
+      {/* What the drills became. Its own shelf, under the button that made
+          them — what you got wrong is not the same list as what there is to
+          learn, and the button stays so the next drill is one tap. */}
+      {review.length > 0 && (
+        <ul className="rounded-xl bg-surface2/60">
+          {review.map((item) => (
+            <MediaItemRow
+              key={item.id}
+              kind="quiz"
+              item={item}
+              detail={`${item.kind === 'exam' ? 'Practice exam' : 'Quiz'} · ${
+                item.question_count || 0
+              } questions${item.score != null ? ` · last ${Math.round(item.score)}%` : ''}`}
+              onOpen={openItem}
+              onRemove={confirmRemove}
+            />
+          ))}
+        </ul>
+      )}
     </div>
   )
 }

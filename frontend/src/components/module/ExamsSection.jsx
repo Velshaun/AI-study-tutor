@@ -26,7 +26,11 @@ import SectionHeading from './SectionHeading'
 // The recent slice worth showing unprompted.
 const RECENT_RESULTS = 3
 
-export default function ExamsSection({ moduleId, exams = [], questionCount, onDeleted }) {
+export default function ExamsSection({ moduleId, exams: allExams = [], questionCount, onDeleted }) {
+  // A drill exam belongs to the domain it was drilled from and lives in
+  // that domain's review list; showing it here as well would be the same
+  // item on two shelves, with two delete buttons that disagree.
+  const exams = allExams.filter((e) => !e.domain_id)
   const navigate = useNavigate()
   const toast = useToast()
   const confirm = useConfirm()

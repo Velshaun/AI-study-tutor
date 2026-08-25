@@ -627,6 +627,10 @@ class StudioSet(BaseModel):
 class StudioQuiz(BaseModel):
     id: str
     domain_id: str | None = None
+    # Built from the missed pool rather than generated fresh. Review quizzes
+    # live in the domain's drill section, not its Quiz row — what you got
+    # wrong is a different shelf from what there is to learn.
+    is_review: bool = False
     domain_title: str | None = None
     title: str = "Quiz"
     question_count: int = 0
@@ -645,6 +649,9 @@ class StudioExam(BaseModel):
     title: str = "Practice Exam"
     question_count: int = 0
     duration_minutes: int = 0
+    # Set when this paper came from a domain drill: it belongs inside that
+    # domain's review list, not in the module-wide exam section.
+    domain_id: str | None = None
     created_at: datetime | None = None
 
 
@@ -718,6 +725,10 @@ async def studio_media(
     all_quizzes = [
         StudioQuiz(
             id=q["id"], domain_id=q.get("domain_id"),
+            is_review=any(
+                x.get("bank_entry_id") for x in (q.get("questions") or [])
+                if isinstance(x, dict)
+            ),
             domain_title=title_of.get(q.get("domain_id")),
             title=q.get("title") or "Quiz",
             question_count=q.get("question_count") or len(q.get("questions") or []),
@@ -821,7 +832,8 @@ async def studio_media(
     exam_rows = (
         removal.live(
             client.table("practice_exams")
-            .select("id, title, total_points, duration_minutes, created_at, kind"),
+            .select("id, title, total_points, duration_minutes, created_at, "
+                    "kind, domain_id"),
             "practice_exams",
         )
         .eq("module_id", module_id).eq("user_id", user.id)
@@ -834,6 +846,7 @@ async def studio_media(
             title=e.get("title") or "Practice Exam",
             question_count=e.get("total_points") or 0,
             duration_minutes=e.get("duration_minutes") or 0,
+            domain_id=e.get("domain_id"),
             created_at=e.get("created_at"),
         )
         for e in exam_rows

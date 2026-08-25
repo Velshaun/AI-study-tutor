@@ -257,14 +257,17 @@ export const api = {
     }),
   baselineComparison: (moduleId, signal) =>
     apiFetch(`/stats/baseline/${moduleId}`, { signal }),
-  container: (moduleId, name, signal) =>
-    apiFetch(`/bank/${moduleId}/${name}`, { signal }),
+  container: (moduleId, name, signal, domainId) =>
+    apiFetch(
+      `/bank/${moduleId}/${name}` + (domainId ? `?domain_id=${domainId}` : ''),
+      { signal },
+    ),
   addToContainer: (moduleId, name, body) =>
     apiFetch(`/bank/${moduleId}/${name}/add`, { method: 'POST', body }),
   deleteContainerEntry: (entryId) =>
     apiFetch(`/bank/entry/${entryId}`, { method: 'DELETE' }),
-  generateFromContainer: (moduleId, name, body) =>
-    apiFetch(`/bank/${moduleId}/${name}/generate`, { method: 'POST', body }),
+  generateFromContainer: (moduleId, name, body, signal) =>
+    apiFetch(`/bank/${moduleId}/${name}/generate`, { method: 'POST', body, signal }),
   recordSession: (body) => apiFetch('/bank/sessions', { method: 'POST', body }),
   // The same dials as a container, over one past sitting's questions.
   generateFromSession: (moduleId, sessionId, body) =>

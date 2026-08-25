@@ -101,6 +101,9 @@ export function bankable(results = [], source = 'both') {
     .map((r) => ({
       source_kind: r.source_kind,
       source_id: r.source_id,
+      // A re-served container question names its own entry — the strongest
+      // "this already exists" signal the pool's dedupe has.
+      bank_entry_id: r.bank_entry_id ?? null,
       domain_id: r.domain_id,
       missed: stateOf(r) !== CORRECT,
       flagged: Boolean(r.flagged),

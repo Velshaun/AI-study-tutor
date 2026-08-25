@@ -7,6 +7,7 @@ import { useAttempt } from '../hooks/useAttempt'
 import { useSessionFinish } from '../hooks/useSessionFinish'
 import { useToast } from '../hooks/useToast'
 import { ApiError, api } from '../lib/api'
+import { path } from '../routes'
 
 /**
  * Sit one quiz, opened by its own id.
@@ -63,7 +64,13 @@ export default function QuizById() {
   return (
     <div className="space-y-6">
       <PageTitle
-        onBack={() => navigate(-1)}
+        onBack={() =>
+          navigate(
+            quiz?.module_id
+              ? `${path('module', { id: quiz.module_id })}?tab=classroom`
+              : -1,
+          )
+        }
         subtitle={`${quiz.question_count} questions from what you got wrong`}
       >
         {quiz.title}

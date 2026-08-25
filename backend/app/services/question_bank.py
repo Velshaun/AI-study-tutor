@@ -110,14 +110,43 @@ def add_from_session(
             "updated_at": _now(),
         }
 
+        # Existence is checked before any write, in order of how sure each
+        # signal is. A result re-served *from* this container carries the
+        # entry's own id — that is the same question by construction, not by
+        # matching. A stored source_id is next. And the prompt text within the
+        # same domain is the backstop, because a quiz question lives in jsonb
+        # with no row to point at: its source_id is null, so re-missing it
+        # used to sail past the source_id check and land as a duplicate — the
+        # pool held twelve of those.
         existing = []
-        if source_id:
+        bank_id = entry.get("bank_entry_id")
+        if bank_id:
+            existing = (
+                client.table("question_bank").select("id, missed, flagged")
+                .eq("user_id", user_id).eq("id", bank_id)
+                .limit(1).execute()
+            ).data or []
+        if not existing and source_id:
             existing = (
                 client.table("question_bank").select("id, missed, flagged")
                 .eq("user_id", user_id).eq("module_id", module_id)
                 .eq("container", container).eq("source_id", source_id)
                 .limit(1).execute()
             ).data or []
+        prompt = ((entry.get("snapshot") or {}).get("prompt") or "").strip()
+        if not existing and prompt:
+            match = (
+                client.table("question_bank").select("id, missed, flagged, domain_id")
+                .eq("user_id", user_id).eq("module_id", module_id)
+                .eq("container", container)
+                .eq("snapshot->>prompt", prompt)
+                .limit(5).execute()
+            ).data or []
+            wanted = entry.get("domain_id")
+            existing = [
+                m for m in match
+                if (m.get("domain_id") or None) == (wanted or None)
+            ][:1] or match[:1]
 
         if existing:
             prior = existing[0]

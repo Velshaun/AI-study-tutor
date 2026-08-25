@@ -76,7 +76,17 @@ export default function ExamRun() {
   return (
     <div className="space-y-6">
       <PageTitle
-        onBack={() => navigate(-1)}
+        // Explicitly the classroom, not history. Popping back landed on
+        // /module/:id with no ?tab, and the module screen defaults that to
+        // Sources — so finishing an exam appeared to dump the learner two
+        // levels up. Same button, honest destination.
+        onBack={() =>
+          navigate(
+            exam?.module_id
+              ? `${path('module', { id: exam.module_id })}?tab=classroom`
+              : -1,
+          )
+        }
         backLabel="Exit exam"
         subtitle={`${exam.question_count} questions${
           exam.duration_minutes ? ` · ${exam.duration_minutes} min` : ''

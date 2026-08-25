@@ -25,7 +25,9 @@ from pydantic import BaseModel, Field
 
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import exam_profile, question_bank as bank, removal
+from app.services import (
+    exam_profile, question_bank as bank, removal, schema_features,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -341,16 +343,18 @@ async def list_container(
     module_id: str,
     container: str,
     include_graduated: bool = False,
+    domain_id: str | None = None,
     user: AuthUser = Depends(get_current_user),
 ) -> list[BankEntry]:
-    """What's in a container, oldest first."""
+    """What's in a container, oldest first. `domain_id` narrows to one domain —
+    the drill inside a domain shows and drills only that domain's misses."""
     _own_module(module_id, user.id)
     _check_container(container)
     return [
         BankEntry(**{k: v for k, v in row.items() if k in BankEntry.model_fields})
         for row in bank.list_entries(
             user_id=user.id, module_id=module_id, container=container,
-            include_graduated=include_graduated,
+            include_graduated=include_graduated, domain_id=domain_id,
         )
     ]
 
@@ -368,6 +372,9 @@ async def delete_entry(
 class AddItem(BaseModel):
     source_kind: str
     source_id: str | None = None
+    # Set when this result was answered on a question generated *from* the
+    # container — the strongest possible "it already exists" signal.
+    bank_entry_id: str | None = None
     domain_id: str | None = None
     missed: bool = False
     flagged: bool = False
@@ -472,6 +479,7 @@ async def generate_from_container(
         created_id = _write_exam(
             module_id=module_id, user_id=user.id, questions=questions,
             title=payload.title or f"From your {container} questions",
+            domain_id=payload.domain_id,
         )
     elif payload.media == "quiz":
         created_id = _write_quiz(
@@ -548,11 +556,15 @@ def _recent_identical(
     return any((r.get(size_column) or 0) == count for r in rows)
 
 
-def _write_exam(*, module_id, user_id, questions, title) -> str:
+def _write_exam(*, module_id, user_id, questions, title, domain_id=None) -> str:
     client = _client()
     exam = (
         client.table("practice_exams").insert({
             "module_id": module_id,
+            # Set only by a domain drill. A regular paper spans the blueprint
+            # and stays domain-less; a drill exam belongs to the domain it was
+            # drilled from, which is also how the review list finds it.
+            "domain_id": domain_id,
             "user_id": user_id,
             "title": title[:200],
             # Timed like any other paper. It briefly shipped with no timer on
@@ -675,6 +687,10 @@ def _write_flashcards(*, module_id, user_id, entries, title) -> str | None:
                 "user_id": user_id,
                 "front": front[:2000],
                 "back": str(back)[:2000],
+                # Named, so the cards arrive as their own deck rather than
+                # dissolving into the domain's pool — a deck of what you got
+                # wrong is worth being able to pick up as a thing.
+                "deck_title": title[:120],
             })
     if not rows:
         raise HTTPException(
@@ -682,6 +698,7 @@ def _write_flashcards(*, module_id, user_id, entries, title) -> str | None:
             "Nothing in that selection had both a question and an answer to "
             "make a card from.",
         )
+    rows = schema_features.strip_unsupported("flashcards", rows, "deck_title")
     _client().table("flashcards").insert(rows).execute()
     # Cards go into the module's pool rather than a set of their own, which is
     # how every other flashcard import behaves.
