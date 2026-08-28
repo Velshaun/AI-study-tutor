@@ -34,8 +34,8 @@ from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
 from app.services import (
     storage,
-    coverage, dead_links, exam_catalog, exam_profile, removal, subject_match,
-    tutor, tutor_actions,
+    coverage, dead_links, exam_catalog, exam_profile, removal, schema_features,
+    subject_match, tutor, tutor_actions,
 )
 from app.services.ai_service import GenerationError, discover_resources
 from app.services.link_check import validate_resources
@@ -56,6 +56,10 @@ class ModuleCreate(BaseModel):
     title: str | None = Field(default=None, max_length=200)
     description: str = ""
     color: str = "#6C63FF"
+    # 'module' (the default) derives a weighted blueprint from the
+    # sources; 'workbook' studies the material as itself, one hidden domain,
+    # no blueprint and no Gemini pass at creation.
+    kind: str = "module"
 
 
 class ModuleUpdate(BaseModel):
@@ -127,6 +131,9 @@ class RecommendedExam(BaseModel):
 
 class Module(BaseModel):
     id: str
+    # 'module' | 'workbook' — the dashboard splits its lists by this, and the
+    # workbook screen is a different screen, not a themed module.
+    kind: str = "module"
     title: str
     description: str = ""
     color: str = "#6C63FF"
@@ -254,6 +261,7 @@ def _to_module(row: dict[str, Any], sources: int = 0, domains: int = 0,
         source = "generic"
 
     return Module(
+        kind=row.get("kind") or "module",
         id=row["id"],
         title=row.get("title") or "",
         description=row.get("description") or "",
@@ -385,6 +393,7 @@ async def create_module(
     The title is left blank when not supplied — the pipeline fills it in from the
     detected subject once sources are processed, so the learner never names it.
     """
+    kind = "workbook" if payload.kind == "workbook" else "module"
     row = {
         "user_id": user.id,
         "title": (payload.title or "").strip(),
@@ -393,12 +402,36 @@ async def create_module(
         "status": "processing",
         "status_detail": "awaiting sources",
     }
+    row = schema_features.strip_unsupported("modules", [{**row, "kind": kind}],
+                                            "kind")[0]
     inserted = _client().table("modules").insert(row).execute()
     if not inserted.data:
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY, "Could not create the module."
         )
-    return _to_module(inserted.data[0])
+    created = inserted.data[0]
+
+    if kind == "workbook":
+        # The one domain a workbook ever has, made now so generation works the
+        # moment material lands — there is no pipeline pass to make it later.
+        _client().table("domains").insert({
+            "module_id": created["id"],
+            "user_id": user.id,
+            "title": payload.title or "Everything",
+            "description": "",
+            "order_index": 1,
+            "weight_pct": 100,
+            "status": "unlocked",
+            "source": "workbook",
+        }).execute()
+        # A workbook with no sources yet is ready, not processing: there is
+        # nothing to derive, so there is nothing to wait for.
+        _client().table("modules").update({
+            "status": "ready", "status_detail": None,
+        }).eq("id", created["id"]).execute()
+        created = {**created, "status": "ready", "status_detail": None}
+
+    return _to_module(created)
 
 
 class SubjectCheckRequest(BaseModel):

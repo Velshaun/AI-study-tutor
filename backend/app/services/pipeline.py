@@ -497,6 +497,38 @@ def _settle_weights(module_id: str) -> dict[str, Any]:
 
 
 # --- steps 2-8 --------------------------------------------------------------
+def _process_workbook(module_id: str, user_id: str) -> dict[str, Any]:
+    """The workbook pipeline: parse, file, done.
+
+    No blueprint derivation, no weights, no Gemini call — a workbook is the
+    material studied as itself, and everything generated from it draws only on
+    what was actually uploaded. All that has to happen here is parsing the
+    sources and filing every one of them under the workbook's single domain,
+    so domain-scoped generation and the drill can see them.
+    """
+    client = get_supabase()
+    set_module_status(module_id, "processing", detail="parsing")
+    texts, errors = parse_pending_sources(module_id)
+
+    domains = (
+        client.table("domains").select("id")
+        .eq("module_id", module_id).order("order_index").limit(1).execute()
+    ).data or []
+    if domains:
+        client.table("user_files").update({"domain_id": domains[0]["id"]}).eq(
+            "module_id", module_id
+        ).is_("domain_id", "null").execute()
+
+    if not texts and errors:
+        set_module_status(module_id, "failed", detail="parsing",
+                          error="; ".join(errors))
+        return {"status": "failed", "errors": errors}
+
+    set_module_status(module_id, "ready")
+    logger.info("Workbook %s parsed %d source(s)", module_id, len(texts))
+    return {"status": "ready", "sources": len(texts), "errors": errors}
+
+
 def process_module(
     module_id: str, user_id: str, *, force: bool = False,
     settle_weights: bool = True,
@@ -514,6 +546,13 @@ def process_module(
     """
     logger.info("Pipeline starting for module %s", module_id)
     try:
+        module_row = (
+            get_supabase().table("modules").select("kind, title")
+            .eq("id", module_id).limit(1).execute()
+        ).data or [{}]
+        if (module_row[0].get("kind") or "module") == "workbook":
+            return _process_workbook(module_id, user_id)
+
         set_module_status(module_id, "processing", detail="parsing")
         texts, errors = parse_pending_sources(module_id)
 

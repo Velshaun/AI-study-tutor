@@ -139,6 +139,19 @@ def gather_domain_content(domain_id: str, user_id: str) -> dict[str, Any]:
         parts.append(f"Source summary: {module['source_summary']}")
     parts.extend(transcripts)
 
+    # A workbook domain reads the uploaded material itself. A module's domain
+    # leans on the derived summary and its lectures because the blueprint has
+    # already distilled the sources; a workbook has no blueprint, and "generate
+    # from my material" has to mean the material — not a summary of it, and
+    # nothing invented beside it.
+    if (domain.get("source") or "") == "workbook":
+        rows_ = (
+            client.table("user_files").select("extracted_text")
+            .eq("domain_id", domain_id).eq("status", "parsed")
+            .order("created_at").execute()
+        ).data or []
+        parts.extend(r["extracted_text"] for r in rows_ if r.get("extracted_text"))
+
     # A domain's own flashcards are study material too. This is what makes an
     # imported deck (a Quizlet export, say) usable: it arrives as a domain with
     # cards and no lecture, and without this there is nothing to generate from.

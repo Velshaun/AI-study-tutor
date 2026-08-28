@@ -11,6 +11,9 @@ export const ROUTES = {
   login: '/login',
   onboarding: '/onboarding',
   module: '/module/:id',
+  // A workbook is not a themed module: different screen, no tabs, no
+  // blueprint. Same underlying rows, which is what keeps behaviour equal.
+  workbook: '/workbook/:id',
   // Paste-and-stage import, module-scoped: it adds material to one module.
   importSources: '/module/:id/import',
   lecture: '/lecture/:id',

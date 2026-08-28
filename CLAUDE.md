@@ -451,6 +451,15 @@ would read as four rejections, and the blueprint order stays one tap away: an
 app that will only show its own opinion of the order is the lock again in a
 different hat.
 
+**A workbook is a module with one hidden domain and no blueprint.** Same
+tables, one flag (`modules.kind`), which is what makes missed questions,
+flagging, drilling, graduation, history and soft removal identical by
+construction rather than by promise — they were all module-scoped already. Its
+pipeline branch parses and files under the single domain and derives nothing;
+`gather_domain_content` reads the uploaded material itself for a workbook
+domain (`domains.source = 'workbook'`), because "generate from my material"
+has to mean the material, not a summary of it.
+
 **A source is filed under exactly one domain.** The primary. A lecture that
 touches four topics is *about* one of them, and spreading it across all four
 would report coverage in three domains it only mentions — the same mistake
@@ -801,7 +810,10 @@ All twelve features from the August audit are shipped. Latest work, newest first
 `20260831000000` question bank · `20260901000000` qa answer rest ·
 `20260902000000` soft delete media ·
 `20260903000000` one baseline attempt ·
-`20260904000000` unlock every domain
+`20260904000000` unlock every domain ·
+`20260905000000` graduate by session · `20260906000000` soft delete exams ·
+`20260907000000` backfill claims · `20260908000000` typed questions ·
+`20260909000000` workbooks
 
 Applied through the Supabase **Management API** with a personal access token
 (`POST /v1/projects/{ref}/database/query`). The service-role key cannot run DDL,

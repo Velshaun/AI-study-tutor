@@ -53,7 +53,10 @@ export default function ModuleCard({ module, active = false }) {
   })
 
   function open() {
-    if (!editing) navigate(path('module', { id: module.id }))
+    if (!editing) {
+      navigate(path(module.kind === 'workbook' ? 'workbook' : 'module',
+                    { id: module.id }))
+    }
   }
   function startEdit(e) {
     e.stopPropagation()

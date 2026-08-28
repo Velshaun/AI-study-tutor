@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { AlertCircle, Loader2, LogIn, Plus, RefreshCw, Upload } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 
 import ModuleCard from '../components/dashboard/ModuleCard'
 import AddSourceSheet from '../components/module/AddSourceSheet'
@@ -11,7 +11,7 @@ import SectionHeader from '../components/SectionHeader'
 import { UPLOAD_ACCEPT, useModuleUpload } from '../hooks/useModuleUpload'
 import { useToast } from '../hooks/useToast'
 import { api, ApiError } from '../lib/api'
-import { ROUTES } from '../routes'
+import { ROUTES, path } from '../routes'
 
 /**
  * Dashboard — spec §5.4 (revised).
@@ -25,6 +25,20 @@ const PROCESSING = ['processing', 'parsing', 'analysing', 'queued']
 
 export default function Dashboard() {
   const toast = useToast()
+  const navigate = useNavigate()
+  const [makingWorkbook, setMakingWorkbook] = useState(false)
+
+  async function createWorkbook() {
+    setMakingWorkbook(true)
+    try {
+      const created = await api.createModule({ kind: 'workbook', title: 'New workbook' })
+      navigate(path('workbook', { id: created.id }))
+    } catch (e) {
+      toast.error(e?.message || 'Could not create a workbook.')
+    } finally {
+      setMakingWorkbook(false)
+    }
+  }
   const fileInput = useRef(null)
   const upload = useModuleUpload()
 
@@ -171,7 +185,7 @@ export default function Dashboard() {
             <SectionHeader>Your modules</SectionHeader>
             {/* Full-width list — one card per row. */}
             <div className="space-y-3">
-              {modules.map((module) => (
+              {modules.filter((m) => m.kind !== 'workbook').map((module) => (
                 <ModuleCard
                   key={module.id}
                   module={module}
@@ -179,6 +193,39 @@ export default function Dashboard() {
                 />
               ))}
             </div>
+          </section>
+
+          {/* Workbooks: material studied as itself — no blueprint, no domains.
+              Its own shelf so a certification and a pile of notes never read
+              as the same kind of thing. */}
+          <section className="space-y-4">
+            <div className="flex items-center gap-2">
+              <SectionHeader>Your workbooks</SectionHeader>
+              <span className="flex-1" />
+              <button
+                onClick={() => createWorkbook()}
+                disabled={makingWorkbook}
+                className="btn-secondary min-h-9 px-3 text-xs"
+              >
+                {makingWorkbook ? 'Creating…' : '+ New workbook'}
+              </button>
+            </div>
+            {modules.some((m) => m.kind === 'workbook') ? (
+              <div className="space-y-3">
+                {modules.filter((m) => m.kind === 'workbook').map((module) => (
+                  <ModuleCard
+                    key={module.id}
+                    module={module}
+                    active={module.id === activeId}
+                  />
+                ))}
+              </div>
+            ) : (
+              <p className="px-1 text-xs text-sec">
+                Upload anything — a CSV of questions, notes, a slide deck — and
+                study exactly what&rsquo;s in it. No exam blueprint, no domains.
+              </p>
+            )}
           </section>
         </>
       )}
