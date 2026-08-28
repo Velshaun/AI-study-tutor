@@ -26,7 +26,7 @@ from app.services.ingest.canonical import (
     Question,
     as_reference,
 )
-from app.services.ingest.parsers import captions, qa_text, quizlet
+from app.services.ingest.parsers import captions, csv_questions, qa_text, quizlet
 
 # What the learner can label a paste as.
 CONTENT_TYPES = ("flashcards", "quiz", "practice_exam", "reference")
@@ -36,6 +36,8 @@ QUESTION_TYPES = ("quiz", "practice_exam")
 
 def detect(text: str) -> str:
     """A suggestion for the type pill. Never authoritative."""
+    if csv_questions.looks_like_question_csv(text):
+        return "quiz"
     if captions.looks_like_captions(text):
         return "reference"
     if qa_text.looks_like_questions(text):
@@ -54,6 +56,12 @@ def parse(text: str, declared_type: str | None = None) -> ParseResult:
     wanted = (declared_type or detect(body)).strip().lower()
 
     if wanted in QUESTION_TYPES:
+        # A CSV with a typed header is the most structured thing that arrives
+        # here, and each row says what kind of question it is — so it goes
+        # first, before the prose parser has a chance to misread a header row
+        # as a prompt.
+        if csv_questions.looks_like_question_csv(body):
+            return csv_questions.parse(body)
         result = qa_text.parse(body)
         if result.kind == "questions":
             return result

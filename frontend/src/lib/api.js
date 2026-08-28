@@ -440,10 +440,13 @@ export const api = {
     apiFetch(`/practice/${domainId}/review-later`, { signal }),
   // Server-side reveal: explanations + Why Card only arrive once an answer is
   // submitted (they're never in the questions payload).
-  submitAnswer: (questionId, chosenOption) =>
+  // `chosen` is a letter for multiple choice, {chosen_options: [...]} for
+  // multi-select, {chosen_text} for the typed kinds — the string form stays so
+  // every existing caller reads unchanged.
+  submitAnswer: (questionId, chosen) =>
     apiFetch(`/practice/questions/${questionId}/submit-answer`, {
       method: 'POST',
-      body: { chosen_option: chosenOption },
+      body: typeof chosen === 'string' ? { chosen_option: chosen } : chosen,
     }),
   flagQuestion: (questionId) =>
     apiFetch(`/practice/questions/${questionId}/flag`, { method: 'POST' }),

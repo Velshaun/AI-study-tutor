@@ -14,6 +14,8 @@
  */
 
 /** Tile states. Green for right, red for wrong; the flag is separate. */
+import { isAnswered, isCorrect } from './questions'
+
 export const CORRECT = 'correct'
 export const WRONG = 'wrong'
 export const UNANSWERED = 'unanswered'
@@ -40,16 +42,25 @@ export function toResults({
   return questions.map((question, index) => {
     const chosen = answers[index]
     const correctIndex = correctIndexOf(question, index)
-    const answered = chosen != null
+    const answered = isAnswered(chosen)
     return {
       index,
       prompt: promptOf(question),
       options: optionsOf(question),
+      // The kind, and everything grading it needs — a banked snapshot has to
+      // stand alone once the quiz it came from is deleted, and a multi-select
+      // snapshot without its correct set is a question nobody can re-serve.
+      kind: question?.kind || 'mcq',
+      correct_indices: question?.correct_indices || [],
+      accepted: question?.accepted || [],
       correct_index: correctIndex ?? null,
-      chosen_index: answered ? chosen : null,
-      // An unanswered question is wrong for scoring, which is what every exam
-      // does, but `stateOf` still distinguishes it for the tile.
-      correct: answered && chosen === correctIndex,
+      chosen_index: answered && typeof chosen === 'number' ? chosen : null,
+      chosen: answered ? chosen : null,
+      // Graded by the kind's own rule, the same one the server applies.
+      correct: isCorrect(
+        { ...question, correct_index: correctIndex ?? question?.correct_index },
+        chosen,
+      ),
       answered,
       flagged: flags.has(index),
       explanation: question?.explanation ?? '',
@@ -111,8 +122,11 @@ export function bankable(results = [], source = 'both') {
       // from is deleted.
       snapshot: {
         prompt: r.prompt,
+        kind: r.kind || 'mcq',
         options: r.options,
         correct_index: r.correct_index,
+        correct_indices: r.correct_indices || [],
+        accepted: r.accepted || [],
         explanation: r.explanation,
       },
     }))

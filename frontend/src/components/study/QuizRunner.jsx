@@ -3,6 +3,9 @@ import { useEffect, useRef, useState } from 'react'
 
 import { planExpansions } from '../../lib/terms'
 import { toResults } from '../../lib/session'
+import {
+  acceptedOf, correctIndicesOf, isAnswered, isCorrect, isTextKind, kindOf,
+} from '../../lib/questions'
 import FlagToggle from './FlagToggle'
 import ProgressWarning from './ProgressWarning'
 import QuestionNavigator from './QuestionNavigator'
@@ -90,6 +93,10 @@ export default function QuizRunner({
   const [submitError, setSubmitError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
   const [openTerm, setOpenTerm] = useState(null)
+  // Uncommitted multi-select picks and short-answer text for the question on
+  // screen. Reset when the index moves — a draft is a thought, not an answer.
+  const [draft, setDraft] = useState([])
+  const [typedDraft, setTypedDraft] = useState('')
   // Session state until the confirmation prompt, so flagging costs nothing
   // and is undone by simply not confirming. Independent of the outcome:
   // flagging a question you then get right is the useful case.
@@ -159,12 +166,19 @@ export default function QuizRunner({
   // Where this question's answer comes from. A quiz ships its own; an exam
   // withholds it and hands it over one question at a time, once answered, so
   // that reading the network response can't raise a baseline score.
-  const carried = q?.correct_index != null
+  const kind = kindOf(q)
+  const textKind = isTextKind(q)
+  // A quiz carries its key whatever the kind: mcq has a correct_index, multi
+  // its set, text kinds their accepted answers.
+  const carried =
+    q?.correct_index != null
+    || (q?.correct_indices || []).length > 0
+    || (q?.accepted || []).length > 0
   const answer = carried ? q : revealed[index] || {}
   const correctIndex = answer.correct_index ?? null
   const explanation = answer.explanation || ''
 
-  const answered = chosen != null
+  const answered = isAnswered(chosen)
   // Answered and *shown the answer* are different things, and separating them
   // is what makes going back coherent.
   //
@@ -178,7 +192,9 @@ export default function QuizRunner({
   // So: an answer stands until its answer has been shown, and can be changed
   // freely until then.
   const canChange = !isRevealed
-  const showState = isRevealed && correctIndex != null
+  const showState = isRevealed && (
+    correctIndex != null || kind === 'multi' || textKind
+  )
 
   async function finish(answerList, { expired = false } = {}) {
     if (submittingRef.current) return
@@ -288,25 +304,54 @@ export default function QuizRunner({
       .finally(() => revealingRef.current.delete(asking))
   }, [onAnswer, answered, carried, index, chosen, revealed])
 
-  function choose(optionIndex) {
-    // A tap that opened a definition must not also count as an answer.
-    if (!canChange || openTerm) return
+  function record(value) {
     const next = [...answersRef.current]
-    next[index] = optionIndex
+    next[index] = value
     answersRef.current = next
     setAnswers(next)
-    // First answer wins, once, for ever. A retry writes to `answers` so the
-    // screen can show what was just chosen, and never here.
-    if (firstAnswersRef.current[index] == null) {
+    // First answer wins — but only where answering reveals. A quiz shows the
+    // key the moment an answer commits, so the first commit is the honest
+    // measurement and retries are practice. An exam reveals nothing until
+    // hand-in and stays revisable by design, so its "first" answer tracks the
+    // latest: freezing it there silently discarded every revision at submit,
+    // which un-did the one behaviour an exam runner exists to keep.
+    const reveals = carried || Boolean(onAnswer)
+    if (!reveals || firstAnswersRef.current[index] == null) {
       firstAnswersRef.current = [...firstAnswersRef.current]
-      firstAnswersRef.current[index] = optionIndex
+      firstAnswersRef.current[index] = value
     }
     persist(index, firstAnswersRef.current)
+  }
+
+  function choose(optionIndex) {
+    // A tap that opened a definition must not also count as an answer.
+    if (openTerm) return
+    if (kind === 'multi') {
+      // In a revealing runner, toggling builds a draft and "Check answer"
+      // commits — the set is the answer, and half a set graded on first tap
+      // would reveal against something the learner had not finished saying.
+      // An exam never reveals, so every toggle just records the current set.
+      const current = Array.isArray(chosen) ? chosen : draft
+      const next = current.includes(optionIndex)
+        ? current.filter((i) => i !== optionIndex)
+        : [...current, optionIndex].sort((a, b) => a - b)
+      if (carried || onAnswer) {
+        if (!canChange) return
+        setDraft(next)
+      } else {
+        record(next)
+      }
+      return
+    }
+    if (!canChange) return
+    record(optionIndex)
   }
 
   /** Move to a question. Every route between questions comes through here. */
   function goTo(to) {
     if (to < 0 || to >= questions.length || to === index) return
+    setDraft([])
+    setTypedDraft('')
     setIndex(to)
     setVisited((seen) => new Set(seen).add(to))
     persist(to, firstAnswersRef.current)
@@ -327,9 +372,8 @@ export default function QuizRunner({
   function wrongFirstTime() {
     return questions
       .map((question, i) => {
-        const key = question?.correct_index ?? revealed[i]?.correct_index ?? null
-        const given = firstAnswersRef.current[i]
-        return key != null && given !== key ? i : null
+        const merged = { ...question, ...(revealed[i] || {}) }
+        return isCorrect(merged, firstAnswersRef.current[i]) ? null : i
       })
       .filter((i) => i !== null)
   }
@@ -349,9 +393,9 @@ export default function QuizRunner({
     if (retryWrong) {
       const remaining = (cycling ? retryQueue.slice(1) : wrongFirstTime())
         .filter((i) => {
-          const key = questions[i]?.correct_index ?? revealed[i]?.correct_index ?? null
+          const merged = { ...questions[i], ...(revealed[i] || {}) }
           // Still wrong on the most recent attempt, so still worth another go.
-          return key == null || answersRef.current[i] !== key
+          return !isCorrect(merged, answersRef.current[i])
         })
       if (remaining.length) {
         setCycling(true)
@@ -559,8 +603,16 @@ export default function QuizRunner({
 
           <div className="space-y-2.5">
             {q.options.map((option, i) => {
-              const isChosen = chosen === i
-              const isCorrect = correctIndex != null && i === correctIndex
+              const picked = Array.isArray(chosen)
+                ? chosen
+                : (kind === 'multi' ? draft : null)
+              const isChosen = kind === 'multi'
+                ? (picked || []).includes(i)
+                : chosen === i
+              const rightSet = correctIndicesOf({ ...q, ...answer })
+              const isCorrect = kind === 'multi'
+                ? rightSet.includes(i)
+                : correctIndex != null && i === correctIndex
 
               const why = optionExplanations[i]
 
@@ -584,7 +636,7 @@ export default function QuizRunner({
                 <button
                   key={i}
                   onClick={() => choose(i)}
-                  disabled={!canChange}
+                  disabled={kind === 'multi' ? isRevealed : !canChange}
                   aria-pressed={isChosen}
                   className={`flex w-full flex-col gap-2 rounded-xl border px-4 py-3 text-left transition-colors ${tone}`}
                 >
@@ -629,6 +681,73 @@ export default function QuizRunner({
           {/* The overall rationale, once answered. Mounted plainly: an
               animated `initial` that never advances would leave the
               explanation invisible, and an explanation is the point. */}
+          {/* Multi-select says so, and commits as a set. Half a set graded
+              on first tap would reveal against something the learner had not
+              finished saying — so where answering reveals, "Check answer" is
+              the commitment. Exams record every toggle and stay revisable. */}
+          {kind === 'multi' && !answered && (
+            <p className="text-xs text-sec">Select every answer that applies.</p>
+          )}
+          {kind === 'multi' && (carried || onAnswer) && !answered && (
+            <button
+              type="button"
+              onClick={() => draft.length && record(draft)}
+              disabled={!draft.length}
+              className="btn-primary w-full disabled:opacity-40"
+            >
+              Check answer
+            </button>
+          )}
+
+          {/* Short answer and fill-in-the-blank: the answer is typed. The
+              same commit rule as multi — reveal-capable runners commit on
+              Check, an exam records as you type and stays editable. */}
+          {textKind && (
+            <div className="space-y-2">
+              <input
+                value={answered && typeof chosen === 'string' ? chosen : typedDraft}
+                onChange={(e) => {
+                  if (carried || onAnswer) setTypedDraft(e.target.value)
+                  else record(e.target.value)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && (carried || onAnswer)
+                      && typedDraft.trim() && !answered) {
+                    record(typedDraft.trim())
+                  }
+                }}
+                disabled={isRevealed}
+                placeholder={kind === 'blank' ? 'Fill in the blank…' : 'Type your answer…'}
+                className="input w-full disabled:opacity-70"
+              />
+              {(carried || onAnswer) && !answered && (
+                <button
+                  type="button"
+                  onClick={() => typedDraft.trim() && record(typedDraft.trim())}
+                  disabled={!typedDraft.trim()}
+                  className="btn-primary w-full disabled:opacity-40"
+                >
+                  Check answer
+                </button>
+              )}
+              {showState && textKind && (
+                <div
+                  className={`rounded-xl border px-4 py-3 text-sm ${
+                    isCorrect({ ...q, ...answer }, chosen)
+                      ? 'border-success bg-success/10 text-pri'
+                      : 'border-warning bg-warning/10 text-pri'
+                  }`}
+                >
+                  {isCorrect({ ...q, ...answer }, chosen)
+                    ? 'Correct.'
+                    : `Accepted answer${acceptedOf({ ...q, ...answer }).length === 1 ? '' : 's'}: ${
+                        acceptedOf({ ...q, ...answer }).join(' · ') || '—'
+                      }`}
+                </div>
+              )}
+            </div>
+          )}
+
           {isRevealed && explanation && (
             <div className="rounded-xl bg-surface2 px-4 py-3">
               <p className="mb-1 text-xs font-medium uppercase tracking-wider text-accent2">

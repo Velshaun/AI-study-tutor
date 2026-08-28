@@ -30,11 +30,24 @@ ORIGINS = ("generated", "imported_pdf", "scraped", "pasted")
 
 @dataclass
 class Question:
-    """One multiple-choice question, in the canonical shape."""
+    """One question, in the canonical shape.
+
+    Four kinds share it: multiple choice (`mcq`), multi-select (`multi`),
+    short answer (`short`) and fill-in-the-blank (`blank`). What `usable`
+    demands follows the kind — the rule stays the same rule: a question that
+    cannot be graded is not a question, and a paper of them scores everyone
+    zero.
+    """
 
     prompt: str
+    kind: str = "mcq"
     options: list[str] = field(default_factory=list)
     correct_index: int | None = None
+    # Multi-select: every correct option, as indices into `options`.
+    correct_indices: list[int] = field(default_factory=list)
+    # Short answer and fill-in-the-blank: the answers a response is checked
+    # against. Matching is case- and punctuation-insensitive (see grading).
+    accepted: list[str] = field(default_factory=list)
     explanation: str = ""
     # One line per option, positionally aligned. Absent from most pasted
     # material; generation fills it in later rather than the parser inventing it.
@@ -42,15 +55,23 @@ class Question:
 
     @property
     def usable(self) -> bool:
-        """Is this something a learner could actually be asked?"""
+        """Is this something a learner could actually be asked — and graded?"""
         if len((self.prompt or "").strip()) < MIN_PROMPT_CHARS:
             return False
+
+        if self.kind in ("short", "blank"):
+            # No options to validate; the answer key is the accepted list.
+            return any((a or "").strip() for a in self.accepted)
+
         if not MIN_OPTIONS <= len(self.options) <= MAX_OPTIONS:
             return False
         if any(not (o or "").strip() for o in self.options):
             return False
-        # An unanswerable question cannot be graded, and a paper of them scores
-        # everyone zero.
+
+        if self.kind == "multi":
+            picks = sorted(set(self.correct_indices))
+            return bool(picks) and all(0 <= i < len(self.options) for i in picks)
+
         return self.correct_index is not None and 0 <= self.correct_index < len(
             self.options
         )
@@ -66,10 +87,15 @@ class Question:
         the table already holds — per-option explanations ride inside them, and
         both shapes are read.
         """
+        meta: dict[str, Any] = {}
+        if self.kind == "multi":
+            meta["correct_indices"] = sorted(set(self.correct_indices))
+        if self.kind in ("short", "blank"):
+            meta["accepted"] = [a.strip() for a in self.accepted if a.strip()]
         return {
             "exam_id": exam_id,
             "domain_id": domain_id,
-            "kind": "mcq",
+            "kind": self.kind or "mcq",
             "prompt": self.prompt.strip(),
             "options": [
                 {
@@ -83,6 +109,10 @@ class Question:
                 for i, text in enumerate(self.options)
             ],
             "correct_index": self.correct_index,
+            # What the kind needs beyond the shared shape. Stripped where the
+            # deployment's schema predates the column, so a typed question on
+            # an old deployment degrades to unusable rather than to wrong.
+            "answer_meta": meta or None,
             "expected_answer": self.explanation.strip(),
             "points": 1,
             "position": position,

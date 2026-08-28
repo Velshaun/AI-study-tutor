@@ -111,8 +111,16 @@ function Detail({ result }) {
 
       <ul className="space-y-1">
         {options.map((option, i) => {
-          const chosen = i === result.chosen_index
-          const right = i === result.correct_index
+          // Kind-aware: a multi-select answer is a set, so membership decides
+          // both markers; mcq keeps its single index.
+          const picked = Array.isArray(result.chosen)
+            ? result.chosen
+            : result.chosen_index != null ? [result.chosen_index] : []
+          const rightSet = (result.correct_indices?.length
+            ? result.correct_indices
+            : result.correct_index != null ? [result.correct_index] : [])
+          const chosen = picked.includes(i)
+          const right = rightSet.includes(i)
           return (
             <li
               key={i}
@@ -136,7 +144,19 @@ function Detail({ result }) {
         })}
       </ul>
 
-      {result.chosen_index == null && (
+      {/* The typed kinds have no options to walk — show the exchange. */}
+      {(result.kind === 'short' || result.kind === 'blank') && (
+        <p className="text-xs text-pri">
+          You answered: <span className="font-medium">
+            {typeof result.chosen === 'string' && result.chosen.trim()
+              ? result.chosen : '—'}
+          </span>
+          {!result.correct && (result.accepted || []).length > 0 && (
+            <span className="text-sec"> · accepted: {result.accepted.join(' · ')}</span>
+          )}
+        </p>
+      )}
+      {!result.answered && (
         <p className="text-xs text-sec">You didn&rsquo;t answer this one.</p>
       )}
       {result.explanation && (

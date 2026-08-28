@@ -40,7 +40,8 @@ from pydantic import BaseModel, Field
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
 from app.services import (
-    exam_catalog, exam_profile, performance, removal, schema_features,
+    exam_catalog, exam_profile, grading, performance, removal,
+    schema_features,
 )
 from app.services.ai_service import (
     MAX_QUIZ_QUESTIONS,
@@ -119,6 +120,10 @@ class GenerateRequest(BaseModel):
 class ExamQuestion(BaseModel):
     index: int
     question: str
+    # 'mcq' | 'multi' | 'short' | 'blank' — the runner renders by it. The kind
+    # is shape, not answer: what stays server-side until submission is the key
+    # (correct index, correct set, accepted answers), exactly as before.
+    kind: str = "mcq"
     options: list[str]
     # Null on the way out to a client that hasn't answered yet. Populated
     # internally while an exam is being built and written, and returned only by
@@ -154,7 +159,9 @@ class PracticeExam(BaseModel):
 
 
 class SubmitRequest(BaseModel):
-    answers: list[int | None]
+    # An option index, a list of indices, or typed text — whatever the
+    # question's kind calls an answer.
+    answers: list[int | list[int] | str | None]
 
 
 class QuestionResult(BaseModel):
@@ -977,6 +984,7 @@ def _to_exam(row: dict[str, Any], questions: list[dict[str, Any]]) -> PracticeEx
             ExamQuestion(
                 index=q.get("position", i),
                 question=q.get("prompt") or "",
+                kind=q.get("kind") or "mcq",
                 options=_option_texts(q.get("options")),
                 # correct_index, explanation and option_explanations are
                 # deliberately absent — see the docstring. The defaults on the
@@ -1311,10 +1319,12 @@ def submit_exam(
     for i, q in enumerate(questions):
         chosen = payload.answers[i] if i < len(payload.answers) else None
         correct_index = int(q.get("correct_index") or 0)
-        is_correct = chosen == correct_index
+        is_correct = grading.grade(q, chosen)
         correct += int(is_correct)
         results.append(QuestionResult(
-            index=i, chosen_index=chosen, correct_index=correct_index,
+            index=i,
+            chosen_index=chosen if isinstance(chosen, int) else None,
+            correct_index=correct_index,
             is_correct=is_correct, explanation=q.get("expected_answer") or "",
             option_explanations=_option_explanations(q.get("options")),
         ))

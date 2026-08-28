@@ -587,17 +587,30 @@ def _write_exam(*, module_id, user_id, questions, title, domain_id=None) -> str:
     # 409 the moment it was opened. The parent goes back if the children do not
     # arrive — there is no transaction to lean on through PostgREST, so this is
     # the compensating delete.
+    def as_row(q: dict) -> dict:
+        meta = {}
+        if q.get("correct_indices"):
+            meta["correct_indices"] = q["correct_indices"]
+        if q.get("accepted"):
+            meta["accepted"] = q["accepted"]
+        return {
+            **{k: v for k, v in q.items()
+               if k not in ("explanation", "correct_indices", "accepted")},
+            "answer_meta": meta or None,
+            # Where `submit_exam` reads the graded explanation from.
+            "expected_answer": q.get("explanation") or "",
+            "exam_id": exam_id,
+        }
+
     try:
         written = (
-            client.table("practice_questions").insert([
-                {
-                    **{k: v for k, v in q.items() if k != "explanation"},
-                    # Where `submit_exam` reads the graded explanation from.
-                    "expected_answer": q.get("explanation") or "",
-                    "exam_id": exam_id,
-                }
-                for q in questions
-            ]).execute()
+            client.table("practice_questions").insert(
+                schema_features.strip_unsupported(
+                    "practice_questions",
+                    [as_row(q) for q in questions],
+                    "answer_meta",
+                )
+            ).execute()
         ).data
     except Exception:
         written = None
@@ -633,8 +646,11 @@ def _write_quiz(*, module_id, user_id, questions, title, domain_id=None) -> str:
             # way; the duplicate comes out once nothing reads `prompt`.
             "question": q["prompt"],
             "prompt": q["prompt"],
+            "kind": q.get("kind") or "mcq",
             "options": q["options"],
             "correct_index": q["correct_index"],
+            "correct_indices": q.get("correct_indices") or [],
+            "accepted": q.get("accepted") or [],
             # A regular quiz explains itself after each answer, and the reveal
             # is most of why a study quiz exists. The snapshot kept the
             # explanation; it rides along so this quiz behaves like any other.

@@ -44,7 +44,7 @@ def _provenance(rows: list[dict[str, Any]], table: str) -> list[dict[str, Any]]:
     failing the import outright.
     """
     return schema_features.strip_unsupported(
-        table, rows, "origin", "import_batch_id",
+        table, rows, "origin", "import_batch_id", "answer_meta",
     )
 
 

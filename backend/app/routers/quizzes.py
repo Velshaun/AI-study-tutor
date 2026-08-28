@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import performance, removal
+from app.services import grading, performance, removal
 from app.services.ai_service import (
     GenerationError,
     gather_domain_content,
@@ -48,6 +48,13 @@ class GenerateRequest(BaseModel):
 class Question(BaseModel):
     index: int
     question: str
+    # 'mcq' | 'multi' | 'short' | 'blank'. A quiz ships its whole key — that
+    # is the study-quiz trade — so multi-select's correct set and short
+    # answer's accepted list ride along too; the fourth field Pydantic would
+    # otherwise have silently dropped.
+    kind: str = "mcq"
+    correct_indices: list[int] = Field(default_factory=list)
+    accepted: list[str] = Field(default_factory=list)
     # Which container entry this came from, for a quiz generated out of the
     # missed pool. Undeclared, Pydantic dropped it on the way out — so the
     # client never saw it, the session record carried nothing, and
@@ -86,9 +93,10 @@ class Quiz(BaseModel):
 
 
 class SubmitRequest(BaseModel):
-    # answers[i] = the option index the learner chose for question i (or -1/None
-    # if skipped).
-    answers: list[int | None]
+    # answers[i] is whatever the question's kind calls an answer: an option
+    # index for multiple choice, a list of indices for multi-select, the typed
+    # text for short answer and fill-in-the-blank. None where skipped.
+    answers: list[int | list[int] | str | None]
 
 
 class QuestionResult(BaseModel):
@@ -143,6 +151,9 @@ def _to_quiz(row: dict[str, Any]) -> Quiz:
         Question(
             index=i,
             question=q.get("question") or q.get("prompt") or "",
+            kind=q.get("kind") or "mcq",
+            correct_indices=q.get("correct_indices") or [],
+            accepted=q.get("accepted") or [],
             bank_entry_id=q.get("bank_entry_id"),
             domain_id=q.get("domain_id") or row.get("domain_id"),
             options=q.get("options") or [],
@@ -266,13 +277,14 @@ async def submit(
     correct = 0
     for i, q in enumerate(questions):
         chosen = payload.answers[i] if i < len(payload.answers) else None
-        correct_index = int(q.get("correct_index", 0))
-        is_correct = chosen == correct_index
+        # One grader for every question kind, shared with exams and practice
+        # mode — see services/grading for why it must not be three.
+        is_correct = grading.grade(q, chosen)
         correct += int(is_correct)
         results.append(QuestionResult(
             index=i,
-            chosen_index=chosen,
-            correct_index=correct_index,
+            chosen_index=chosen if isinstance(chosen, int) else None,
+            correct_index=int(q.get("correct_index") or 0),
             is_correct=is_correct,
             explanation=q.get("explanation") or "",
         ))

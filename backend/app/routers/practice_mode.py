@@ -43,7 +43,7 @@ from pydantic import BaseModel, Field
 
 from app.database import get_supabase
 from app.routers.auth import AuthUser, get_current_user
-from app.services import exam_profile, removal, schema_features
+from app.services import exam_profile, grading, removal, schema_features
 from app.services.ai_service import (
     PRACTICE_BATCH_SIZE,
     GenerationError,
@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/practice", tags=["practice_mode"])
 
-LETTERS = "ABCD"
+LETTERS = "ABCDEFGH"
 REVIEW_ITEM_TYPE = "practice_question"
 MAX_COUNT = exam_profile.MAX_QUESTION_COUNT
 # Terms explained per Gemini call — a 40-question set has ~160 options, which is
@@ -161,6 +161,9 @@ class PracticeQuestion(BaseModel):
 
     id: str
     question_text: str
+    # 'mcq' | 'multi' | 'short' | 'blank' — shape only; the key stays behind
+    # submit-answer exactly as before.
+    kind: str = "mcq"
     options: list[PracticeOption] = Field(default_factory=list)
     is_flagged: bool = False
     # Tappable vocabulary and acronyms found in this text, generated with it so
@@ -194,7 +197,13 @@ class AnsweredOption(PracticeOption):
 
 
 class SubmitAnswerRequest(BaseModel):
-    chosen_option: str = Field(..., description="Label of the chosen option, e.g. 'B'.")
+    # One of the three, by the question's kind: a single label for multiple
+    # choice, a set of labels for multi-select, typed text for short answer
+    # and fill-in-the-blank. `chosen_option` stays required-shaped for the
+    # existing callers; the others default empty.
+    chosen_option: str = Field("", description="Label of the chosen option, e.g. 'B'.")
+    chosen_options: list[str] = Field(default_factory=list)
+    chosen_text: str = ""
 
 
 class AnswerResult(BaseModel):
@@ -203,6 +212,10 @@ class AnswerResult(BaseModel):
     question_id: str
     chosen_option: str
     correct_option: str
+    # Multi-select and text kinds: the full correct set, and the accepted
+    # answers, shown only now — this is the post-submission payload.
+    correct_options: list[str] = Field(default_factory=list)
+    accepted: list[str] = Field(default_factory=list)
     is_correct: bool
     options: list[AnsweredOption] = Field(default_factory=list)
     why_summary: str = ""
@@ -263,6 +276,7 @@ def _row_to_question(row: dict[str, Any], *, flagged: bool) -> PracticeQuestion:
         for o in (row.get("options") or [])
     ]
     return PracticeQuestion(
+        kind=row.get("kind") or "mcq",
         id=row["id"],
         question_text=row.get("prompt") or "",
         options=options,
@@ -598,11 +612,31 @@ async def submit_answer(
     ]
     correct = _correct_letter(q)
     chosen = (payload.chosen_option or "").strip().upper()[:1]
+
+    # Grade by the question's kind, through the one shared grader. Letters are
+    # the practice-mode wire format; indices are what grading speaks.
+    kind = grading.kind_of(q)
+    if kind == "multi":
+        picks = sorted(
+            LETTERS.index(letter) for letter in
+            {(x or "").strip().upper()[:1] for x in payload.chosen_options}
+            if letter in LETTERS
+        )
+        is_right = grading.grade(q, picks)
+    elif kind in grading.TEXT_KINDS:
+        is_right = grading.grade(q, payload.chosen_text)
+    else:
+        is_right = grading.grade(q, LETTERS.index(chosen) if chosen in LETTERS else None)
+
     return AnswerResult(
         question_id=question_id,
         chosen_option=chosen,
         correct_option=correct,
-        is_correct=chosen == correct,
+        correct_options=[
+            LETTERS[i] for i in grading.correct_indices(q) if i < len(LETTERS)
+        ] if kind == "multi" else [],
+        accepted=grading.accepted_answers(q) if kind in grading.TEXT_KINDS else [],
+        is_correct=is_right,
         options=answered,
         why_summary=q.get("why_summary") or "",
     )

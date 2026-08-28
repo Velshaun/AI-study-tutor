@@ -376,10 +376,24 @@ def to_question(entry: dict[str, Any], position: int) -> dict[str, Any] | None:
     snapshot = entry.get("snapshot") or {}
     options = snapshot.get("options") or []
     correct = snapshot.get("correct_index")
-    if not snapshot.get("prompt") or len(options) < 2 or correct is None:
+    kind = (snapshot.get("kind") or "mcq").strip().lower()
+    if not snapshot.get("prompt"):
+        return None
+    # Gradability is per kind, the same rule `Question.usable` applies at the
+    # ingest boundary: choice kinds need options and a key, text kinds need
+    # the accepted answers, and nothing here invents either.
+    if kind in ("short", "blank"):
+        if not any((a or "").strip() for a in snapshot.get("accepted") or []):
+            return None
+    elif kind == "multi":
+        if len(options) < 2 or not snapshot.get("correct_indices"):
+            return None
+    elif len(options) < 2 or correct is None:
         return None
     return {
-        "kind": "mcq",
+        "kind": kind,
+        "correct_indices": snapshot.get("correct_indices") or [],
+        "accepted": snapshot.get("accepted") or [],
         "prompt": snapshot["prompt"],
         "options": options,
         "correct_index": correct,
