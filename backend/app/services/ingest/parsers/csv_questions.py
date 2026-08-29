@@ -130,6 +130,11 @@ def parse(text: str) -> ParseResult:
 
         if q.usable:
             questions.append(q)
+        elif declared in ("mcq", "multi") and not options:
+            # The commonest miss deserves its own words: a choice question
+            # without options cannot be imported without inventing the
+            # distractors, and the parser never invents.
+            skipped.append(f"row {line} ({declared} with no options)")
         else:
             skipped.append(f"row {line}")
 
@@ -143,9 +148,10 @@ def parse(text: str) -> ParseResult:
     note = f"Imported {len(questions)} question{'s' if len(questions) != 1 else ''}."
     if skipped:
         note += (
-            f" {len(skipped)} row{'s' if len(skipped) != 1 else ''} left out "
-            f"({', '.join(skipped[:6])}{'…' if len(skipped) > 6 else ''}) — "
-            "no prompt, or no answer to grade against."
+            f" {len(skipped)} row{'s' if len(skipped) != 1 else ''} left out: "
+            f"{', '.join(skipped[:6])}{'…' if len(skipped) > 6 else ''}. "
+            "A row needs a prompt and a gradable answer — and choice types "
+            "need their options."
         )
     return ParseResult(
         kind="questions", questions=questions, note=note, detected="questions",
